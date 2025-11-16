@@ -1,0 +1,134 @@
+#pragma once
+
+#include <immintrin.h>
+#include "MyDistanceComputer.h"
+#include "utils.h"
+#include <cblas.h>
+#include <faiss/impl/DistanceComputer.h>
+#include <faiss/impl/NNDescent.h>
+#include <faiss/utils/distances.h>
+#include <faiss/utils/prefetch.h>
+#include <vector>
+
+namespace {
+
+#pragma GCC push_options
+#pragma GCC target("avx2", "f16c", "fma")
+#pragma clang attribute push(__attribute__((target("avx2,f16c,fma"))), apply_to = function)
+
+inline float ReduceAddps(__m256 &sums) {
+    __m128 ab_sum = _mm_add_ps(_mm256_castps256_ps128(sums), _mm256_extractf128_ps(sums, 1));
+    ab_sum = _mm_hadd_ps(ab_sum, ab_sum);
+    ab_sum = _mm_hadd_ps(ab_sum, ab_sum);
+    return _mm_cvtss_f32(ab_sum);
+}
+
+inline float CorrelationSum(const float * a, const float* b, size_t n) {
+    __m256 sums = _mm256_setzero_ps();
+    for (size_t i = 0; i < n; i += 8) {
+        sums = _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), sums);
+    }
+    return ReduceAddps(sums);
+}
+
+inline void CorrelationSum4(const float *q, const float *x0, const float *x1, const float *x2, const float *x3, size_t size,
+                                 float &res0, float &res1, float &res2, float &res3) {
+    __m256 sums0 = _mm256_setzero_ps();
+    __m256 sums1 = _mm256_setzero_ps();
+    __m256 sums2 = _mm256_setzero_ps();
+    __m256 sums3 = _mm256_setzero_ps();
+    for (size_t i = 0; i < size; i += 8) {
+        __m256 q_vec = _mm256_loadu_ps(q + i);
+        __m256 x0_vec = _mm256_loadu_ps(x0 + i);
+        __m256 x1_vec = _mm256_loadu_ps(x1 + i);
+        __m256 x2_vec = _mm256_loadu_ps(x2 + i);
+        __m256 x3_vec = _mm256_loadu_ps(x3 + i);
+        sums0 = _mm256_fmadd_ps(q_vec, x0_vec, sums0);
+        sums1 = _mm256_fmadd_ps(q_vec, x1_vec, sums1);
+        sums2 = _mm256_fmadd_ps(q_vec, x2_vec, sums2);
+        sums3 = _mm256_fmadd_ps(q_vec, x3_vec, sums3);
+    }
+    res0 = ReduceAddps(sums0);
+    res1 = ReduceAddps(sums1);
+    res2 = ReduceAddps(sums2);
+    res3 = ReduceAddps(sums3);
+}
+} // namespace
+
+namespace rnndescent {
+
+struct SimdDistanceComputerFP32L2 : MyDistanceComputer {
+    const float *matrix;
+    size_t n, d;
+    const float *query;
+    std::vector<float> matrixl2norms;
+    std::vector<float> queryl2norms;
+
+    explicit SimdDistanceComputerFP32L2(const float *matrix, int n, int d) : matrix(matrix), n(n), d(d) {
+        matrixl2norms.resize(n);
+        faiss::fvec_norms_L2sqr(matrixl2norms.data(), matrix, d, n);
+    }
+
+    float operator()(int idq, int i) final override {
+        const float *__restrict q = query + idq * d;
+        const float *__restrict y = matrix + i * d;
+
+        // prefetch_L2(matrixl2norms.data() + i);
+        // const float dp0 = faiss::fvec_inner_product(query, y, d);
+        // const float dp0 = cblas_sdot(d, query, 1, y, 1);
+        const float dp0 = CorrelationSum(query, y, d);
+        return queryl2norms[idq] + matrixl2norms[i] - 2 * dp0;
+    }
+
+    float symmetric_dis(int i, int j) final override {
+        const float *__restrict yi = matrix + i * d;
+        const float *__restrict yj = matrix + j * d;
+
+        // prefetch_L2(matrixl2norms.data() + i);
+        // prefetch_L2(matrixl2norms.data() + j);
+        // const float dp0 = faiss::fvec_inner_product(yi, yj, d);
+        // const float dp0 = cblas_sdot(d, yi, 1, yj, 1);
+        const float dp0 = CorrelationSum(yi, yj, d);
+        return matrixl2norms[i] + matrixl2norms[j] - 2 * dp0;
+    }
+
+    void set_query(const float *x, int n) override {
+        query = x;
+        queryl2norms.resize(n); // fvec_norms_L2sqr
+        // faiss::fvec_norms_L2sqr(queryl2norms.data(), query, d, n);
+#pragma omp parallel for
+        for (int i = 0; i < n; i++) {
+            queryl2norms[i]=0;
+            for (int k = 0; k < d; k++)
+                queryl2norms[i] += x[i * d + k] * x[i * d + k];
+        }
+    }
+
+    // compute four distances
+    void distances_batch_4(int idq, int idx0, int idx1, int idx2, int idx3, float &dis0, float &dis1, float &dis2, float &dis3) override final {
+        // compute first, assign next
+        const float *__restrict q = query + idq * d;
+        const float *__restrict y0 = matrix + idx0 * d;
+        const float *__restrict y1 = matrix + idx1 * d;
+        const float *__restrict y2 = matrix + idx2 * d;
+        const float *__restrict y3 = matrix + idx3 * d;
+
+        prefetch_L2(matrixl2norms.data() + idx0);
+        prefetch_L2(matrixl2norms.data() + idx1);
+        prefetch_L2(matrixl2norms.data() + idx2);
+        prefetch_L2(matrixl2norms.data() + idx3);
+
+        float dp0 = 0;
+        float dp1 = 0;
+        float dp2 = 0;
+        float dp3 = 0;
+
+        CorrelationSum4(q, y0, y1, y2, y3, d, dp0, dp1, dp2, dp3);
+
+        dis0 = queryl2norms[idq] + matrixl2norms[idx0] - 2 * dp0;
+        dis1 = queryl2norms[idq] + matrixl2norms[idx1] - 2 * dp1;
+        dis2 = queryl2norms[idq] + matrixl2norms[idx2] - 2 * dp2;
+        dis3 = queryl2norms[idq] + matrixl2norms[idx3] - 2 * dp3;
+    }
+};
+} // namespace rnndescent

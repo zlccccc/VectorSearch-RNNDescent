@@ -1,0 +1,740 @@
+#pragma once
+
+#include <bits/stdc++.h>
+#include <faiss/impl/NNDescent.h>
+
+#include <memory_resource>
+
+// #include "discomputer/CblasDistComputerL2.h"
+// #include "discomputer/SimdDistanceComputerInt4Fast.h"
+// #include "discomputer/SimdDistanceComputerFP16.h"
+// #include "discomputer/SimdDistanceComputerInt8.h"
+
+// #include "discomputer/CblasDistComputerIP.h"
+#include "discomputer/CblasDistComputerFP32.h"
+// #include "discomputer/FaissDistComputerIP.h"
+// #include "discomputer/FaissDistComputerL2.h"
+// #include "discomputer/SimdDistanceComputerFP16.h"
+// #include "discomputer/SimdDistanceComputerInt16.h"
+// #include "discomputer/SimdDistanceComputerFP32.h"
+// #include "discomputer/Avx2SimdDistanceComputerFP32.h"
+#include "discomputer/Avx512SimdDistanceComputerFP32.h"
+// #define INTERNAL_CLOCK_TEST
+
+// #include "discomputer/Avx2SimdDistanceComputerInt8.h"
+#include "discomputer/Avx512SimdDistanceComputerInt8.h"
+// #include "discomputer/NeonSimdDistanceComputerInt8.h"
+
+namespace rnndescent {
+
+// using NeighborsContainerType = UInt4Neighbors;
+using NeighborsContainerType = Int8Neighbors;
+// using NeighborsContainerType = FP16Neighbors;
+// using NeighborsContainerType = CblasNeighbors;
+
+// using SaveneighborDiscomputer = SimdDistanceComputerInt4L2;
+using SaveneighborDiscomputer = SimdDistanceComputerInt8L2;
+// using SaveneighborDiscomputer = SimdDistanceComputerFP16L2;
+// using SaveneighborDiscomputer = CblasDistanceComputerFP32L2;
+
+struct RNNDescent {
+    static void gen_random(std::mt19937 &rng, int *addr, const int size, const int N) { // 好像这个有极小概率random出错啊...shuffle最简单
+        for (int i = 0; i < size; ++i) {
+            addr[i] = rng() % (N - size);
+        }
+        std::sort(addr, addr + size);
+        for (int i = 1; i < size; ++i) {
+            if (addr[i] <= addr[i - 1]) {
+                addr[i] = addr[i - 1] + 1;
+            }
+        }
+        int off = rng() % N;
+        for (int i = 0; i < size; ++i) {
+            addr[i] = (addr[i] + off) % N;
+        }
+    }
+
+    using KNNGraph = std::vector<faiss::nndescent::Nhood>;
+
+    explicit RNNDescent(const int d) : d(d) {}
+
+#ifdef INTERNAL_CLOCK_TEST
+    float init_time{0}, getneighbor_time{0}, calculate_time{0}, update_time{0}, recalculate_time{0};
+    long long query_count{0}, calculate_distance_count{0}, for_count{0}, bfs_length{0}, useful_count{0}, bfs_items{0};
+#endif
+    ~RNNDescent() { reset(); }
+
+    MyDistanceComputer *GenerateDistanceComputer(const float *data, int n) {
+        // return new FaissDistanceComputerL2(data, n, dim);
+        // return new CblasDistanceComputerFP32L2(data, n, d);
+        // return new SimdDistanceComputerFP16L2(data, n, dim);
+        return new SimdDistanceComputerInt8L2(data, n, d);
+        // return new SimdDistanceComputerInt8L2Norm(data, n, dim);
+        throw std::runtime_error("Invalid metric type");
+    }
+
+    void generate_graph(KNNGraph &graph, const float *x, bool verbose) {
+        printf("generte graph ntotal = %d\n", ntotal);
+        auto qdis = GenerateDistanceComputer(x, ntotal);
+        init_graph(graph, *qdis);
+        // double alpha_L = 1.0, alpha_R = 1.2;
+        double alpha_L = 1.0, alpha_R = 1.0;
+        for (int t1 = 0; t1 < T1; ++t1) {
+            if (verbose)
+                std::cout << "Iter " << t1 << " : " << std::flush;
+            for (int t2 = 0; t2 < T2; ++t2) {
+                update_neighbors(graph, *qdis, alpha_L + (alpha_R - alpha_L) * t1 / (T1 - 1));
+                if (verbose)
+                    std::cout << "#" << std::flush;
+            }
+            if (verbose)
+                printf("\n");
+
+            if (t1 != T1 - 1)
+                add_reverse_edges(graph);
+        }
+        delete qdis;
+
+#pragma omp parallel for
+        for (int u = 0; u < ntotal; ++u) {
+            auto &pool = graph[u].pool;
+            std::sort(pool.begin(), pool.end());
+            pool.erase(std::unique(pool.begin(), pool.end(), [](faiss::nndescent::Neighbor &a, faiss::nndescent::Neighbor &b) { return a.id == b.id; }),
+                       pool.end());
+        }
+
+        // 这里的resize可能会导致图不联通; 这件事情需要在上面build的时候就考虑到
+        int all_edges_size = 0;
+        for (int u = 0; u < ntotal; ++u) {
+            // 清理内存
+            std::vector<int>().swap(graph[u].rnn_new);
+            std::vector<int>().swap(graph[u].rnn_old);
+            std::vector<int>().swap(graph[u].nn_new);
+            std::vector<int>().swap(graph[u].nn_old);
+            if (graph[u].pool.size() > K0)
+                graph[u].pool.resize(K0);
+            all_edges_size += graph[u].pool.size();
+            graph[u].pool.shrink_to_fit();
+        }
+        printf("graph edges size = %d\n", all_edges_size);
+    }
+
+    void build(const int n, bool verbose, const float *x, bool save_neighbor, bool random_init) {
+        if (verbose)
+            printf("Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d\n", S, R, T1, T2, n);
+        NeighborsContainerType::clear_memory();
+
+        std::vector<std::vector<int>> edges; // distance并不重要
+        edges.resize(n);
+        {
+            KNNGraph graph;
+            ntotal = n;
+            generate_graph(graph, x, verbose); // highest level
+#pragma omp parallel for
+            for (int i = 0; i < n; i++) {
+                auto &pool = graph[i].pool;
+                for (auto &v : pool)
+                    edges[i].push_back(v.id);
+                edges[i].shrink_to_fit();
+            }
+        }
+        // 确定全局入口点
+        printf("n = %d; initialize = %d\n", n, numSearchInitializeItem);
+        {
+            std::mt19937 rng(random_seed);
+            search_from_ids.resize(numSearchInitializeItem);
+            if (random_init)
+                gen_random(rng, search_from_ids.data(), numSearchInitializeItem, n);
+            else
+                iota(search_from_ids.begin(), search_from_ids.end(), 0);
+        }
+        ntotal = n;
+
+#pragma omp parallel for
+        for (int i = 0; i < n; i++) {
+            std::sort(edges[i].begin(), edges[i].end());
+            edges[i].erase(std::unique(edges[i].begin(), edges[i].end()), edges[i].end());
+        }
+
+        // 重排ID, 加速运行
+        std::vector<int> rollback_ids(ntotal); // 连graph的时候边id需更新
+
+        { // ID重排
+            puts("Start Reordering The Graph.");
+            // bfs from those indexes
+            // search_from_ids.resize(numSearchInitializeItem); // range
+            // for (int i = 0; i < search_from_ids.size(); i++)
+            //     printf("%d ",search_from_ids[i]); puts("<");
+            MyVisitedTable vis(ntotal);
+
+            // cluster_id: 重排ID以后, 从哪个cluster可以bfs到当前点
+            std::vector<int> cluster_id(ntotal);
+            for (int i = 0; i < search_from_ids.size(); i++) {
+                vis.set(search_from_ids[i]);
+                cluster_id[search_from_ids[i]] = i;
+            }
+            std::vector<int> bfs_distance(ntotal); // 只是用来记录一下
+            int all_have_next = 0;
+            // std::vector<int> current_layer;
+            for (int i = 0; i < search_from_ids.size(); i++) {
+                int u = search_from_ids[i];
+                // index_to_result_mapping[i] = u;  // same as search_from_ids
+                bool have_next = false;
+                for (int v : edges[u]) {
+                    if (!vis.get(v)) {
+                        vis.set(v);
+                        search_from_ids.push_back(v);
+                        have_next = true;
+                        bfs_distance[v] = bfs_distance[u] + 1;
+                        cluster_id[v] = cluster_id[u];
+                    }
+                }
+                all_have_next += have_next;
+            }
+
+            { // bfs重排后的cluster ID
+                std::vector<int> cluster_size(numSearchInitializeItem);
+                for (int i = 0; i < cluster_id.size(); i++)
+                    cluster_size[cluster_id[i]]++;
+                for (int v : cluster_size)
+                    printf("%d ", v);
+                puts(" <<- initial cluster size");
+                std::vector<int> bfs_length_count;
+                for (int i = 0; i < search_from_ids.size(); i++) {
+                    int v = bfs_distance[search_from_ids[i]];
+                    if (v >= bfs_length_count.size())
+                        bfs_length_count.resize(v + 1);
+                    bfs_length_count[v]++;
+                }
+                for (int i = 0; i < bfs_length_count.size(); i++)
+                    printf("bfs_length %d: %d\n", i, bfs_length_count[i]);
+            }
+
+            int cannot_search = 0; // 这里先暂时不处理这种情况; 会有概率有的点搜不到
+            for (int i = 0; i < ntotal; i++) {
+                if (!vis.get(i))
+                    search_from_ids.push_back(i), cannot_search++;
+            }
+#ifdef INTERNAL_CLOCK_TEST
+            printf("search from ids = %d; have_next = %d; cannot_search = %d\n", (int)search_from_ids.size(), all_have_next, cannot_search);
+            assert(ntotal == search_from_ids.size());
+#endif
+
+            for (int i = 0; i < ntotal; i++) // 连graph的时候边id需更新
+                rollback_ids[search_from_ids[i]] = i;
+
+            std::vector<float> fastsearch_pool;
+            fastsearch_pool.resize(ntotal * d);
+#pragma omp parallel for
+            for (int i = 0; i < ntotal; i++) {
+                int u = search_from_ids[i];
+                // printf("u = %d; matrix.size() = %d\n",u, matrix.size());
+                memcpy(fastsearch_pool.data() + i * d, x + u * d, d * sizeof(float));
+            }
+            fastqdis = new SaveneighborDiscomputer(fastsearch_pool.data(), ntotal, d);
+        }
+        {
+#pragma omp parallel for
+            for (int i = 0; i < ntotal; i++) {
+                int u = search_from_ids[i];
+                auto &pool = edges[u];
+                // 需要清理下内存
+                std::set<int> S; // 不能重复
+                for (auto &edge : pool)
+                    S.insert(edge);
+                while (pool.size() % 4 != 0) { // 补到差不多
+                    int id = random() % ntotal;
+                    while (S.count(id))
+                        id = random() % ntotal;
+                    S.insert(id);
+                    pool.push_back(id);
+                }
+                pool.shrink_to_fit();
+            }
+        }
+        { // 空间局部性优化
+            NeighborsContainerType::init_neighbors_pool(d, edges, 16ll * 1024 * 1024 * 1024,  save_neighbor=save_neighbor);
+            for (int i = 0; i < ntotal; i++) {
+                int u = search_from_ids[i];
+                auto &pool = edges[u];
+                final_graph_neighbors.emplace_back(NeighborsContainerType(d, pool, fastqdis, rollback_ids, save_neighbor)); // 全部save
+            }
+        }
+        has_built = true;
+
+        threadVt.resize(numThreadsMax);
+        threadRetset.resize(numThreadsMax);
+        neighborDistance.resize(numThreadsMax);
+        threadUsefulset.resize(numThreadsMax);
+        threadFinalset.resize(numThreadsMax);
+        for (int i = 0; i < numThreadsMax; i++) {
+            threadVt[i].init(ntotal);
+            threadRetset[i].reserve(std::max(numSearchInitializeItem, search_L)); // 这玩意实际上是retset
+            neighborDistance[i].reserve(search_L);                                // neighbor distance
+            threadFinalset[i].reserve(search_L);
+            threadUsefulset[i].reserve(K0 * beamSizeMax + 1); // +1: last-item
+        }
+    }
+
+    std::vector<int> search_from_ids;
+
+    int beamSizeMax = 8;
+    int numThreadsMax = 16; // 线程数量
+    int search_L = 96;            // size of candidate pool in searching
+    // int efSearch = 96; // 这个又没用了
+    // int numSearchInitializeItem = 512;
+    // int numSearchInitializeItem = 128;
+    int numSearchInitializeItem = 64; // 初始化bfs入口位置
+
+    std::vector<MyVisitedTable> threadVt;                  // threadRetset和之前的retset起到的价值差不多
+    std::vector<std::vector<SingleNeighbor>> threadRetset; // threadRetset和之前的retset起到的价值差不多
+    std::vector<std::vector<SingleNeighbor>> threadUsefulset;
+    std::vector<std::vector<SingleNeighbor>> threadFinalset;
+    std::vector<std::vector<float>> neighborDistance;
+
+    void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const int topk, int *indices, float *dists, bool output) {
+        assert(0 <= threadid && threadid < numThreadsMax);
+#ifdef INTERNAL_CLOCK_TEST
+        auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = prevtime;
+        float init_time = 0, getneighbor_time = 0, calculate_time = 0, update_time = 0;
+        assert(numSearchInitializeItem >= topk);
+        assert(numSearchInitializeItem >= search_L);
+        assert(K0 * beamSizeMax >= K0);
+#endif
+        FAISS_THROW_IF_NOT_MSG(has_built, "The index is not build yet.");
+
+        auto &retset = threadRetset[threadid];
+        auto &usefulset = threadUsefulset[threadid];
+        auto &finalset = threadFinalset[threadid];
+        auto &vt = threadVt[threadid];
+        // Initialize
+        assert(numSearchInitializeItem % 4 == 0);
+        retset.resize(numSearchInitializeItem);
+        usefulset.resize(K0 * beamSizeMax + 1);
+        finalset.resize(search_L);
+        // for (int i = 0; i < numSearchInitializeItem; i++)
+        //   retset[i].distance = qdis(i);
+        // memset(vt.visited.data(), vt.visno, numSearchInitializeItem * sizeof(uint8_t));
+        for (int i = 0; i < numSearchInitializeItem; i += 4) {
+            vt.set(i + 0);
+            vt.set(i + 1);
+            vt.set(i + 2);
+            vt.set(i + 3);
+            retset[i + 0].id = i + 0; // have flag
+            retset[i + 1].id = i + 1; // have flag
+            retset[i + 2].id = i + 2; // have flag
+            retset[i + 3].id = i + 3; // have flag
+            fastqdis->distances_batch_4(queryid, i + 0, i + 1, i + 2, i + 3, retset[i].distance, retset[i + 1].distance, retset[i + 2].distance,
+                                        retset[i + 3].distance);
+        }
+
+        std::nth_element(retset.begin(), retset.begin() + search_L, retset.end());
+        // Maintain the candidate pool in ascending order
+        std::sort(retset.data(), retset.data() + search_L);
+        // retset.resize(search_L); // remove other items; 不过没有用
+        // retset[search_L].distance = INFINITY;
+
+#ifdef INTERNAL_CLOCK_TEST
+        int bfs_length = 0, bfs_items = 0;
+        int calcdis = 0;
+        nowtime = std::chrono::high_resolution_clock::now();
+        init_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+        prevtime = nowtime;
+        int for_count = 0, calculate_distance_count = 0, useful_count = 0;
+#endif
+        // puts("Start search");
+
+        // printf("push %d %f\n", retset[ID].id, retset[ID].distance);
+
+        int smallest_pos = 0;
+        SingleNeighbor *usefulsetStart = usefulset.data();
+        // Stop until the smallest position updated is >= L
+        while (smallest_pos < search_L) {
+            SingleNeighbor *usefulsetEnd = usefulsetStart;
+            // for (int beam = 0; smallest_pos < search_L && (beam < beamSizeMax || usefulsetEnd - usefulsetStart + K0 < K0 * beamSizeMax / 4); smallest_pos++) {
+            for (int beam = 0; smallest_pos < search_L && beam < beamSizeMax; smallest_pos++) {
+                // for (int beam = 0; smallest_pos < search_L && (beam < beamSizeMax || usefulsetEnd - usefulsetStart < K0 * beamSizeMax / 2); smallest_pos++) {
+                // for (int beam = 0; smallest_pos < search_L && usefulsetEnd - usefulsetStart + K0 < beamSizeMax * K0; smallest_pos++) {
+                if (retset[smallest_pos].id & 0x80000000)
+                    continue;
+                int n = retset[smallest_pos].id;
+                retset[smallest_pos].id |= 0x80000000;
+                beam++;
+
+#ifdef INTERNAL_CLOCK_TEST
+                nowtime = std::chrono::high_resolution_clock::now();
+                getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+                prevtime = nowtime;
+#endif
+                auto &neighbors = final_graph_neighbors[n];
+
+                // 这里会把所有距离都算出来; 不过其实吧 可以不算之前搜过的, 大概占比10%
+                // vt全部assign比多算10%时间要长
+                neighbors.compute_distance(queryid, neighborDistance[threadid]);
+
+#ifdef INTERNAL_CLOCK_TEST
+                nowtime = std::chrono::high_resolution_clock::now();
+                calculate_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+                prevtime = nowtime;
+                // 这里其实有点慢
+                bfs_items++;
+                for_count += neighbors.size; // 这句话非常非常慢
+                calculate_distance_count += neighbors.size;
+#endif
+
+                float limit = retset[search_L - 1].distance;
+#pragma unroll
+                for (int k = 0; k < neighbors.size; k++) {
+                    // if (threadHeap[threadid].n == 1) {
+                    //     printf("%f ", neighborDistance[threadid][k].distance); puts("<- first distance");
+                    // }
+                    if (neighborDistance[threadid][k] < limit) {
+                        if (vt.get(neighbors.edges[k]))
+                            continue;
+                        vt.set(neighbors.edges[k]);
+                        // usefulset.push_back({neighbors.edges[k], neighborDistance[threadid][k]});
+                        usefulsetEnd->id = neighbors.edges[k];
+                        usefulsetEnd->distance = neighborDistance[threadid][k];
+                        usefulsetEnd++;
+                    }
+                }
+#ifdef INTERNAL_CLOCK_TEST
+                nowtime = std::chrono::high_resolution_clock::now();
+                update_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+                prevtime = nowtime;
+#endif
+            }
+#ifdef INTERNAL_CLOCK_TEST
+            bfs_length++;
+            useful_count += usefulsetEnd - usefulsetStart;
+#endif
+            if (usefulsetEnd == usefulsetStart)
+                continue;
+            {
+                // int usefulset_limit = search_L * 1.5; // 搜几次之后存在重复的情况; 超参设置这个resize; 不过感觉上不应该有啥区别
+                // int usefulset_limit = search_L / 2;
+                // int usefulset_limit = 128; // 这个优化后面再说
+                // if (usefulset.size() > usefulset_limit) {
+                //     std::nth_element(usefulsetStart, usefulsetStart + usefulset_limit, usefulsetEnd);
+                //     usefulset.resize(usefulset_limit);
+                // }
+                std::sort(usefulsetStart, usefulsetEnd); // search_L的判断感觉没有必要去加; 新数据 K0 * beam 比 search_L 不会大太多
+            }
+
+#ifdef INTERNAL_CLOCK_TEST
+            nowtime = std::chrono::high_resolution_clock::now();
+            update_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+            prevtime = nowtime;
+#endif
+
+            // O(n)复杂度; 不处理same的情况
+            auto it_new = usefulsetStart, it_initial = retset.data(), it_finalset = finalset.data();
+            usefulsetEnd->id = 0x3f3f3f3f;
+            usefulsetEnd->distance = INFINITY;
+            while (it_finalset != finalset.data() + search_L) {
+                if (it_new->distance < it_initial->distance) {
+                    int size = it_finalset - finalset.data();
+                    if (size < smallest_pos)
+                        smallest_pos = size;
+                    // smallest_pos = std::min(smallest_pos, size);
+                    *it_finalset++ = *it_new++;
+                } else
+                    *it_finalset++ = *it_initial++;
+            }
+
+            memcpy(&retset[0], &finalset[0], sizeof(SingleNeighbor) * search_L);
+
+#ifdef INTERNAL_CLOCK_TEST
+            // nowtime = std::chrono::high_resolution_clock::now();
+            // update_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+            // prevtime = nowtime;
+#endif
+        }
+
+        // for (int i = 0; i < threadHeap[threadid].k; i++)
+        //     threadRetset[threadid].push_back({threadHeap[threadid].ids[i] & 0x7fffffff, threadHeap[threadid].dis[i]});
+
+        // printf("threadid = %d; ID = %d; search size = %d\n", threadid, ID, threadRetset[threadid].size());
+        // assert(threadRetset[threadid].size() >= threadSearchMaxMergeCount);
+        // // 输出一下计算的ID~
+        // for (int i = 0; i < numThreadsMax; i++)
+        //     printf("%d ", threadRetset[i].size());
+        // puts("<- bfs_items");
+        // for (int i = 0; i < numThreadsMax; i++)
+        //     printf("%d ", calculate_distance_count[i]);
+        // puts("<- calculate");
+
+        int refinemax = 64; // 不需要更多了
+        if (d != 512)
+            refinemax = 128; // 经过了PCA; 所以需要多一点
+        refinemax = std::min(refinemax, (int)retset.size());
+        // nth_element(retset.begin(), retset.begin() + refinemax, retset.end());
+        // 去重
+        retset.resize(refinemax); // 48 maybe is okay
+
+        for (size_t i = 0; i < retset.size(); i++)
+            retset[i].id = search_from_ids[retset[i].id & 0x7fffffff];
+
+        for (size_t i = 0; i < retset.size(); i += 4)
+            realqdis.distances_batch_4(queryid, retset[i].id, retset[i + 1].id, retset[i + 2].id, retset[i + 3].id, retset[i].distance, retset[i + 1].distance,
+                                       retset[i + 2].distance, retset[i + 3].distance);
+        sort(retset.begin(), retset.end());
+
+        for (size_t i = 0; i < topk; i++) {
+            indices[i] = retset[i].id;
+            dists[i] = retset[i].distance;
+        }
+
+        vt.advance();
+
+#ifdef INTERNAL_CLOCK_TEST
+        nowtime = std::chrono::high_resolution_clock::now();
+        float recalculate_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+        prevtime = nowtime;
+        if (output) {
+            printf("bfs: %d; calc=%d\n", bfs_length, calcdis);
+            // for (int x = 0; x < 10; ++x)
+            //     printf("%f ", finalset[x].distance);
+            // for (int x = 0; x < 10; ++x)
+            //     for (int y = 0; y < 10; ++y)
+            //         printf("%f ", qdis.symmetric_dis(x, y)); puts("<- inside dfs");
+            // puts("<- dist");
+            printf("time: init_time = %f, getneighbor_time = %f, calculate_time = %f, "
+                   "update_time = %f; recalculate_time = %f; alltime = %f\n",
+                   init_time, getneighbor_time, calculate_time, update_time, recalculate_time,
+                   init_time + getneighbor_time + calculate_time + update_time + recalculate_time);
+        }
+        {
+            // 需要atomic加锁
+            std::lock_guard<std::mutex> lock(m_mutex);
+            query_count++;
+            this->init_time += init_time;
+            this->getneighbor_time += getneighbor_time;
+            this->update_time += update_time;
+            this->calculate_time += calculate_time;
+            this->recalculate_time += recalculate_time;
+            this->calculate_distance_count += calcdis;
+            this->bfs_length += bfs_length;
+            this->for_count += for_count;
+            this->bfs_items += bfs_items;
+            this->calculate_distance_count += calculate_distance_count;
+            this->useful_count += useful_count;
+        }
+#endif
+    }
+#ifdef INTERNAL_CLOCK_TEST
+    std::mutex m_mutex;
+#endif
+
+    void reset_time() {
+#ifdef INTERNAL_CLOCK_TEST
+        printf("RNN Descent Running Time: mean bfs %f times; %f nodes; init_time = "
+               "%f, getneighbor_time = %f, calculate_time = %f, update_time = %f; "
+               "recalculate_time = %f; alltime = %f; calculate_dist_count = %f; "
+               "for_count = %f; useful_count = %f\n",
+               (float)bfs_length / query_count, (float)bfs_items / query_count, init_time / query_count, getneighbor_time / query_count,
+               calculate_time / query_count, update_time / query_count, recalculate_time / query_count,
+               (init_time + getneighbor_time + calculate_time + update_time + recalculate_time) / query_count, (float)calculate_distance_count / query_count,
+               (float)for_count / query_count, (float)useful_count / query_count);
+        init_time = 0, getneighbor_time = 0, calculate_time = 0, update_time = 0, recalculate_time = 0;
+        query_count = 0, calculate_distance_count = 0, for_count = 0, bfs_length = 0, useful_count = 0, bfs_items = 0;
+#endif
+    }
+
+    void reset() {
+        has_built = false;
+        ntotal = 0;
+        std::vector<NeighborsContainerType>().swap(final_graph_neighbors);
+        // final_graph_neighbors.resize(0);
+        // final_graph.resize(0);
+        search_from_ids.resize(0);
+        // std::vector<MyVisitedTable>().swap(threadVt); // 这个比较大
+
+        if (fastqdis != nullptr) {
+            delete fastqdis;
+            fastqdis = nullptr;
+        }
+
+        reset_time();
+    }
+
+    /// Initialize the KNN graph randomly
+    void init_graph(KNNGraph &graph, MyDistanceComputer &qdis) {
+        graph.reserve(ntotal);
+        {
+            std::mt19937 rng(random_seed * 6007);
+            for (int i = 0; i < ntotal; i++) {
+                graph.push_back(faiss::nndescent::Nhood(initialize_L, S, rng, (int)ntotal));
+            }
+        }
+
+#pragma omp parallel
+        {
+            std::mt19937 rng(random_seed * 7741 + omp_get_thread_num());
+#pragma omp for
+            for (int i = 0; i < ntotal; i++) {
+                std::vector<int> tmp(S);
+
+                gen_random(rng, tmp.data(), S, ntotal);
+
+                for (int j = 0; j < S; j++) {
+                    int id = tmp[j];
+                    if (id == i)
+                        continue;
+                    float dist = qdis.symmetric_dis(i, id);
+
+                    graph[i].pool.push_back(faiss::nndescent::Neighbor(id, dist, true));
+                }
+                std::make_heap(graph[i].pool.begin(), graph[i].pool.end());
+                // graph[i].pool.reserve(initialize_L);
+                graph[i].pool.reserve(R * 2);
+            }
+        }
+    }
+
+    void update_neighbors(KNNGraph &graph, MyDistanceComputer &qdis, float alpha = 1.) {
+#pragma omp parallel for schedule(dynamic, 16)
+        for (int u = 0; u < ntotal; ++u) {
+            auto &nhood = graph[u];
+            auto &pool = nhood.pool;
+            std::vector<faiss::nndescent::Neighbor> new_pool;
+            std::vector<faiss::nndescent::Neighbor> old_pool;
+            {
+                std::lock_guard<std::mutex> guard(nhood.lock);
+                old_pool = pool;
+                pool.clear();
+            }
+            std::sort(old_pool.begin(), old_pool.end());
+            old_pool.erase(
+                std::unique(old_pool.begin(), old_pool.end(), [](faiss::nndescent::Neighbor &a, faiss::nndescent::Neighbor &b) { return a.id == b.id; }),
+                old_pool.end());
+
+            for (auto &&nn : old_pool) {
+                bool ok = true;
+                for (auto &&other_nn : new_pool) {
+                    if (!nn.flag && !other_nn.flag) {
+                        continue;
+                    }
+                    if (nn.id == other_nn.id) {
+                        ok = false;
+                        break;
+                    }
+                    float distance = qdis.symmetric_dis(nn.id, other_nn.id);
+                    if (distance < nn.distance) {
+                        ok = false;
+                        insert_nn(graph, other_nn.id, nn.id, distance, true);
+                        break;
+                    }
+                }
+                if (ok) {
+                    new_pool.emplace_back(nn);
+                }
+            }
+
+            for (auto &&nn : new_pool) {
+                nn.flag = false;
+            }
+            {
+                std::lock_guard<std::mutex> guard(nhood.lock);
+                pool.insert(pool.end(), new_pool.begin(), new_pool.end());
+            }
+        }
+    }
+    void add_reverse_edges(KNNGraph &graph) {
+        std::vector<std::vector<faiss::nndescent::Neighbor>> reverse_pools(ntotal);
+
+#pragma omp parallel for
+        for (int u = 0; u < ntotal; ++u) {
+            for (auto &&nn : graph[u].pool) {
+                std::lock_guard<std::mutex> guard(graph[nn.id].lock);
+                reverse_pools[nn.id].emplace_back(u, nn.distance, nn.flag);
+            }
+        }
+
+#pragma omp parallel for
+        for (int u = 0; u < ntotal; ++u) {
+            auto &pool = graph[u].pool;
+            for (auto &&nn : pool) {
+                nn.flag = true;
+            }
+            auto &rpool = reverse_pools[u];
+            rpool.insert(rpool.end(), pool.begin(), pool.end());
+            pool.clear();
+            std::sort(rpool.begin(), rpool.end()); // 这里sort可能需要考虑度数了
+            rpool.erase(std::unique(rpool.begin(), rpool.end(), [](faiss::nndescent::Neighbor &a, faiss::nndescent::Neighbor &b) { return a.id == b.id; }),
+                        rpool.end());
+            if (rpool.size() > R) {
+                rpool.resize(R);
+            }
+        }
+
+#pragma omp parallel for
+        for (int u = 0; u < ntotal; ++u) {
+            for (auto &&nn : reverse_pools[u]) {
+                std::lock_guard<std::mutex> guard(graph[nn.id].lock);
+                graph[nn.id].pool.emplace_back(u, nn.distance, nn.flag); // 所有edge
+            }
+        }
+
+#pragma omp parallel for
+        for (int u = 0; u < ntotal; ++u) {
+            auto &pool = graph[u].pool;
+            std::sort(pool.begin(), pool.end()); // 这里sort可能需要考虑度数了
+            if (pool.size() > R) {
+                pool.resize(R);
+            }
+        }
+    }
+
+    void insert_nn(KNNGraph &graph, int id, int nn_id, float distance, bool flag) {
+        auto &nhood = graph[id];
+        {
+            std::lock_guard<std::mutex> guard(nhood.lock);
+            nhood.pool.emplace_back(nn_id, distance, flag);
+            
+            // if (distance > nhood.pool.front().distance)
+            //     return;
+            // for (int i = 0; i < nhood.pool.size(); i++) {
+            //     if (id == nhood.pool[i].id)
+            //         return;
+            // }
+            // if (nhood.pool.size() < nhood.pool.capacity()) {
+            //     nhood.pool.push_back(faiss::nndescent::Neighbor(id, distance, flag));
+            //     std::push_heap(nhood.pool.begin(), nhood.pool.end());
+            // } else {
+            //     std::pop_heap(nhood.pool.begin(), nhood.pool.end());
+            //     nhood.pool[nhood.pool.size() - 1] = faiss::nndescent::Neighbor(id, distance, flag);
+            //     std::push_heap(nhood.pool.begin(), nhood.pool.end());
+            // }
+
+            // for (int i = 0; i < nhood.pool.size(); i++) {
+            //     if (id == nhood.pool[i].id)
+            //         return;
+            // }
+            // nhood.pool.emplace_back(nn_id, distance, flag);
+        }
+    }
+
+    bool has_built = false;
+
+    int T1 = 4;
+    int T2 = 15;
+    int S = 16;
+    int R = 96;
+    int K0 = 48; // maximum out-degree (mentioned as K in the original paper)
+
+    int random_seed = 2021; // random seed for generators
+
+    int d;                // dimensions
+    int initialize_L = 8; // initial size of memory allocation
+
+    int ntotal = 0;
+
+    std::vector<NeighborsContainerType> final_graph_neighbors;
+    MyDistanceComputer *fastqdis = nullptr; // 新的disComputer
+    // std::vector<MyVisitedTable> threadVt;
+};
+
+} // namespace rnndescent
+
+namespace rnndescent {} // namespace rnndescent
