@@ -3,6 +3,7 @@
 
 #include "rnndescent/IndexRNNDescent.h"
 #include <algorithm>
+#include <array>
 #include <faiss/Index.h>
 #include <iostream>
 #include <memory>
@@ -17,8 +18,9 @@ class Solution {
     void build(int d, const vector<float> &base);
     void search(const vector<float> &query, vector<int> &res);
     void test(int d, const vector<float> &base);
+    void reset();
     std::unique_ptr<rnndescent::IndexRNNDescent> index;
-    float distances[topk * querysize];
+    std::array<float, topk * querysize> distances{};
     ~Solution() = default;
 };
 

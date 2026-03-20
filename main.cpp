@@ -8,31 +8,34 @@ int output_iter = 5;
 int test_iter = 10000;
 int exact_check_queries = 20;
 
-float calc_l2_sqr(const float *a, const float *b, int d) {
+float calc_l2_sqr(const vector<float> &lhs, int lhs_idx, const vector<float> &rhs, int rhs_idx, int d) {
     float res = 0.0f;
+    const size_t lhs_offset = 1LL * lhs_idx * d;
+    const size_t rhs_offset = 1LL * rhs_idx * d;
     for (int i = 0; i < d; i++) {
-        float diff = a[i] - b[i];
+        float diff = lhs[lhs_offset + i] - rhs[rhs_offset + i];
         res += diff * diff;
     }
     return res;
 }
 
-void randvector(float *data, int d) {
+void randvector(vector<float> &data, int row_idx, int d) {
     float sum = 0.0f;
+    const size_t offset = 1LL * row_idx * d;
     for (int i = 0; i < d; i++) {
-        data[i] = rand() * 1.0f / RAND_MAX;
-        sum += data[i] * data[i];
+        data[offset + i] = rand() * 1.0f / RAND_MAX;
+        sum += data[offset + i] * data[offset + i];
     }
     sum = sqrt(sum);
     for (int k = 0; k < d; k++) {
-        data[k] = data[k] / sum;
+        data[offset + k] = data[offset + k] / sum;
     }
 }
 
-vector<pair<float, int>> exact_topk(const vector<float> &dataset, const float *query, int data_size, int d, int k) {
+vector<pair<float, int>> exact_topk(const vector<float> &dataset, const vector<float> &query, int query_idx, int data_size, int d, int k) {
     priority_queue<pair<float, int>> heap;
     for (int i = 0; i < data_size; i++) {
-        float dist = calc_l2_sqr(dataset.data() + 1LL * i * d, query, d);
+        float dist = calc_l2_sqr(dataset, i, query, query_idx, d);
         if ((int)heap.size() < k) {
             heap.push({dist, i});
         } else if (dist < heap.top().first || (dist == heap.top().first && i < heap.top().second)) {
@@ -55,7 +58,7 @@ vector<pair<float, int>> exact_topk(const vector<float> &dataset, const float *q
     return result;
 }
 
-void evaluate_accuracy(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const float *solution_distances, int data_size,
+void evaluate_accuracy(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const std::array<float, topk * querysize> &solution_distances, int data_size,
                        int d) {
     const int checked_queries = min((int)query.size() / d, exact_check_queries);
     double total_recall1 = 0.0;
@@ -65,7 +68,7 @@ void evaluate_accuracy(const vector<float> &dataset, const vector<float> &query,
     double avg_top1_gap = 0.0;
 
     for (int qi = 0; qi < checked_queries; qi++) {
-        auto gt = exact_topk(dataset, query.data() + 1LL * qi * d, data_size, d, topk);
+        auto gt = exact_topk(dataset, query, qi, data_size, d, topk);
         unordered_set<int> gt_ids;
         gt_ids.reserve(gt.size() * 2);
         for (auto &item : gt) {
@@ -78,7 +81,7 @@ void evaluate_accuracy(const vector<float> &dataset, const vector<float> &query,
             if (gt_ids.count(id)) {
                 hit++;
             }
-            float real = calc_l2_sqr(dataset.data() + 1LL * id * d, query.data() + 1LL * qi * d, d);
+            float real = calc_l2_sqr(dataset, id, query, qi, d);
             double err = fabs(real - solution_distances[qi * topk + k]);
             max_distance_error = max(max_distance_error, err);
             avg_distance_error += err;
@@ -100,7 +103,7 @@ void evaluate_accuracy(const vector<float> &dataset, const vector<float> &query,
     cout << "avg top1 distance gap vs exact: " << avg_top1_gap << endl;
 }
 
-void print_sample_results(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const float *solution_distances, int d) {
+void print_sample_results(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const std::array<float, topk * querysize> &solution_distances, int d) {
     for (int i = 0; i < min(output_iter, (int)query.size() / d); i++) {
         for (int k = 0; k < topk; k++)
             cout << result[i * topk + k] << " ";
@@ -109,7 +112,7 @@ void print_sample_results(const vector<float> &dataset, const vector<float> &que
             cout << solution_distances[i * topk + k] << " ";
         puts(" <- solution distance");
         for (int k = 0; k < topk; k++) {
-            float real = calc_l2_sqr(dataset.data() + 1LL * result[i * topk + k] * d, query.data() + 1LL * i * d, d);
+            float real = calc_l2_sqr(dataset, result[i * topk + k], query, i, d);
             cout << real << " ";
         }
         puts(" <- real distance");
@@ -122,10 +125,10 @@ void solve(int data_size, int d) {
     vector<float> dataset(1LL * data_size * d);
     srand(0);
     for (int i = 0; i < data_size; i++)
-        randvector(dataset.data() + 1LL * i * d, d);
+        randvector(dataset, i, d);
     vector<float> query(1LL * test_iter * d);
     for (int i = 0; i < test_iter; i++)
-        randvector(query.data() + 1LL * i * d, d);
+        randvector(query, i, d);
     puts("start solve");
     vector<int> result(topk * test_iter);
     auto before_build = std::chrono::high_resolution_clock::now();
@@ -144,7 +147,7 @@ void solve(int data_size, int d) {
     evaluate_accuracy(dataset, query, result, solution.distances, data_size, d);
     print_sample_results(dataset, query, result, solution.distances, d);
 
-    solution.index->reset();
+    solution.reset();
 }
 
 } // namespace

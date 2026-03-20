@@ -16,53 +16,53 @@ void Solution::build(int d, const vector<float> &base) {
     int size = base.size() / d;
     auto rnndescentindex = std::make_unique<rnndescent::IndexRNNDescent>(d, faiss::METRIC_L2);
     // auto rnndescentindex = new rnndescent::IndexRNNDescent(d, faiss::METRIC_INNER_PRODUCT);
-    auto *rnndescentindex_ptr = rnndescentindex.get();
-    rnndescentindex_ptr->build_config.num_threads = omp_get_max_threads();
-    rnndescentindex_ptr->search_config.num_threads = omp_get_max_threads();
-    rnndescentindex_ptr->search_config.beam_size = 8;
-    rnndescentindex_ptr->build_config.S = 196;
-    rnndescentindex_ptr->build_config.R = 2048;
-    rnndescentindex_ptr->build_config.T1 = 4;
-    rnndescentindex_ptr->build_config.T2 = 15;
-    rnndescentindex_ptr->verbose = true;
-    index = std::move(rnndescentindex);
+    auto &built_index = *rnndescentindex;
+    built_index.build_config.num_threads = omp_get_max_threads();
+    built_index.search_config.num_threads = omp_get_max_threads();
+    built_index.search_config.beam_size = 8;
+    built_index.build_config.S = 196;
+    built_index.build_config.R = 2048;
+    built_index.build_config.T1 = 4;
+    built_index.build_config.T2 = 15;
+    built_index.verbose = true;
 
     if (d == 256) {
-        rnndescentindex_ptr->search_config.num_initialize = 1024;
-        rnndescentindex_ptr->search_config.search_L = 512;
-        rnndescentindex_ptr->search_config.refine_max = 384;
-        rnndescentindex_ptr->build_config.K0 = 96;
+        built_index.search_config.num_initialize = 1024;
+        built_index.search_config.search_L = 512;
+        built_index.search_config.refine_max = 384;
+        built_index.build_config.K0 = 96;
     } else if (d == 512) {
-        rnndescentindex_ptr->search_config.num_initialize = 1024;
-        rnndescentindex_ptr->search_config.search_L = 244; // topk
-        rnndescentindex_ptr->search_config.refine_max = 64;
-        rnndescentindex_ptr->build_config.K0 = 64;
+        built_index.search_config.num_initialize = 1024;
+        built_index.search_config.search_L = 244; // topk
+        built_index.search_config.refine_max = 64;
+        built_index.build_config.K0 = 64;
         // rnndescentindex->rnndescent.search_L = 256;  // topk
         // rnndescentindex->rnndescent.K0 = 48;
 
         // rnndescentindex->rnndescent.search_L = 320;  // topk
         // rnndescentindex->rnndescent.K0 = 48;
     } else if (d == 1024) {
-        rnndescentindex_ptr->search_config.num_initialize = 160;
-        rnndescentindex_ptr->search_config.search_L = 116; // topk
-        rnndescentindex_ptr->search_config.refine_max = 128;
-        rnndescentindex_ptr->build_config.K0 = 32;
+        built_index.search_config.num_initialize = 160;
+        built_index.search_config.search_L = 116; // topk
+        built_index.search_config.refine_max = 128;
+        built_index.build_config.K0 = 32;
     } else if (d == 1536) {
-        rnndescentindex_ptr->search_config.num_initialize = 512;
-        rnndescentindex_ptr->search_config.search_L = 184; // topk
-        rnndescentindex_ptr->search_config.refine_max = 128;
-        rnndescentindex_ptr->build_config.K0 = 48;
+        built_index.search_config.num_initialize = 512;
+        built_index.search_config.search_L = 184; // topk
+        built_index.search_config.refine_max = 128;
+        built_index.build_config.K0 = 48;
     } else {
         throw std::runtime_error("Unsupported dimension");
     }
 
 #ifdef INTERNAL_CLOCK_TEST
-    rnndescentindex_ptr->build_config.S = 32;
-    rnndescentindex_ptr->build_config.R = 256;
+    built_index.build_config.S = 32;
+    built_index.build_config.R = 256;
 #endif
 
-    index->train({base.data(), size, d});
-    index->add({base.data(), size, d});
+    built_index.train({base.data(), size, d});
+    built_index.add({base.data(), size, d});
+    index = std::move(rnndescentindex);
 
     // warmup貌似有bug, 而且好像没啥用(好像还是有点点用? 本地测下来100分); 待修复
     // (代码里面那个usefulset不如直接heap里面用一用得了; 根本不需要额外开空间)
@@ -78,13 +78,13 @@ void Solution::build(int d, const vector<float> &base) {
     for (int i = 0; i < warmup_search_count; i++) {
         search(query, warmup_result);
     }
-    index->rnndescent.reset_time();
+    built_index.rnndescent.reset_time();
     auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - prevtime).count();
     printf("Warmup done in %f ms\n", warmup_time);
 }
 
 void Solution::search(const vector<float> &query, vector<int> &res) {
-    if (index == nullptr)
+    if (!index)
         throw std::runtime_error("search called before build");
     if (query.empty())
         return;
@@ -98,13 +98,13 @@ void Solution::search(const vector<float> &query, vector<int> &res) {
     assert(n <= querysize);
     if ((int)res.size() != n * topk)
         res.resize(n * topk);
-    index->search({query.data(), n, index->d}, {res.data(), distances, topk}); // 调低一下分数
+    index->search({query.data(), n, index->d}, {res.data(), distances.data(), topk}); // 调低一下分数
 }
 
 void Solution::test(int d, const vector<float> &base) {
     int size = base.size() / d;
 
-    if (index == nullptr) {
+    if (!index) {
         cout << "Test: Index not built" << endl;
         return;
     }
@@ -127,4 +127,9 @@ void Solution::test(int d, const vector<float> &base) {
     }
     float recall = float(correct) / cnt;
     std::cout << "Recall: " << recall << std::endl;
+}
+void Solution::reset() {
+    if (index) {
+        index->reset();
+    }
 }
