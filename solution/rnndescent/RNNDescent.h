@@ -113,8 +113,33 @@ struct RNNDescent {
 
 
 #ifdef INTERNAL_CLOCK_TEST
-    float init_time{0}, getneighbor_time{0}, calculate_time{0}, update_time{0}, recalculate_time{0};
-    long long query_count{0}, calculate_distance_count{0}, for_count{0}, bfs_length{0}, useful_count{0}, bfs_items{0};
+    struct PerfStats {
+        float init_time{0};
+        float getneighbor_time{0};
+        float calculate_time{0};
+        float update_time{0};
+        float recalculate_time{0};
+        long long query_count{0};
+        long long calculate_distance_count{0};
+        long long for_count{0};
+        long long bfs_length{0};
+        long long useful_count{0};
+        long long bfs_items{0};
+
+        void reset() {
+            init_time = 0;
+            getneighbor_time = 0;
+            calculate_time = 0;
+            update_time = 0;
+            recalculate_time = 0;
+            query_count = 0;
+            calculate_distance_count = 0;
+            for_count = 0;
+            bfs_length = 0;
+            useful_count = 0;
+            bfs_items = 0;
+        }
+    } perf_stats;
 #endif
     ~RNNDescent() { reset(); }
 
@@ -545,18 +570,18 @@ struct RNNDescent {
         {
             // 需要atomic加锁
             std::lock_guard<std::mutex> lock(m_mutex);
-            query_count++;
-            this->init_time += init_time;
-            this->getneighbor_time += getneighbor_time;
-            this->update_time += update_time;
-            this->calculate_time += calculate_time;
-            this->recalculate_time += recalculate_time;
-            this->calculate_distance_count += calcdis;
-            this->bfs_length += bfs_length;
-            this->for_count += for_count;
-            this->bfs_items += bfs_items;
-            this->calculate_distance_count += calculate_distance_count;
-            this->useful_count += useful_count;
+            perf_stats.query_count++;
+            perf_stats.init_time += init_time;
+            perf_stats.getneighbor_time += getneighbor_time;
+            perf_stats.update_time += update_time;
+            perf_stats.calculate_time += calculate_time;
+            perf_stats.recalculate_time += recalculate_time;
+            perf_stats.calculate_distance_count += calcdis;
+            perf_stats.bfs_length += bfs_length;
+            perf_stats.for_count += for_count;
+            perf_stats.bfs_items += bfs_items;
+            perf_stats.calculate_distance_count += calculate_distance_count;
+            perf_stats.useful_count += useful_count;
         }
 #endif
     }
@@ -566,19 +591,18 @@ struct RNNDescent {
 
     void reset_time() {
 #ifdef INTERNAL_CLOCK_TEST
-        if (query_count == 0) {
+        if (perf_stats.query_count == 0) {
             return;
         }
         printf("RNN Descent Running Time: mean bfs %f times; %f nodes; init_time = "
                "%f, getneighbor_time = %f, calculate_time = %f, update_time = %f; "
                "recalculate_time = %f; alltime = %f; calculate_dist_count = %f; "
                "for_count = %f; useful_count = %f\n",
-               (float)bfs_length / query_count, (float)bfs_items / query_count, init_time / query_count, getneighbor_time / query_count,
-               calculate_time / query_count, update_time / query_count, recalculate_time / query_count,
-               (init_time + getneighbor_time + calculate_time + update_time + recalculate_time) / query_count, (float)calculate_distance_count / query_count,
-               (float)for_count / query_count, (float)useful_count / query_count);
-        init_time = 0, getneighbor_time = 0, calculate_time = 0, update_time = 0, recalculate_time = 0;
-        query_count = 0, calculate_distance_count = 0, for_count = 0, bfs_length = 0, useful_count = 0, bfs_items = 0;
+               (float)perf_stats.bfs_length / perf_stats.query_count, (float)perf_stats.bfs_items / perf_stats.query_count, perf_stats.init_time / perf_stats.query_count, perf_stats.getneighbor_time / perf_stats.query_count,
+               perf_stats.calculate_time / perf_stats.query_count, perf_stats.update_time / perf_stats.query_count, perf_stats.recalculate_time / perf_stats.query_count,
+               (perf_stats.init_time + perf_stats.getneighbor_time + perf_stats.calculate_time + perf_stats.update_time + perf_stats.recalculate_time) / perf_stats.query_count, (float)perf_stats.calculate_distance_count / perf_stats.query_count,
+               (float)perf_stats.for_count / perf_stats.query_count, (float)perf_stats.useful_count / perf_stats.query_count);
+        perf_stats.reset();
 #endif
     }
 
@@ -605,7 +629,6 @@ struct RNNDescent {
         graph.reserve(ntotal);
         graph.resize(ntotal);
         for (int i = 0; i < ntotal; i++) {
-            // graph[i].reserve(initialize_L);
             graph[i].reserve(build_config.R * 2);
         }
 
@@ -760,8 +783,6 @@ struct RNNDescent {
 
 
     int d;                // dimensions
-    int initialize_L = 8; // initial size of memory allocation
-
     int ntotal = 0;
 
     std::vector<NeighborsContainerType> final_graph_neighbors;
