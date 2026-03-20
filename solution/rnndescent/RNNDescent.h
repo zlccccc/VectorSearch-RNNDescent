@@ -91,6 +91,27 @@ struct RNNDescent {
         int refine_max = 64;
     };
 
+    static BuildConfig sanitize_build_config(BuildConfig config) {
+        config.T1 = std::max(config.T1, 1);
+        config.T2 = std::max(config.T2, 1);
+        config.S = std::max(config.S, 1);
+        config.R = std::max(config.R, 1);
+        config.K0 = std::max(config.K0, 1);
+        config.num_threads = std::max(config.num_threads, 1);
+        return config;
+    }
+
+    static SearchConfig sanitize_search_config(SearchConfig config, int topk = 1) {
+        config.beam_size = std::max(config.beam_size, 1);
+        config.num_threads = std::max(config.num_threads, 1);
+        config.search_L = std::max(config.search_L, std::max(1, topk));
+        config.num_initialize = std::max(config.num_initialize, config.search_L);
+        if (config.num_initialize % 4 != 0)
+            config.num_initialize = (config.num_initialize + 3) / 4 * 4;
+        config.refine_max = std::max(config.refine_max, std::max(topk, 1));
+        return config;
+    };
+
     static void gen_random(std::mt19937 &rng, int *addr, const int size, const int N) { // 好像这个有极小概率random出错啊...shuffle最简单
         for (int i = 0; i < size; ++i) {
             addr[i] = rng() % (N - size);
@@ -192,9 +213,19 @@ struct RNNDescent {
     }
 
     void build(const int n, bool verbose, const float *x, const BuildConfig &build_config, const SearchConfig &search_config) {
+        FAISS_THROW_IF_NOT_MSG(x != nullptr, "build data pointer is null");
+        FAISS_THROW_IF_NOT_MSG(n > 0, "build requires at least one vector");
+        FAISS_THROW_IF_NOT_MSG(d > 0, "build requires a positive dimension");
+
+        const BuildConfig safe_build_config = sanitize_build_config(build_config);
+        const SearchConfig safe_search_config = sanitize_search_config(search_config);
+
+        reset();
+        lockwarppers.clear();
+
         if (verbose)
-            printf("Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", build_config.S, build_config.R, build_config.T1, build_config.T2, n,
-                   search_config.num_threads);
+            printf("Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", safe_build_config.S, safe_build_config.R, safe_build_config.T1,
+                   safe_build_config.T2, n, safe_search_config.num_threads);
         NeighborsContainerType::clear_memory();
 
         std::vector<std::vector<int>> edges; // distance并不重要
@@ -202,7 +233,7 @@ struct RNNDescent {
         {
             KNNGraph graph;
             ntotal = n;
-            generate_graph(graph, x, verbose, build_config); // highest level
+            generate_graph(graph, x, verbose, safe_build_config); // highest level
                                                // #pragma omp parallel for
             std::set<int> S; // 不能重复
             for (int i = 0; i < n; i++) {
@@ -228,13 +259,13 @@ struct RNNDescent {
             }
         }
         // 确定全局入口点
-        printf("n = %d; initialize = %d\n", n, search_config.num_initialize);
+        printf("n = %d; initialize = %d\n", n, safe_search_config.num_initialize);
         {
-            std::mt19937 rng(build_config.random_seed);
+            std::mt19937 rng(safe_build_config.random_seed);
             search_from_ids.reserve(ntotal);
-            search_from_ids.resize(search_config.num_initialize);
-            if (build_config.random_init)
-                gen_random(rng, search_from_ids.data(), search_config.num_initialize, n);
+            search_from_ids.resize(safe_search_config.num_initialize);
+            if (safe_build_config.random_init)
+                gen_random(rng, search_from_ids.data(), safe_search_config.num_initialize, n);
             else
                 iota(search_from_ids.begin(), search_from_ids.end(), 0);
         }
@@ -277,7 +308,7 @@ struct RNNDescent {
             }
 
             { // bfs重排后的cluster ID
-                std::vector<int> cluster_size(search_config.num_initialize);
+                std::vector<int> cluster_size(safe_search_config.num_initialize);
                 for (int i = 0; i < cluster_id.size(); i++)
                     cluster_size[cluster_id[i]]++;
                 for (int v : cluster_size)
@@ -318,26 +349,26 @@ struct RNNDescent {
             fastqdis = new SaveneighborDiscomputer(fastsearch_pool.data(), ntotal, d);
         }
         { // 空间局部性优化
-            NeighborsContainerType::init_neighbors_pool(d, edges, 16ll * 1024 * 1024 * 1024, build_config.save_neighbor);
+            NeighborsContainerType::init_neighbors_pool(d, edges, 16ll * 1024 * 1024 * 1024, safe_build_config.save_neighbor);
             for (int i = 0; i < ntotal; i++) {
                 int u = search_from_ids[i];
                 auto &pool = edges[u];
-                final_graph_neighbors.emplace_back(NeighborsContainerType(d, pool, fastqdis, rollback_ids, build_config.save_neighbor)); // 全部save
+                final_graph_neighbors.emplace_back(NeighborsContainerType(d, pool, fastqdis, rollback_ids, safe_build_config.save_neighbor)); // 全部save
             }
         }
         has_built = true;
 
-        threadVt.resize(search_config.num_threads);
-        threadRetset.resize(search_config.num_threads);
-        neighborDistance.resize(search_config.num_threads);
-        threadUsefulset.resize(search_config.num_threads);
-        threadFinalset.resize(search_config.num_threads);
-        for (int i = 0; i < search_config.num_threads; i++) {
+        threadVt.resize(safe_search_config.num_threads);
+        threadRetset.resize(safe_search_config.num_threads);
+        neighborDistance.resize(safe_search_config.num_threads);
+        threadUsefulset.resize(safe_search_config.num_threads);
+        threadFinalset.resize(safe_search_config.num_threads);
+        for (int i = 0; i < safe_search_config.num_threads; i++) {
             threadVt[i].init(ntotal);
-            threadRetset[i].reserve(std::max(search_config.num_initialize, search_config.search_L));
-            neighborDistance[i].reserve(search_config.search_L);
-            threadFinalset[i].reserve(search_config.search_L);
-            threadUsefulset[i].reserve(build_config.K0 * search_config.beam_size + 1);
+            threadRetset[i].reserve(std::max(safe_search_config.num_initialize, safe_search_config.search_L));
+            neighborDistance[i].reserve(safe_search_config.search_L);
+            threadFinalset[i].reserve(safe_search_config.search_L);
+            threadUsefulset[i].reserve(safe_build_config.K0 * safe_search_config.beam_size + 1);
         }
     }
 
@@ -352,11 +383,17 @@ struct RNNDescent {
 
     void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree, const int topk, int *indices,
                       float *dists, bool output) {
-        const int num_threads = search_config.num_threads;
-        const int beam_size = search_config.beam_size;
-        const int search_L = search_config.search_L;
-        const int num_initialize = search_config.num_initialize;
-        const int refine_max = search_config.refine_max;
+        FAISS_THROW_IF_NOT_MSG(indices != nullptr, "search result indices buffer is null");
+        FAISS_THROW_IF_NOT_MSG(dists != nullptr, "search result distance buffer is null");
+        FAISS_THROW_IF_NOT_MSG(topk > 0, "search topk must be positive");
+        FAISS_THROW_IF_NOT_MSG(max_degree > 0, "search max_degree must be positive");
+
+        const SearchConfig safe_search_config = sanitize_search_config(search_config, topk);
+        const int num_threads = safe_search_config.num_threads;
+        const int beam_size = safe_search_config.beam_size;
+        const int search_L = safe_search_config.search_L;
+        const int num_initialize = safe_search_config.num_initialize;
+        const int refine_max = safe_search_config.refine_max;
         assert(0 <= threadid && threadid < num_threads);
 #ifdef INTERNAL_CLOCK_TEST
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = prevtime;

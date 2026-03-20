@@ -46,7 +46,7 @@ struct IndexRNNDescent {
     RNNDescent::BuildConfig build_config;
     RNNDescent::SearchConfig search_config;
 
-    explicit IndexRNNDescent(int d = 0, faiss::MetricType metric = faiss::METRIC_L2) : d(d), rnndescent(d), metric_type(metric), ntotal(0) {}
+    explicit IndexRNNDescent(int d = 0, faiss::MetricType metric = faiss::METRIC_L2) : verbose(false), d(d), rnndescent(d), metric_type(metric), ntotal(0) {}
 
     ~IndexRNNDescent() { reset(); }
 
@@ -58,12 +58,17 @@ struct IndexRNNDescent {
     void add(idx_t n, const float *x) {
         FAISS_THROW_IF_NOT(is_trained);
         FAISS_THROW_IF_NOT(ntotal == 0); // 暂时不支持增删
+        FAISS_THROW_IF_NOT_MSG(x != nullptr, "add data pointer is null");
+        FAISS_THROW_IF_NOT_MSG(n > 0, "add requires at least one vector");
 
         if (ntotal != 0) {
             fprintf(stderr, "WARNING NNDescent doest not support dynamic insertions,"
                             "multiple insertions would lead to re-building the index");
         }
         assert(metric_type == faiss::METRIC_L2); // IP不支持了; disComputer在里面初始化
+
+        build_config = RNNDescent::sanitize_build_config(build_config);
+        search_config = RNNDescent::sanitize_search_config(search_config);
 
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = std::chrono::high_resolution_clock::now();
         float process_time;
@@ -129,6 +134,8 @@ struct IndexRNNDescent {
     }
 
     void train(idx_t n, const float *x) {
+        FAISS_THROW_IF_NOT_MSG(x != nullptr, "train data pointer is null");
+        FAISS_THROW_IF_NOT_MSG(n > 0, "train requires at least one vector");
         // nndescent structure does not require training
         is_trained = true;
     }
@@ -171,7 +178,13 @@ struct IndexRNNDescent {
 
     void search(idx_t n, const float *x, idx_t k, float *distances, int *labels, const faiss::SearchParameters *params = nullptr) {
         FAISS_THROW_IF_NOT_MSG(!params, "search params not supported for this index");
-        FAISS_THROW_IF_NOT(disComputer);
+        FAISS_THROW_IF_NOT_MSG(disComputer != nullptr, "index has not been built");
+        FAISS_THROW_IF_NOT_MSG(rnndescent.fastqdis != nullptr, "search graph has not been initialized");
+        FAISS_THROW_IF_NOT_MSG(x != nullptr, "query pointer is null");
+        FAISS_THROW_IF_NOT_MSG(distances != nullptr, "distance output buffer is null");
+        FAISS_THROW_IF_NOT_MSG(labels != nullptr, "label output buffer is null");
+        FAISS_THROW_IF_NOT_MSG(n > 0, "search requires at least one query");
+        FAISS_THROW_IF_NOT_MSG(k > 0, "search requires positive top-k");
         auto searchstarttime = std::chrono::high_resolution_clock::now();
 
 #ifdef INTERNAL_CLOCK_TEST

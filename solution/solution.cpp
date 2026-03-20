@@ -6,6 +6,16 @@
 #include <faiss/IndexNNDescent.h>
 
 void Solution::build(int d, const vector<float> &base) {
+    if (d <= 0)
+        throw std::runtime_error("build dimension must be positive");
+    if (base.empty())
+        throw std::runtime_error("base vectors must not be empty");
+    if (base.size() % d != 0)
+        throw std::runtime_error("base size must be divisible by dimension");
+    if (index != nullptr) {
+        delete index;
+        index = nullptr;
+    }
     int size = base.size() / d;
     auto rnndescentindex = new rnndescent::IndexRNNDescent(d, faiss::METRIC_L2);
     // auto rnndescentindex = new rnndescent::IndexRNNDescent(d, faiss::METRIC_INNER_PRODUCT);
@@ -75,6 +85,14 @@ void Solution::build(int d, const vector<float> &base) {
 }
 
 void Solution::search(const vector<float> &query, int *res) {
+    if (index == nullptr)
+        throw std::runtime_error("search called before build");
+    if (res == nullptr)
+        throw std::runtime_error("result buffer must not be null");
+    if (query.empty())
+        return;
+    if (query.size() % index->d != 0)
+        throw std::runtime_error("query size must be divisible by index dimension");
     // #pragma omp parallel for
     // for (int k = 0; k < query.size() / index->d; k++) {
     //     index->searchSingle(&query[k * index->d], topk, distances, res + k * topk);
