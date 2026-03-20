@@ -73,6 +73,68 @@ make -j$(nproc)
 
 ## 使用方法
 
+## Benchmark 模式
+
+当前主程序支持两种 benchmark 模式：
+
+1. 随机数据压测
+2. 真实数据集压测（参考 `rnn-descent/benches` 的思路）
+
+### 随机数据压测
+
+```bash
+./build/algorithm
+./build/algorithm --mode random --data-size 100000 --dim 256 --topk 10 --repeat 5
+```
+
+### 数据集压测
+
+如果目录下包含类似下面这些文件：
+
+- `base.fvecs` 或 `base.bvecs`
+- `query.fvecs` 或 `query.bvecs`
+- `groundtruth.ivecs` 或 `gt.ivecs`
+
+可以直接跑：
+
+```bash
+./build/algorithm --mode dataset --dataset-dir /path/to/siftsmall --topk 10 --repeat 5
+```
+
+也可以手动指定文件：
+
+```bash
+./build/algorithm --mode dataset \
+  --base /path/to/base.fvecs \
+  --query /path/to/query.fvecs \
+  --gt /path/to/groundtruth.ivecs \
+  --topk 10 --repeat 5
+```
+
+### 支持格式
+
+- dense vectors: `fvecs`, `bvecs`
+- ground truth: `ivecs`
+
+### 结果落盘
+
+每次 benchmark 会自动把结果写到：
+
+```
+benches/results/<dataset_name>/latest.txt
+benches/results/<dataset_name>/<timestamp>.txt
+```
+
+结果文件会包含：
+
+- build 时间
+- 每轮 query latency
+- 平均/最小/最大 latency
+- recall
+- 距离误差
+- top1 gap
+
+
 ### 基本使用
 
 编译完成后，可以直接运行生成的可执行文件：

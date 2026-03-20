@@ -36,6 +36,28 @@ struct BenchmarkConfig {
     int warmup_topk = 10;
 };
 
+struct AccuracyStats {
+    int checked_queries = 0;
+    int recall_k = 0;
+    double recall1 = 0.0;
+    double recallk = 0.0;
+    double avg_distance_error = 0.0;
+    double max_distance_error = 0.0;
+    double avg_top1_gap = 0.0;
+    string top1_gap_label = "exact";
+};
+
+struct BenchmarkStats {
+    double build_seconds = 0.0;
+    vector<float> latency_ms;
+    AccuracyStats accuracy;
+};
+
+string sanitize_name(string name);
+string timestamp_string();
+fs::path benchmark_results_root();
+void write_benchmark_report(const BenchmarkConfig &config, const BenchmarkStats &stats);
+
 float calc_l2_sqr(const vector<float> &lhs, int lhs_idx, const vector<float> &rhs, int rhs_idx, int dim) {
     float res = 0.0f;
     const size_t lhs_offset = 1ULL * lhs_idx * dim;
@@ -260,8 +282,8 @@ void print_sample_results(const vector<float> &dataset, const vector<float> &que
     }
 }
 
-void evaluate_accuracy_exact(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const vector<float> &solution_distances, int data_size,
-                             int dim, int topk, int checked_queries) {
+AccuracyStats evaluate_accuracy_exact(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const vector<float> &solution_distances, int data_size,
+                                       int dim, int topk, int checked_queries) {
     const int query_count = (int)query.size() / dim;
     checked_queries = min(query_count, checked_queries);
     double total_recall1 = 0.0;
@@ -292,18 +314,26 @@ void evaluate_accuracy_exact(const vector<float> &dataset, const vector<float> &
         avg_top1_gap += solution_distances[qi * topk] - gt[0].first;
     }
 
-    avg_distance_error /= checked_queries * topk;
-    avg_top1_gap /= checked_queries;
-    cout << "exact-check queries: " << checked_queries << endl;
-    cout << "recall@1: " << total_recall1 / checked_queries << endl;
-    cout << "recall@" << topk << ": " << total_recall10 / checked_queries << endl;
-    cout << "avg returned distance abs error: " << avg_distance_error << endl;
-    cout << "max returned distance abs error: " << max_distance_error << endl;
-    cout << "avg top1 distance gap vs exact: " << avg_top1_gap << endl;
+    AccuracyStats stats;
+    stats.checked_queries = checked_queries;
+    stats.recall_k = topk;
+    stats.recall1 = total_recall1 / checked_queries;
+    stats.recallk = total_recall10 / checked_queries;
+    stats.avg_distance_error = avg_distance_error / (checked_queries * topk);
+    stats.max_distance_error = max_distance_error;
+    stats.avg_top1_gap = avg_top1_gap / checked_queries;
+    stats.top1_gap_label = "exact";
+    cout << "exact-check queries: " << stats.checked_queries << endl;
+    cout << "recall@1: " << stats.recall1 << endl;
+    cout << "recall@" << topk << ": " << stats.recallk << endl;
+    cout << "avg returned distance abs error: " << stats.avg_distance_error << endl;
+    cout << "max returned distance abs error: " << stats.max_distance_error << endl;
+    cout << "avg top1 distance gap vs exact: " << stats.avg_top1_gap << endl;
+    return stats;
 }
 
-void evaluate_accuracy_with_gt(const vector<float> &dataset, const vector<float> &query, const GroundTruth &gt, const vector<int> &result,
-                               const vector<float> &solution_distances, int dim, int topk) {
+AccuracyStats evaluate_accuracy_with_gt(const vector<float> &dataset, const vector<float> &query, const GroundTruth &gt, const vector<int> &result,
+                                         const vector<float> &solution_distances, int dim, int topk) {
     const int query_count = min((int)query.size() / dim, gt.rows);
     const int recall_k = min(topk, gt.width);
     double total_recall1 = 0.0;
@@ -337,18 +367,27 @@ void evaluate_accuracy_with_gt(const vector<float> &dataset, const vector<float>
         avg_top1_gap += solution_distances[qi * topk] - gt_top1_dist;
     }
 
-    avg_distance_error /= query_count * topk;
-    avg_top1_gap /= query_count;
-    cout << "gt-check queries: " << query_count << endl;
-    cout << "recall@1: " << total_recall1 / query_count << endl;
-    cout << "recall@" << recall_k << ": " << total_recallk / query_count << endl;
-    cout << "avg returned distance abs error: " << avg_distance_error << endl;
-    cout << "max returned distance abs error: " << max_distance_error << endl;
-    cout << "avg top1 distance gap vs gt top1: " << avg_top1_gap << endl;
+    AccuracyStats stats;
+    stats.checked_queries = query_count;
+    stats.recall_k = recall_k;
+    stats.recall1 = total_recall1 / query_count;
+    stats.recallk = total_recallk / query_count;
+    stats.avg_distance_error = avg_distance_error / (query_count * topk);
+    stats.max_distance_error = max_distance_error;
+    stats.avg_top1_gap = avg_top1_gap / query_count;
+    stats.top1_gap_label = "gt top1";
+    cout << "gt-check queries: " << stats.checked_queries << endl;
+    cout << "recall@1: " << stats.recall1 << endl;
+    cout << "recall@" << recall_k << ": " << stats.recallk << endl;
+    cout << "avg returned distance abs error: " << stats.avg_distance_error << endl;
+    cout << "max returned distance abs error: " << stats.max_distance_error << endl;
+    cout << "avg top1 distance gap vs gt top1: " << stats.avg_top1_gap << endl;
+    return stats;
 }
 
 void run_random_benchmark(const BenchmarkConfig &config) {
     Solution solution;
+    BenchmarkStats stats;
     puts("start random benchmark");
     vector<float> dataset(1ULL * config.data_size * config.dim);
     srand(0);
@@ -363,22 +402,26 @@ void run_random_benchmark(const BenchmarkConfig &config) {
     const auto before_build = chrono::high_resolution_clock::now();
     solution.build(config.dim, dataset, config.warmup_topk);
     const auto after_build = chrono::high_resolution_clock::now();
-    cout << "build time: " << chrono::duration<double>(after_build - before_build).count() << endl;
+    stats.build_seconds = chrono::duration<double>(after_build - before_build).count();
+    cout << "build time: " << stats.build_seconds << endl;
 
     for (int i = 0; i < config.repeat; i++) {
         const auto before_test = chrono::high_resolution_clock::now();
         solution.search(query, result, config.topk);
         const auto after_test = chrono::high_resolution_clock::now();
         const float t = chrono::duration<double, milli>(after_test - before_test).count() / config.test_iter;
+        stats.latency_ms.push_back(t);
         cout << "[" << i << "] average test time: " << t << " ms; " << 1000. / t << " offline score" << endl;
     }
 
-    evaluate_accuracy_exact(dataset, query, result, solution.distances, config.data_size, config.dim, config.topk, config.exact_check_queries);
+    stats.accuracy = evaluate_accuracy_exact(dataset, query, result, solution.distances, config.data_size, config.dim, config.topk, config.exact_check_queries);
     print_sample_results(dataset, query, result, solution.distances, config.dim, config.topk, config.output_iter);
+    write_benchmark_report(config, stats);
     solution.reset();
 }
 
 void run_dataset_benchmark(BenchmarkConfig config) {
+    BenchmarkStats stats;
     resolve_dataset_paths(config);
     cout << "dataset mode: " << (config.dataset_name.empty() ? string("custom") : config.dataset_name) << endl;
     cout << "base: " << config.base_path << endl;
@@ -410,21 +453,116 @@ void run_dataset_benchmark(BenchmarkConfig config) {
     const auto before_build = chrono::high_resolution_clock::now();
     solution.build(dataset.dim, dataset.values, config.warmup_topk);
     const auto after_build = chrono::high_resolution_clock::now();
-    cout << "build time: " << chrono::duration<double>(after_build - before_build).count() << endl;
+    stats.build_seconds = chrono::duration<double>(after_build - before_build).count();
+    cout << "build time: " << stats.build_seconds << endl;
 
     for (int i = 0; i < config.repeat; i++) {
         const auto before_test = chrono::high_resolution_clock::now();
         solution.search(query.values, result, config.topk);
         const auto after_test = chrono::high_resolution_clock::now();
         const float t = chrono::duration<double, milli>(after_test - before_test).count() / query.rows;
+        stats.latency_ms.push_back(t);
         cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " qps(k)" << endl;
     }
 
     if (gt.rows > 0) {
-        evaluate_accuracy_with_gt(dataset.values, query.values, gt, result, solution.distances, dataset.dim, config.topk);
+        stats.accuracy = evaluate_accuracy_with_gt(dataset.values, query.values, gt, result, solution.distances, dataset.dim, config.topk);
     }
     print_sample_results(dataset.values, query.values, result, solution.distances, dataset.dim, config.topk, config.output_iter);
+    write_benchmark_report(config, stats);
     solution.reset();
+}
+
+
+string sanitize_name(string name) {
+    if (name.empty())
+        return "random";
+    for (char &c : name) {
+        const bool ok = isalnum((unsigned char)c) || c == '-' || c == '_';
+        if (!ok)
+            c = '_';
+    }
+    return name;
+}
+
+string timestamp_string() {
+    const auto now = chrono::system_clock::now();
+    const time_t tt = chrono::system_clock::to_time_t(now);
+    std::tm tm = *std::localtime(&tt);
+    ostringstream oss;
+    oss << put_time(&tm, "%Y%m%d-%H%M%S");
+    return oss.str();
+}
+
+fs::path benchmark_results_root() {
+    if (const char *result_dir = std::getenv("RESULT_DIR"); result_dir != nullptr && *result_dir != '\0') {
+        return fs::path(result_dir);
+    }
+
+    const fs::path cwd = fs::current_path();
+    if (fs::exists(cwd / "CMakeCache.txt") && fs::exists(cwd.parent_path() / "CMakeLists.txt")) {
+        return cwd.parent_path() / "benches" / "results";
+    }
+    return cwd / "benches" / "results";
+}
+
+void write_benchmark_report(const BenchmarkConfig &config, const BenchmarkStats &stats) {
+    const string dataset_key = sanitize_name(config.mode == "dataset" ? config.dataset_name : (string("random-") + to_string(config.dim) + "d"));
+    const char *result_dir = std::getenv("RESULT_DIR");
+    const bool has_result_dir = result_dir != nullptr && *result_dir != char(0);
+    const fs::path out_dir = has_result_dir ? fs::path(result_dir) : (benchmark_results_root() / dataset_key);
+    fs::create_directories(out_dir);
+
+    const string stamp = timestamp_string();
+    const fs::path report_path = out_dir / (stamp + ".txt");
+    const fs::path latest_path = out_dir / "latest.txt";
+
+    ostringstream oss;
+    oss << "mode=" << config.mode << char(10);
+    if (config.dataset_name.empty() == false)
+        oss << "dataset_name=" << config.dataset_name << char(10);
+    if (config.dataset_dir.empty() == false)
+        oss << "dataset_dir=" << config.dataset_dir << char(10);
+    if (config.base_path.empty() == false)
+        oss << "base_path=" << config.base_path << char(10);
+    if (config.query_path.empty() == false)
+        oss << "query_path=" << config.query_path << char(10);
+    if (config.gt_path.empty() == false)
+        oss << "gt_path=" << config.gt_path << char(10);
+    oss << "dim=" << config.dim << char(10);
+    oss << "topk=" << config.topk << char(10);
+    oss << "repeat=" << config.repeat << char(10);
+    oss << "warmup_topk=" << config.warmup_topk << char(10);
+    oss << "build_seconds=" << stats.build_seconds << char(10);
+    for (size_t i = 0; i < stats.latency_ms.size(); i++) {
+        oss << "latency_ms[" << i << "]=" << stats.latency_ms[i] << char(10);
+    }
+    if (stats.latency_ms.empty() == false) {
+        const float min_latency = *min_element(stats.latency_ms.begin(), stats.latency_ms.end());
+        const float max_latency = *max_element(stats.latency_ms.begin(), stats.latency_ms.end());
+        const double avg_latency = accumulate(stats.latency_ms.begin(), stats.latency_ms.end(), 0.0) / stats.latency_ms.size();
+        oss << "latency_ms_avg=" << avg_latency << char(10);
+        oss << "latency_ms_min=" << min_latency << char(10);
+        oss << "latency_ms_max=" << max_latency << char(10);
+    }
+    if (stats.accuracy.checked_queries > 0) {
+        oss << "checked_queries=" << stats.accuracy.checked_queries << char(10);
+        oss << "recall@1=" << stats.accuracy.recall1 << char(10);
+        oss << "recall@" << stats.accuracy.recall_k << "=" << stats.accuracy.recallk << char(10);
+        oss << "avg_distance_error=" << stats.accuracy.avg_distance_error << char(10);
+        oss << "max_distance_error=" << stats.accuracy.max_distance_error << char(10);
+        oss << "avg_top1_gap(" << stats.accuracy.top1_gap_label << ")=" << stats.accuracy.avg_top1_gap << char(10);
+    }
+
+    const string report = oss.str();
+    ofstream report_file(report_path);
+    ofstream latest_file(latest_path);
+    if (report_file.good() == false || latest_file.good() == false) {
+        throw runtime_error("failed to open benchmark report output under: " + out_dir.string());
+    }
+    report_file << report;
+    latest_file << report;
+    cout << "saved benchmark report: " << report_path << endl;
 }
 
 void print_usage(const char *prog) {
