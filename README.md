@@ -89,6 +89,15 @@ make -j$(nproc)
 
 ### 数据集压测
 
+如果还没有数据集，可以先下载：
+
+```bash
+sh benches/download_dataset.sh siftsmall
+sh benches/download_dataset.sh sift
+sh benches/download_dataset.sh gist
+```
+
+
 如果目录下包含类似下面这些文件：
 
 - `base.fvecs` 或 `base.bvecs`
