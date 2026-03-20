@@ -135,7 +135,7 @@ void solve(int data_size, int d) {
 
     for (int i = 0; i < 10; i++) {
         auto before_test = std::chrono::high_resolution_clock::now();
-        solution.search(query, result.data());
+        solution.search(query, result);
         auto after_test = std::chrono::high_resolution_clock::now();
         float t = std::chrono::duration<double, std::milli>(after_test - before_test).count() / test_iter;
         cout << "[" << i << "] average test time: " << t << " ms; " << 1000. / t << " offline score" << endl;

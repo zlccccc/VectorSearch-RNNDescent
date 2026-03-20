@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <faiss/Index.h>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 using namespace std;
@@ -14,16 +15,11 @@ const int topk = 10;
 class Solution {
   public:
     void build(int d, const vector<float> &base);
-    void search(const vector<float> &query, int *res);
+    void search(const vector<float> &query, vector<int> &res);
     void test(int d, const vector<float> &base);
-    rnndescent::IndexRNNDescent *index = nullptr;
+    std::unique_ptr<rnndescent::IndexRNNDescent> index;
     float distances[topk * querysize];
-    ~Solution() {
-        if (index != nullptr) {
-            delete index;
-            index = nullptr;
-        }
-    }
+    ~Solution() = default;
 };
 
 #endif

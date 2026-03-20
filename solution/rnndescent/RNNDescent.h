@@ -63,6 +63,52 @@ using NeighborsContainerType = SelectedNeighborsContainerType;
 using SaveneighborDiscomputer = SelectedSaveNeighborDiscomputer;
 
 struct RNNDescent {
+    struct FloatMatrixView {
+        const float *data = nullptr;
+        int rows = 0;
+        int dim = 0;
+
+        void validate(const char *name) const {
+            (void)name;
+            FAISS_THROW_IF_NOT_MSG(data != nullptr, "matrix view data pointer is null");
+            FAISS_THROW_IF_NOT_MSG(rows > 0, "matrix view requires positive row count");
+            FAISS_THROW_IF_NOT_MSG(dim > 0, "matrix view requires positive dimension");
+        }
+
+        const float *row_ptr(int row) const {
+            return data + (size_t)row * dim;
+        }
+    };
+
+    struct MutableFloatMatrixView {
+        float *data = nullptr;
+        int rows = 0;
+        int dim = 0;
+
+        void validate(const char *name) const {
+            (void)name;
+            FAISS_THROW_IF_NOT_MSG(data != nullptr, "mutable matrix view data pointer is null");
+            FAISS_THROW_IF_NOT_MSG(rows > 0, "mutable matrix view requires positive row count");
+            FAISS_THROW_IF_NOT_MSG(dim > 0, "mutable matrix view requires positive dimension");
+        }
+
+        float *row_ptr(int row) const {
+            return data + (size_t)row * dim;
+        }
+    };
+
+    struct SearchResultView {
+        int *indices = nullptr;
+        float *distances = nullptr;
+        int topk = 0;
+
+        void validate() const {
+            FAISS_THROW_IF_NOT_MSG(indices != nullptr, "search result indices buffer is null");
+            FAISS_THROW_IF_NOT_MSG(distances != nullptr, "search result distance buffer is null");
+            FAISS_THROW_IF_NOT_MSG(topk > 0, "search topk must be positive");
+        }
+    };
+
     struct BuildConfig {
         int T1 = 4;
         int T2 = 15;
@@ -104,19 +150,27 @@ struct RNNDescent {
         return config;
     };
 
-    static void gen_random(std::mt19937 &rng, int *addr, const int size, const int N) { // 好像这个有极小概率random出错啊...shuffle最简单
+    static void gen_random(std::mt19937 &rng, std::vector<int> &addr, const int N) {
+        const int size = addr.size();
+        FAISS_THROW_IF_NOT_MSG(0 <= size && size <= N, "gen_random requires 0 <= size <= N");
+        if (size == 0)
+            return;
+
+        // Partial Fisher-Yates shuffle with sparse swaps: sample `size` unique ids from [0, N)
+        // without materializing the full range.
+        std::unordered_map<int, int> swapped;
+        swapped.reserve(size * 2);
         for (int i = 0; i < size; ++i) {
-            addr[i] = rng() % (N - size);
-        }
-        std::sort(addr, addr + size);
-        for (int i = 1; i < size; ++i) {
-            if (addr[i] <= addr[i - 1]) {
-                addr[i] = addr[i - 1] + 1;
-            }
-        }
-        int off = rng() % N;
-        for (int i = 0; i < size; ++i) {
-            addr[i] = (addr[i] + off) % N;
+            std::uniform_int_distribution<int> dist(i, N - 1);
+            const int j = dist(rng);
+
+            const auto it_i = swapped.find(i);
+            const int value_i = (it_i == swapped.end()) ? i : it_i->second;
+            const auto it_j = swapped.find(j);
+            const int value_j = (it_j == swapped.end()) ? j : it_j->second;
+
+            swapped[j] = value_i;
+            addr[i] = value_j;
         }
     }
 
@@ -155,18 +209,19 @@ struct RNNDescent {
 #endif
     ~RNNDescent() { reset(); }
 
-    MyDistanceComputer *GenerateDistanceComputer(const float *data, int n) {
+    std::unique_ptr<MyDistanceComputer> GenerateDistanceComputer(const FloatMatrixView &data_view) {
+        data_view.validate("distance computer input");
         // return new FaissDistanceComputerL2(data, n, dim);
         // return new CblasDistanceComputerFP32L2(data, n, d);
         // return new SimdDistanceComputerFP16L2(data, n, dim);
-        return new SimdDistanceComputerInt8L2(data, n, d);
+        return std::make_unique<SimdDistanceComputerInt8L2>(data_view.data, data_view.rows, d);
         // return new SimdDistanceComputerInt8L2Norm(data, n, dim);
         throw std::runtime_error("Invalid metric type");
     }
 
-    void generate_graph(KNNGraph &graph, const float *x, bool verbose, const BuildConfig &build_config) {
+    void generate_graph(KNNGraph &graph, const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config) {
         printf("generte graph ntotal = %d\n", ntotal);
-        auto qdis = GenerateDistanceComputer(x, ntotal);
+        auto qdis = GenerateDistanceComputer(data_view);
         init_graph(graph, *qdis, build_config);
         for (int t1 = 0; t1 < build_config.T1; ++t1) {
             if (verbose)
@@ -182,7 +237,6 @@ struct RNNDescent {
             if (t1 != build_config.T1 - 1)
                 add_reverse_edges(graph, build_config);
         }
-        delete qdis;
 
 #pragma omp parallel for
         for (int u = 0; u < ntotal; ++u) { // remove edges
@@ -203,13 +257,13 @@ struct RNNDescent {
         printf("graph edges size = %d\n", all_edges_size);
     }
 
-    void build(const int n, bool verbose, const float *x, const BuildConfig &build_config, const SearchConfig &search_config) {
-        FAISS_THROW_IF_NOT_MSG(x != nullptr, "build data pointer is null");
-        FAISS_THROW_IF_NOT_MSG(n > 0, "build requires at least one vector");
-        FAISS_THROW_IF_NOT_MSG(d > 0, "build requires a positive dimension");
+    void build(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config, const SearchConfig &search_config) {
+        data_view.validate("build data");
+        FAISS_THROW_IF_NOT_MSG(data_view.dim == d, "build data dimension does not match index dimension");
 
         const BuildConfig safe_build_config = sanitize_build_config(build_config);
         const SearchConfig safe_search_config = sanitize_search_config(search_config);
+        const int n = data_view.rows;
 
         reset();
         lockwarppers.clear();
@@ -224,7 +278,7 @@ struct RNNDescent {
         {
             KNNGraph graph;
             ntotal = n;
-            generate_graph(graph, x, verbose, safe_build_config); // highest level
+            generate_graph(graph, data_view, verbose, safe_build_config); // highest level
                                                // #pragma omp parallel for
             std::set<int> S; // 不能重复
             for (int i = 0; i < n; i++) {
@@ -256,7 +310,7 @@ struct RNNDescent {
             search_from_ids.reserve(ntotal);
             search_from_ids.resize(safe_search_config.num_initialize);
             if (safe_build_config.random_init)
-                gen_random(rng, search_from_ids.data(), safe_search_config.num_initialize, n);
+                gen_random(rng, search_from_ids, n);
             else
                 iota(search_from_ids.begin(), search_from_ids.end(), 0);
         }
@@ -335,16 +389,16 @@ struct RNNDescent {
             for (int i = 0; i < ntotal; i++) {
                 int u = search_from_ids[i];
                 // printf("u = %d; matrix.size() = %d\n",u, matrix.size());
-                memcpy(fastsearch_pool.data() + i * d, x + u * d, d * sizeof(float));
+                memcpy(fastsearch_pool.data() + i * d, data_view.row_ptr(u), d * sizeof(float));
             }
-            fastqdis = new SaveneighborDiscomputer(fastsearch_pool.data(), ntotal, d);
+            fastqdis = std::make_unique<SaveneighborDiscomputer>(fastsearch_pool.data(), ntotal, d);
         }
         { // 空间局部性优化
             NeighborsContainerType::init_neighbors_pool(d, edges, 16ll * 1024 * 1024 * 1024, safe_build_config.save_neighbor);
             for (int i = 0; i < ntotal; i++) {
                 int u = search_from_ids[i];
                 auto &pool = edges[u];
-                final_graph_neighbors.emplace_back(NeighborsContainerType(d, pool, fastqdis, rollback_ids, safe_build_config.save_neighbor)); // 全部save
+                final_graph_neighbors.emplace_back(NeighborsContainerType(d, pool, fastqdis.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
             }
         }
         has_built = true;
@@ -372,12 +426,11 @@ struct RNNDescent {
     std::vector<std::vector<SingleNeighbor>> threadFinalset;
     std::vector<std::vector<float>> neighborDistance;
 
-    void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree, const int topk, int *indices,
-                      float *dists, bool output) {
-        FAISS_THROW_IF_NOT_MSG(indices != nullptr, "search result indices buffer is null");
-        FAISS_THROW_IF_NOT_MSG(dists != nullptr, "search result distance buffer is null");
-        FAISS_THROW_IF_NOT_MSG(topk > 0, "search topk must be positive");
+    void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree, const SearchResultView &result,
+                      bool output) {
+        result.validate();
         FAISS_THROW_IF_NOT_MSG(max_degree > 0, "search max_degree must be positive");
+        const int topk = result.topk;
 
         const SearchConfig safe_search_config = sanitize_search_config(search_config, topk);
         const int num_threads = safe_search_config.num_threads;
@@ -577,8 +630,8 @@ struct RNNDescent {
         }
 
         for (size_t i = 0; i < topk; i++) {
-            indices[i] = retset[i].id;
-            dists[i] = retset[i].distance;
+            result.indices[i] = retset[i].id;
+            result.distances[i] = retset[i].distance;
         }
 
         vt.advance();
@@ -648,10 +701,7 @@ struct RNNDescent {
         search_from_ids.resize(0);
         // std::vector<MyVisitedTable>().swap(threadVt); // 这个比较大
 
-        if (fastqdis != nullptr) {
-            delete fastqdis;
-            fastqdis = nullptr;
-        }
+        fastqdis.reset();
 
         reset_time();
     }
@@ -672,7 +722,7 @@ struct RNNDescent {
             for (int i = 0; i < ntotal; i++) {
                 std::vector<int> tmp(build_config.S);
 
-                gen_random(rng, tmp.data(), build_config.S, ntotal);
+                gen_random(rng, tmp, ntotal);
 
                 for (int j = 0; j < build_config.S; j++) {
                     int id = tmp[j];
@@ -818,7 +868,7 @@ struct RNNDescent {
     int ntotal = 0;
 
     std::vector<NeighborsContainerType> final_graph_neighbors;
-    MyDistanceComputer *fastqdis = nullptr; // 新的disComputer
+    std::unique_ptr<MyDistanceComputer> fastqdis; // 新的disComputer
     // std::vector<MyVisitedTable> threadVt;
 };
 
