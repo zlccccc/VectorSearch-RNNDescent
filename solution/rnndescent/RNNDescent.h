@@ -144,6 +144,12 @@ struct RNNDescent {
             return SearchResultView(indices, distances, topk);
         }
 
+        static SearchResultView from_vectors(std::vector<int> &indices, std::vector<float> &distances, int topk) {
+            FAISS_THROW_IF_NOT_MSG(topk > 0, "search topk must be positive");
+            FAISS_THROW_IF_NOT_MSG(indices.size() == distances.size(), "search result vector sizes must match");
+            return SearchResultView(indices.data(), distances.data(), topk);
+        }
+
         void validate() const {
             FAISS_THROW_IF_NOT_MSG(indices_ != nullptr, "search result indices buffer is null");
             FAISS_THROW_IF_NOT_MSG(distances_ != nullptr, "search result distance buffer is null");

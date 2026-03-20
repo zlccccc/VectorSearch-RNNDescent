@@ -62,8 +62,9 @@ void Solution::build(int d, const vector<float> &base, int warmup_topk) {
     built_index.build_config.R = 256;
 #endif
 
-    built_index.train({base.data(), size, d});
-    built_index.add({base.data(), size, d});
+    const auto base_view = rnndescent::RNNDescent::FloatMatrixView::from_vector(base, d);
+    built_index.train(base_view);
+    built_index.add(base_view);
     index = std::move(rnndescentindex);
 
     warmup(base, d, warmup_topk);
@@ -117,7 +118,9 @@ void Solution::search(const vector<float> &query, vector<int> &res, int topk) {
         res.resize(n * topk);
     if ((int)distances.size() != n * topk)
         distances.resize(n * topk);
-    index->search({query.data(), n, index->d}, {res.data(), distances.data(), topk}); // 调低一下分数
+    const auto query_view = rnndescent::RNNDescent::FloatMatrixView::from_vector(query, index->d);
+    const auto result_view = rnndescent::RNNDescent::SearchResultView::from_vectors(res, distances, topk);
+    index->search(query_view, result_view); // 调低一下分数
 }
 
 void Solution::test(int d, const vector<float> &base, int topk) {
@@ -133,9 +136,9 @@ void Solution::test(int d, const vector<float> &base, int topk) {
     mutex mtx;
     auto before_test = std::chrono::high_resolution_clock::now();
     // #pragma omp parallel for
-    float distances[size];
-    int labels[size];
-    index->search({base.data(), size, d}, {labels, distances, 1});
+    std::vector<float> distances(size);
+    std::vector<int> labels(size);
+    index->search(rnndescent::RNNDescent::FloatMatrixView::from_vector(base, d), rnndescent::RNNDescent::SearchResultView::from_vectors(labels, distances, 1));
     for (int i = 0; i < size; i++) {
         if (labels[i] == i)
             correct++;
