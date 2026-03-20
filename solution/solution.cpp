@@ -5,13 +5,15 @@
 #include <faiss/IndexIVFFlat.h>
 #include <faiss/IndexNNDescent.h>
 
-void Solution::build(int d, const vector<float> &base) {
+void Solution::build(int d, const vector<float> &base, int warmup_topk) {
     if (d <= 0)
         throw std::runtime_error("build dimension must be positive");
     if (base.empty())
         throw std::runtime_error("base vectors must not be empty");
     if (base.size() % d != 0)
         throw std::runtime_error("base size must be divisible by dimension");
+    if (warmup_topk <= 0)
+        throw std::runtime_error("warmup topk must be positive");
     index.reset();
     int size = base.size() / d;
     auto rnndescentindex = std::make_unique<rnndescent::IndexRNNDescent>(d, faiss::METRIC_L2);
@@ -74,18 +76,20 @@ void Solution::build(int d, const vector<float> &base) {
         int index = random() % size;
         memcpy(query.data() + d * i, base.data() + d * index, d * sizeof(float));
     }
-    std::vector<int> warmup_result(topk * warmup_count);
+    std::vector<int> warmup_result(warmup_topk * warmup_count);
     for (int i = 0; i < warmup_search_count; i++) {
-        search(query, warmup_result);
+        search(query, warmup_result, warmup_topk);
     }
     built_index.rnndescent.reset_time();
     auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - prevtime).count();
     printf("Warmup done in %f ms\n", warmup_time);
 }
 
-void Solution::search(const vector<float> &query, vector<int> &res) {
+void Solution::search(const vector<float> &query, vector<int> &res, int topk) {
     if (!index)
         throw std::runtime_error("search called before build");
+    if (topk <= 0)
+        throw std::runtime_error("search topk must be positive");
     if (query.empty())
         return;
     if (query.size() % index->d != 0)
@@ -95,14 +99,17 @@ void Solution::search(const vector<float> &query, vector<int> &res) {
     //     index->searchSingle(&query[k * index->d], topk, distances, res + k * topk);
     // }
     int n = query.size() / index->d;
-    assert(n <= querysize);
     if ((int)res.size() != n * topk)
         res.resize(n * topk);
+    if ((int)distances.size() != n * topk)
+        distances.resize(n * topk);
     index->search({query.data(), n, index->d}, {res.data(), distances.data(), topk}); // 调低一下分数
 }
 
-void Solution::test(int d, const vector<float> &base) {
+void Solution::test(int d, const vector<float> &base, int topk) {
     int size = base.size() / d;
+    if (topk <= 0)
+        throw std::runtime_error("test topk must be positive");
 
     if (!index) {
         cout << "Test: Index not built" << endl;

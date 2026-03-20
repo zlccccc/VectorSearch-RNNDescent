@@ -11,16 +11,14 @@
 
 using namespace std;
 
-const int querysize = 10000;
-const int topk = 10;
 class Solution {
   public:
-    void build(int d, const vector<float> &base);
-    void search(const vector<float> &query, vector<int> &res);
-    void test(int d, const vector<float> &base);
+    void build(int d, const vector<float> &base, int warmup_topk);
+    void search(const vector<float> &query, vector<int> &res, int topk);
+    void test(int d, const vector<float> &base, int topk);
     void reset();
     std::unique_ptr<rnndescent::IndexRNNDescent> index;
-    std::array<float, topk * querysize> distances{};
+    std::vector<float> distances;
     ~Solution() = default;
 };
 

@@ -7,6 +7,7 @@ namespace {
 int output_iter = 5;
 int test_iter = 10000;
 int exact_check_queries = 20;
+int eval_topk = 10;
 
 float calc_l2_sqr(const vector<float> &lhs, int lhs_idx, const vector<float> &rhs, int rhs_idx, int d) {
     float res = 0.0f;
@@ -58,8 +59,8 @@ vector<pair<float, int>> exact_topk(const vector<float> &dataset, const vector<f
     return result;
 }
 
-void evaluate_accuracy(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const std::array<float, topk * querysize> &solution_distances, int data_size,
-                       int d) {
+void evaluate_accuracy(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const vector<float> &solution_distances, int data_size,
+                       int d, int topk) {
     const int checked_queries = min((int)query.size() / d, exact_check_queries);
     double total_recall1 = 0.0;
     double total_recall10 = 0.0;
@@ -103,7 +104,7 @@ void evaluate_accuracy(const vector<float> &dataset, const vector<float> &query,
     cout << "avg top1 distance gap vs exact: " << avg_top1_gap << endl;
 }
 
-void print_sample_results(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const std::array<float, topk * querysize> &solution_distances, int d) {
+void print_sample_results(const vector<float> &dataset, const vector<float> &query, const vector<int> &result, const vector<float> &solution_distances, int d, int topk) {
     for (int i = 0; i < min(output_iter, (int)query.size() / d); i++) {
         for (int k = 0; k < topk; k++)
             cout << result[i * topk + k] << " ";
@@ -130,22 +131,22 @@ void solve(int data_size, int d) {
     for (int i = 0; i < test_iter; i++)
         randvector(query, i, d);
     puts("start solve");
-    vector<int> result(topk * test_iter);
+    vector<int> result(eval_topk * test_iter);
     auto before_build = std::chrono::high_resolution_clock::now();
-    solution.build(d, dataset);
+    solution.build(d, dataset, eval_topk);
     auto after_build = std::chrono::high_resolution_clock::now();
     cout << "build time: " << std::chrono::duration<double>(after_build - before_build).count() << endl;
 
     for (int i = 0; i < 10; i++) {
         auto before_test = std::chrono::high_resolution_clock::now();
-        solution.search(query, result);
+        solution.search(query, result, eval_topk);
         auto after_test = std::chrono::high_resolution_clock::now();
         float t = std::chrono::duration<double, std::milli>(after_test - before_test).count() / test_iter;
         cout << "[" << i << "] average test time: " << t << " ms; " << 1000. / t << " offline score" << endl;
     }
 
-    evaluate_accuracy(dataset, query, result, solution.distances, data_size, d);
-    print_sample_results(dataset, query, result, solution.distances, d);
+    evaluate_accuracy(dataset, query, result, solution.distances, data_size, d, eval_topk);
+    print_sample_results(dataset, query, result, solution.distances, d, eval_topk);
 
     solution.reset();
 }
