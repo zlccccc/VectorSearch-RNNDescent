@@ -66,21 +66,35 @@ void Solution::build(int d, const vector<float> &base, int warmup_topk) {
     built_index.add({base.data(), size, d});
     index = std::move(rnndescentindex);
 
+    warmup(base, d, warmup_topk);
+}
+
+void Solution::warmup(const vector<float> &base, int d, int warmup_topk) {
+    if (!index)
+        throw std::runtime_error("warmup called before build");
+    if (warmup_topk <= 0)
+        throw std::runtime_error("warmup topk must be positive");
+    if (d <= 0)
+        throw std::runtime_error("warmup dimension must be positive");
+    if (base.empty())
+        return;
+
     // warmup貌似有bug, 而且好像没啥用(好像还是有点点用? 本地测下来100分); 待修复
     // (代码里面那个usefulset不如直接heap里面用一用得了; 根本不需要额外开空间)
-
     auto prevtime = std::chrono::system_clock::now();
-    int warmup_count = 10000, warmup_search_count = 1;
+    const int size = base.size() / d;
+    const int warmup_count = 10000;
+    const int warmup_search_count = 1;
     std::vector<float> query(d * warmup_count);
     for (int i = 0; i < warmup_count; i++) {
-        int index = random() % size;
-        memcpy(query.data() + d * i, base.data() + d * index, d * sizeof(float));
+        int sampled_index = random() % size;
+        memcpy(query.data() + d * i, base.data() + d * sampled_index, d * sizeof(float));
     }
     std::vector<int> warmup_result(warmup_topk * warmup_count);
     for (int i = 0; i < warmup_search_count; i++) {
         search(query, warmup_result, warmup_topk);
     }
-    built_index.rnndescent.reset_time();
+    index->rnndescent.reset_time();
     auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - prevtime).count();
     printf("Warmup done in %f ms\n", warmup_time);
 }
