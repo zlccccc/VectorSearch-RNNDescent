@@ -43,6 +43,8 @@ struct IndexRNNDescent {
     bool is_trained = false;
 
     RNNDescent rnndescent;
+    RNNDescent::BuildConfig build_config;
+    RNNDescent::SearchConfig search_config;
 
     explicit IndexRNNDescent(int d = 0, faiss::MetricType metric = faiss::METRIC_L2) : d(d), rnndescent(d), metric_type(metric), ntotal(0) {}
 
@@ -91,16 +93,12 @@ struct IndexRNNDescent {
             prevtime = nowtime;
             printf("PCA Process done in %f ms\n", process_time);
             rnndescent.d = pca.d_out;
-            // rnndescent.build(ntotal, verbose, pcaMatrix.data(), false, true);
-            rnndescent.build(ntotal, verbose, pcaMatrix.data(), true, true);
+            rnndescent.build(ntotal, verbose, pcaMatrix.data(), build_config, search_config);
 
             const int maxquery = 10000;
             pcax.reserve(pca.d_out * maxquery);
         } else {
-            // throw std::runtime_error("Not Implemented");
-            // rnndescent.build(ntotal, verbose, x, true, true);
-            rnndescent.build(ntotal, verbose, x, true, true);
-            // rnndescent.build(ntotal, verbose, x, false, true);
+            rnndescent.build(ntotal, verbose, x, build_config, search_config);
         }
 
         nowtime = std::chrono::high_resolution_clock::now();
@@ -202,7 +200,7 @@ struct IndexRNNDescent {
 #pragma omp parallel for schedule(dynamic, 4)
         for (int queryid = 0; queryid < n; queryid++) {
             int threadid = omp_get_thread_num();
-            rnndescent.searchSingle(threadid, queryid, *disComputer, k, labels + queryid * k, distances + queryid * k, false);
+            rnndescent.searchSingle(threadid, queryid, *disComputer, search_config, k, labels + queryid * k, distances + queryid * k, false);
             if (idxmap.size() != 0) { // 图1
                 for (int i = 0; i < k; i++) {
                     // left = std::min(left, labels[i + queryid * k]);

@@ -9,54 +9,48 @@ void Solution::build(int d, const vector<float> &base) {
     int size = base.size() / d;
     auto rnndescentindex = new rnndescent::IndexRNNDescent(d, faiss::METRIC_L2);
     // auto rnndescentindex = new rnndescent::IndexRNNDescent(d, faiss::METRIC_INNER_PRODUCT);
-    rnndescentindex->rnndescent.numThreadsMax = omp_get_max_threads();
-    rnndescentindex->rnndescent.beamSizeMax = 8;
-    rnndescentindex->rnndescent.S = 196;
-    rnndescentindex->rnndescent.R = 2048;
-
-    rnndescentindex->rnndescent.T1 = 4;
-    rnndescentindex->rnndescent.T2 = 15;
+    rnndescentindex->build_config.num_threads = omp_get_max_threads();
+    rnndescentindex->search_config.num_threads = omp_get_max_threads();
+    rnndescentindex->search_config.beam_size = 8;
+    rnndescentindex->build_config.S = 196;
+    rnndescentindex->build_config.R = 2048;
+    rnndescentindex->build_config.T1 = 4;
+    rnndescentindex->build_config.T2 = 15;
     rnndescentindex->verbose = true;
     index = rnndescentindex;
 
     if (d == 256) {
-        rnndescentindex->rnndescent.numSearchInitializeItem = 1024;
-        rnndescentindex->rnndescent.search_L = 512;
-        rnndescentindex->rnndescent.K0 = 96;
+        rnndescentindex->search_config.num_initialize = 1024;
+        rnndescentindex->search_config.search_L = 512;
+        rnndescentindex->search_config.refine_max = 384;
+        rnndescentindex->build_config.K0 = 96;
     } else if (d == 512) {
-        rnndescentindex->rnndescent.numSearchInitializeItem = 1024;
-        rnndescentindex->rnndescent.search_L = 244; // topk
-        rnndescentindex->rnndescent.K0 = 64;
+        rnndescentindex->search_config.num_initialize = 1024;
+        rnndescentindex->search_config.search_L = 244; // topk
+        rnndescentindex->search_config.refine_max = 64;
+        rnndescentindex->build_config.K0 = 64;
         // rnndescentindex->rnndescent.search_L = 256;  // topk
         // rnndescentindex->rnndescent.K0 = 48;
 
         // rnndescentindex->rnndescent.search_L = 320;  // topk
         // rnndescentindex->rnndescent.K0 = 48;
     } else if (d == 1024) {
-        rnndescentindex->rnndescent.numSearchInitializeItem = 160;
-        // rnndescentindex->rnndescent.search_L = 160;  // topk
-        // rnndescentindex->rnndescent.search_L = 144;  // topk
-        // rnndescentindex->rnndescent.search_L = 120;  // topk
-        rnndescentindex->rnndescent.search_L = 116; // topk
-        rnndescentindex->rnndescent.K0 = 32;
+        rnndescentindex->search_config.num_initialize = 160;
+        rnndescentindex->search_config.search_L = 116; // topk
+        rnndescentindex->search_config.refine_max = 128;
+        rnndescentindex->build_config.K0 = 32;
     } else if (d == 1536) {
-        rnndescentindex->rnndescent.numSearchInitializeItem = 512;
-        // rnndescentindex->rnndescent.search_L = 240;  // topk
-        // rnndescentindex->rnndescent.search_L = 224;  // topk
-        // rnndescentindex->rnndescent.search_L = 208;  // topk
-        // rnndescentindex->rnndescent.search_L = 192;  // topk
-        // rnndescentindex->rnndescent.search_L = 184;  // topk
-        // rnndescentindex->rnndescent.search_L = 180;  // topk
-        // rnndescentindex->rnndescent.K0 = 64;
-        rnndescentindex->rnndescent.search_L = 184; // topk
-        rnndescentindex->rnndescent.K0 = 48;
+        rnndescentindex->search_config.num_initialize = 512;
+        rnndescentindex->search_config.search_L = 184; // topk
+        rnndescentindex->search_config.refine_max = 128;
+        rnndescentindex->build_config.K0 = 48;
     } else {
         throw std::runtime_error("Unsupported dimension");
     }
 
 #ifdef INTERNAL_CLOCK_TEST
-    rnndescentindex->rnndescent.S = 32;
-    rnndescentindex->rnndescent.R = 256;
+    rnndescentindex->build_config.S = 32;
+    rnndescentindex->build_config.R = 256;
 #endif
 
     index->train(size, &base[0]);
