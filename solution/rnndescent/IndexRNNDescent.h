@@ -200,7 +200,7 @@ struct IndexRNNDescent {
 #pragma omp parallel for schedule(dynamic, 4)
         for (int queryid = 0; queryid < n; queryid++) {
             int threadid = omp_get_thread_num();
-            rnndescent.searchSingle(threadid, queryid, *disComputer, search_config, k, labels + queryid * k, distances + queryid * k, false);
+            rnndescent.searchSingle(threadid, queryid, *disComputer, search_config, build_config.K0, k, labels + queryid * k, distances + queryid * k, false);
             if (idxmap.size() != 0) { // 图1
                 for (int i = 0; i < k; i++) {
                     // left = std::min(left, labels[i + queryid * k]);

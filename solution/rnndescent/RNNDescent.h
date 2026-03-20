@@ -167,11 +167,9 @@ struct RNNDescent {
     }
 
     void build(const int n, bool verbose, const float *x, const BuildConfig &build_config, const SearchConfig &search_config) {
-        build_config_ = build_config;
-        search_config_ = search_config;
         if (verbose)
             printf("Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", build_config.S, build_config.R, build_config.T1, build_config.T2, n,
-                   search_config_.num_threads);
+                   search_config.num_threads);
         NeighborsContainerType::clear_memory();
 
         std::vector<std::vector<int>> edges; // distance并不重要
@@ -205,13 +203,13 @@ struct RNNDescent {
             }
         }
         // 确定全局入口点
-        printf("n = %d; initialize = %d\n", n, search_config_.num_initialize);
+        printf("n = %d; initialize = %d\n", n, search_config.num_initialize);
         {
             std::mt19937 rng(build_config.random_seed);
             search_from_ids.reserve(ntotal);
-            search_from_ids.resize(search_config_.num_initialize);
+            search_from_ids.resize(search_config.num_initialize);
             if (build_config.random_init)
-                gen_random(rng, search_from_ids.data(), search_config_.num_initialize, n);
+                gen_random(rng, search_from_ids.data(), search_config.num_initialize, n);
             else
                 iota(search_from_ids.begin(), search_from_ids.end(), 0);
         }
@@ -254,7 +252,7 @@ struct RNNDescent {
             }
 
             { // bfs重排后的cluster ID
-                std::vector<int> cluster_size(search_config_.num_initialize);
+                std::vector<int> cluster_size(search_config.num_initialize);
                 for (int i = 0; i < cluster_id.size(); i++)
                     cluster_size[cluster_id[i]]++;
                 for (int v : cluster_size)
@@ -304,23 +302,22 @@ struct RNNDescent {
         }
         has_built = true;
 
-        threadVt.resize(search_config_.num_threads);
-        threadRetset.resize(search_config_.num_threads);
-        neighborDistance.resize(search_config_.num_threads);
-        threadUsefulset.resize(search_config_.num_threads);
-        threadFinalset.resize(search_config_.num_threads);
-        for (int i = 0; i < search_config_.num_threads; i++) {
+        threadVt.resize(search_config.num_threads);
+        threadRetset.resize(search_config.num_threads);
+        neighborDistance.resize(search_config.num_threads);
+        threadUsefulset.resize(search_config.num_threads);
+        threadFinalset.resize(search_config.num_threads);
+        for (int i = 0; i < search_config.num_threads; i++) {
             threadVt[i].init(ntotal);
-            threadRetset[i].reserve(std::max(search_config_.num_initialize, search_config_.search_L));
-            neighborDistance[i].reserve(search_config_.search_L);
-            threadFinalset[i].reserve(search_config_.search_L);
-            threadUsefulset[i].reserve(build_config.K0 * search_config_.beam_size + 1);
+            threadRetset[i].reserve(std::max(search_config.num_initialize, search_config.search_L));
+            neighborDistance[i].reserve(search_config.search_L);
+            threadFinalset[i].reserve(search_config.search_L);
+            threadUsefulset[i].reserve(build_config.K0 * search_config.beam_size + 1);
         }
     }
 
     std::vector<int> search_from_ids;
 
-    SearchConfig search_config_{};
 
     std::vector<MyVisitedTable> threadVt;                  // threadRetset和之前的retset起到的价值差不多
     std::vector<std::vector<SingleNeighbor>> threadRetset; // threadRetset和之前的retset起到的价值差不多
@@ -328,14 +325,13 @@ struct RNNDescent {
     std::vector<std::vector<SingleNeighbor>> threadFinalset;
     std::vector<std::vector<float>> neighborDistance;
 
-    void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, const int topk, int *indices, float *dists,
-                      bool output) {
+    void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree, const int topk, int *indices,
+                      float *dists, bool output) {
         const int num_threads = search_config.num_threads;
         const int beam_size = search_config.beam_size;
         const int search_L = search_config.search_L;
         const int num_initialize = search_config.num_initialize;
         const int refine_max = search_config.refine_max;
-        const int max_degree = build_config_.K0;
         assert(0 <= threadid && threadid < num_threads);
 #ifdef INTERNAL_CLOCK_TEST
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = prevtime;
@@ -762,7 +758,6 @@ struct RNNDescent {
 
     bool has_built = false;
 
-    BuildConfig build_config_{};
 
     int d;                // dimensions
     int initialize_L = 8; // initial size of memory allocation
