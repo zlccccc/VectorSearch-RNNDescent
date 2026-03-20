@@ -541,7 +541,12 @@ struct RNNDescent {
                                        retset[i + 2].distance, retset[i + 3].distance);
         for (size_t i = exact_end; i < retset.size(); i++)
             retset[i].distance = realqdis(queryid, retset[i].id);
-        sort(retset.begin(), retset.end());
+        if ((size_t)topk < retset.size()) {
+            std::nth_element(retset.begin(), retset.begin() + topk, retset.end());
+            std::sort(retset.begin(), retset.begin() + topk);
+        } else {
+            std::sort(retset.begin(), retset.end());
+        }
 
         for (size_t i = 0; i < topk; i++) {
             indices[i] = retset[i].id;
