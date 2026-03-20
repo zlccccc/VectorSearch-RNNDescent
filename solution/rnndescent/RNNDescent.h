@@ -64,49 +64,105 @@ using SaveneighborDiscomputer = SelectedSaveNeighborDiscomputer;
 
 struct RNNDescent {
     struct FloatMatrixView {
-        const float *data = nullptr;
-        int rows = 0;
-        int dim = 0;
+      public:
+        FloatMatrixView() = default;
+        FloatMatrixView(const float *data, int rows, int dim) : data_(data), rows(rows), dim(dim) {}
+
+        static FloatMatrixView from_buffer(const float *data, int rows, int dim) {
+            return FloatMatrixView(data, rows, dim);
+        }
+
+        static FloatMatrixView from_vector(const std::vector<float> &data, int dim) {
+            FAISS_THROW_IF_NOT_MSG(dim > 0, "matrix view requires positive dimension");
+            FAISS_THROW_IF_NOT_MSG(data.size() % dim == 0, "matrix view vector size must be divisible by dimension");
+            return FloatMatrixView(data.data(), static_cast<int>(data.size() / dim), dim);
+        }
 
         void validate(const char *name) const {
             (void)name;
-            FAISS_THROW_IF_NOT_MSG(data != nullptr, "matrix view data pointer is null");
+            FAISS_THROW_IF_NOT_MSG(data_ != nullptr, "matrix view data pointer is null");
             FAISS_THROW_IF_NOT_MSG(rows > 0, "matrix view requires positive row count");
             FAISS_THROW_IF_NOT_MSG(dim > 0, "matrix view requires positive dimension");
         }
 
+        const float *data_ptr() const { return data_; }
+        int row_count() const { return rows; }
+        int dimension() const { return dim; }
+
         const float *row_ptr(int row) const {
-            return data + (size_t)row * dim;
+            return data_ + (size_t)row * dim;
         }
+
+      private:
+        const float *data_ = nullptr;
+        int rows = 0;
+        int dim = 0;
     };
 
     struct MutableFloatMatrixView {
-        float *data = nullptr;
-        int rows = 0;
-        int dim = 0;
+      public:
+        MutableFloatMatrixView() = default;
+        MutableFloatMatrixView(float *data, int rows, int dim) : data_(data), rows(rows), dim(dim) {}
+
+        static MutableFloatMatrixView from_buffer(float *data, int rows, int dim) {
+            return MutableFloatMatrixView(data, rows, dim);
+        }
+
+        static MutableFloatMatrixView from_vector(std::vector<float> &data, int dim) {
+            FAISS_THROW_IF_NOT_MSG(dim > 0, "mutable matrix view requires positive dimension");
+            FAISS_THROW_IF_NOT_MSG(data.size() % dim == 0, "mutable matrix view vector size must be divisible by dimension");
+            return MutableFloatMatrixView(data.data(), static_cast<int>(data.size() / dim), dim);
+        }
 
         void validate(const char *name) const {
             (void)name;
-            FAISS_THROW_IF_NOT_MSG(data != nullptr, "mutable matrix view data pointer is null");
+            FAISS_THROW_IF_NOT_MSG(data_ != nullptr, "mutable matrix view data pointer is null");
             FAISS_THROW_IF_NOT_MSG(rows > 0, "mutable matrix view requires positive row count");
             FAISS_THROW_IF_NOT_MSG(dim > 0, "mutable matrix view requires positive dimension");
         }
 
+        float *data_ptr() const { return data_; }
+        int row_count() const { return rows; }
+        int dimension() const { return dim; }
+
         float *row_ptr(int row) const {
-            return data + (size_t)row * dim;
+            return data_ + (size_t)row * dim;
         }
+
+      private:
+        float *data_ = nullptr;
+        int rows = 0;
+        int dim = 0;
     };
 
     struct SearchResultView {
-        int *indices = nullptr;
-        float *distances = nullptr;
-        int topk = 0;
+      public:
+        SearchResultView() = default;
+        SearchResultView(int *indices, float *distances, int topk) : indices_(indices), distances_(distances), topk_(topk) {}
+
+        static SearchResultView from_buffers(int *indices, float *distances, int topk) {
+            return SearchResultView(indices, distances, topk);
+        }
 
         void validate() const {
-            FAISS_THROW_IF_NOT_MSG(indices != nullptr, "search result indices buffer is null");
-            FAISS_THROW_IF_NOT_MSG(distances != nullptr, "search result distance buffer is null");
-            FAISS_THROW_IF_NOT_MSG(topk > 0, "search topk must be positive");
+            FAISS_THROW_IF_NOT_MSG(indices_ != nullptr, "search result indices buffer is null");
+            FAISS_THROW_IF_NOT_MSG(distances_ != nullptr, "search result distance buffer is null");
+            FAISS_THROW_IF_NOT_MSG(topk_ > 0, "search topk must be positive");
         }
+
+        int *indices_ptr() const { return indices_; }
+        float *distances_ptr() const { return distances_; }
+        int topk() const { return topk_; }
+
+        SearchResultView slice(int queryid) const {
+            validate();
+            return SearchResultView(indices_ + queryid * topk_, distances_ + queryid * topk_, topk_);
+        }
+
+      private:
+        int *indices_ = nullptr;
+        float *distances_ = nullptr;
+        int topk_ = 0;
     };
 
     struct BuildConfig {
@@ -214,7 +270,7 @@ struct RNNDescent {
         // return new FaissDistanceComputerL2(data, n, dim);
         // return new CblasDistanceComputerFP32L2(data, n, d);
         // return new SimdDistanceComputerFP16L2(data, n, dim);
-        return std::make_unique<SimdDistanceComputerInt8L2>(data_view.data, data_view.rows, d);
+        return std::make_unique<SimdDistanceComputerInt8L2>(data_view.data_ptr(), data_view.row_count(), d);
         // return new SimdDistanceComputerInt8L2Norm(data, n, dim);
         throw std::runtime_error("Invalid metric type");
     }
@@ -259,11 +315,11 @@ struct RNNDescent {
 
     void build(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config, const SearchConfig &search_config) {
         data_view.validate("build data");
-        FAISS_THROW_IF_NOT_MSG(data_view.dim == d, "build data dimension does not match index dimension");
+        FAISS_THROW_IF_NOT_MSG(data_view.dimension() == d, "build data dimension does not match index dimension");
 
         const BuildConfig safe_build_config = sanitize_build_config(build_config);
         const SearchConfig safe_search_config = sanitize_search_config(search_config);
-        const int n = data_view.rows;
+        const int n = data_view.row_count();
 
         reset();
         lockwarppers.clear();
@@ -430,7 +486,7 @@ struct RNNDescent {
                       bool output) {
         result.validate();
         FAISS_THROW_IF_NOT_MSG(max_degree > 0, "search max_degree must be positive");
-        const int topk = result.topk;
+        const int topk = result.topk();
 
         const SearchConfig safe_search_config = sanitize_search_config(search_config, topk);
         const int num_threads = safe_search_config.num_threads;
@@ -630,8 +686,8 @@ struct RNNDescent {
         }
 
         for (size_t i = 0; i < topk; i++) {
-            result.indices[i] = retset[i].id;
-            result.distances[i] = retset[i].distance;
+            result.indices_ptr()[i] = retset[i].id;
+            result.distances_ptr()[i] = retset[i].distance;
         }
 
         vt.advance();

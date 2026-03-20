@@ -60,9 +60,9 @@ struct IndexRNNDescent {
         FAISS_THROW_IF_NOT(is_trained);
         FAISS_THROW_IF_NOT(ntotal == 0); // 暂时不支持增删
         base.validate("add data");
-        FAISS_THROW_IF_NOT_MSG(base.dim == d, "add data dimension does not match index dimension");
-        const idx_t n = base.rows;
-        const float *x = base.data;
+        FAISS_THROW_IF_NOT_MSG(base.dimension() == d, "add data dimension does not match index dimension");
+        const idx_t n = base.row_count();
+        const float *x = base.data_ptr();
 
         if (ntotal != 0) {
             fprintf(stderr, "WARNING NNDescent doest not support dynamic insertions,"
@@ -101,12 +101,12 @@ struct IndexRNNDescent {
             prevtime = nowtime;
             printf("PCA Process done in %f ms\n", process_time);
             rnndescent.d = pca.d_out;
-            rnndescent.build({pcaMatrix.data(), ntotal, rnndescent.d}, verbose, build_config, search_config);
+            rnndescent.build(RNNDescent::FloatMatrixView::from_vector(pcaMatrix, rnndescent.d), verbose, build_config, search_config);
 
             const int maxquery = 10000;
             pcax.reserve(pca.d_out * maxquery);
         } else {
-            rnndescent.build({x, ntotal, d}, verbose, build_config, search_config);
+            rnndescent.build(RNNDescent::FloatMatrixView::from_buffer(x, ntotal, d), verbose, build_config, search_config);
         }
 
         nowtime = std::chrono::high_resolution_clock::now();
@@ -138,7 +138,7 @@ struct IndexRNNDescent {
 
     void train(const RNNDescent::FloatMatrixView &base) {
         base.validate("train data");
-        FAISS_THROW_IF_NOT_MSG(base.dim == d, "train data dimension does not match index dimension");
+        FAISS_THROW_IF_NOT_MSG(base.dimension() == d, "train data dimension does not match index dimension");
         // nndescent structure does not require training
         is_trained = true;
     }
@@ -150,12 +150,12 @@ struct IndexRNNDescent {
         FAISS_THROW_IF_NOT_MSG(pca.is_trained, "Transformation not trained yet");
         input.validate("pca input");
         output.validate("pca output");
-        FAISS_THROW_IF_NOT_MSG(input.rows == output.rows, "pca input/output row count mismatch");
-        FAISS_THROW_IF_NOT_MSG(input.dim == pca.d_in, "pca input dimension mismatch");
-        FAISS_THROW_IF_NOT_MSG(output.dim == pca.d_out, "pca output dimension mismatch");
-        const idx_t n = input.rows;
-        const float *x = input.data;
-        float *xt = output.data;
+        FAISS_THROW_IF_NOT_MSG(input.row_count() == output.row_count(), "pca input/output row count mismatch");
+        FAISS_THROW_IF_NOT_MSG(input.dimension() == pca.d_in, "pca input dimension mismatch");
+        FAISS_THROW_IF_NOT_MSG(output.dimension() == pca.d_out, "pca output dimension mismatch");
+        const idx_t n = input.row_count();
+        const float *x = input.data_ptr();
+        float *xt = output.data_ptr();
 
         float c_factor;
         if (pca.have_bias) {
@@ -193,12 +193,12 @@ struct IndexRNNDescent {
         FAISS_THROW_IF_NOT_MSG(rnndescent.fastqdis != nullptr, "search graph has not been initialized");
         queries.validate("query batch");
         result.validate();
-        FAISS_THROW_IF_NOT_MSG(queries.dim == d, "query dimension does not match index dimension");
-        const idx_t n = queries.rows;
-        const idx_t k = result.topk;
-        const float *x = queries.data;
-        float *distances = result.distances;
-        int *labels = result.indices;
+        FAISS_THROW_IF_NOT_MSG(queries.dimension() == d, "query dimension does not match index dimension");
+        const idx_t n = queries.row_count();
+        const idx_t k = result.topk();
+        const float *x = queries.data_ptr();
+        float *distances = result.distances_ptr();
+        int *labels = result.indices_ptr();
         auto searchstarttime = std::chrono::high_resolution_clock::now();
 
 #ifdef INTERNAL_CLOCK_TEST
@@ -211,7 +211,7 @@ struct IndexRNNDescent {
         if (pca.is_trained) {
             pcax.resize(n * pca.d_out);
             // pca.apply_noalloc(n, x, pcax.data());  // 这句话太慢了
-            pca_apply_noalloc({x, static_cast<int>(n), d}, {pcax.data(), static_cast<int>(n), pca.d_out});
+            pca_apply_noalloc(RNNDescent::FloatMatrixView::from_buffer(x, static_cast<int>(n), d), RNNDescent::MutableFloatMatrixView::from_vector(pcax, pca.d_out));
             rnndescent.fastqdis->set_query(pcax.data(), n);
         } else {
             rnndescent.fastqdis->set_query(x, n);
@@ -227,7 +227,7 @@ struct IndexRNNDescent {
 #pragma omp parallel for schedule(dynamic, 4)
         for (int queryid = 0; queryid < n; queryid++) {
             int threadid = omp_get_thread_num();
-            rnndescent.searchSingle(threadid, queryid, *disComputer, search_config, build_config.K0, {labels + queryid * k, distances + queryid * k, static_cast<int>(k)}, false);
+            rnndescent.searchSingle(threadid, queryid, *disComputer, search_config, build_config.K0, result.slice(queryid), false);
             if (idxmap.size() != 0) { // 图1
                 for (int i = 0; i < k; i++) {
                     // left = std::min(left, labels[i + queryid * k]);
