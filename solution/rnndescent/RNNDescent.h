@@ -8,11 +8,10 @@
 // #include "discomputer/FaissDistComputerIP.h"
 // #include "discomputer/FaissDistComputerL2.h"
 
-#include "discomputer/Avx2SimdDistanceComputerFP32.h"
+#include "discomputer/PlatformSimdDistanceComputer.h"
 // #include "discomputer/Avx512SimdDistanceComputerFP32.h"
 // #define INTERNAL_CLOCK_TEST
 
-#include "discomputer/Avx2SimdDistanceComputerInt8.h"
 // #include "discomputer/Avx512SimdDistanceComputerUInt8.h"
 // #include "discomputer/NeonSimdDistanceComputerInt8.h"
 
@@ -60,15 +59,8 @@ struct XNeighbor {
 
 namespace rnndescent {
 
-// using NeighborsContainerType = UInt4Neighbors;
-using NeighborsContainerType = Int8Neighbors;
-// using NeighborsContainerType = FP16Neighbors;
-// using NeighborsContainerType = CblasNeighbors;
-
-// using SaveneighborDiscomputer = SimdDistanceComputerInt4L2;
-using SaveneighborDiscomputer = SimdDistanceComputerInt8L2;
-// using SaveneighborDiscomputer = SimdDistanceComputerFP16L2;
-// using SaveneighborDiscomputer = CblasDistanceComputerFP32L2;
+using NeighborsContainerType = SelectedNeighborsContainerType;
+using SaveneighborDiscomputer = SelectedSaveNeighborDiscomputer;
 
 struct RNNDescent {
     struct BuildConfig {
@@ -131,7 +123,6 @@ struct RNNDescent {
     using KNNGraph = std::vector<std::vector<XNeighbor>>;
 
     explicit RNNDescent(const int d) : d(d) {}
-
 
 #ifdef INTERNAL_CLOCK_TEST
     struct PerfStats {
@@ -822,7 +813,6 @@ struct RNNDescent {
     }
 
     bool has_built = false;
-
 
     int d;                // dimensions
     int ntotal = 0;
