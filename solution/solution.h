@@ -19,7 +19,7 @@ class Solution {
     rnndescent::IndexRNNDescent *index = nullptr;
     float distances[topk * querysize];
     ~Solution() {
-        if (index == nullptr) {
+        if (index != nullptr) {
             delete index;
             index = nullptr;
         }

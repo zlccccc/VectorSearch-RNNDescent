@@ -19,7 +19,11 @@ void Solution::build(int d, const vector<float> &base) {
     rnndescentindex->verbose = true;
     index = rnndescentindex;
 
-    if (d == 512) {
+    if (d == 256) {
+        rnndescentindex->rnndescent.numSearchInitializeItem = 1024;
+        rnndescentindex->rnndescent.search_L = 512;
+        rnndescentindex->rnndescent.K0 = 96;
+    } else if (d == 512) {
         rnndescentindex->rnndescent.numSearchInitializeItem = 1024;
         rnndescentindex->rnndescent.search_L = 244; // topk
         rnndescentindex->rnndescent.K0 = 64;

@@ -67,7 +67,7 @@ struct IndexRNNDescent {
         float process_time;
         ntotal = n;
         // if (false) {
-        if (d == 1024 || d == 1536) {
+        if (false && (d == 1024 || d == 1536)) {
             puts("train PCA Matrix");
             pca.d_in = d;
             if (d == 512) {
@@ -96,48 +96,6 @@ struct IndexRNNDescent {
 
             const int maxquery = 10000;
             pcax.reserve(pca.d_out * maxquery);
-        } else if (d == 512) { // 还是不要这么搞...
-            meand.resize(d);
-            std::fill(meand.begin(), meand.end(), 0);
-            // disComputer = new SimdDistanceComputerFP32L2(x, ntotal, d);
-            disComputer = new CblasDistanceComputerFP32L2(x, ntotal, d);
-            disComputer->set_query(meand.data(), 1);
-            // int start_point = 11037;
-            // printf("start_point####################### %d\n", start_point);
-            // disComputer->set_query(x + start_point * d, 1);
-            std::vector<std::pair<float, int>> save_points;
-            // save_points.reserve(n);
-            save_points.resize(n);
-            // printf("n = /%d !!!!!!!!!!!!!!\n",n);
-#pragma omp parallel for
-            for (int i = 0; i < n; ++i) {
-                // float dis = 
-                // save_points[i] = std::make_pair((*disComputer)(0, i), i);
-                save_points[i].first = (*disComputer)(0, i);
-                // save_points[i].first = 0;
-                save_points[i].second = i;
-                // save_points[i] = std::make_pair((*disComputer)(0, i), i);
-            }
-            std::sort(save_points.begin(), save_points.end());
-            int l = 0, r = n / 10;
-            // remove l->r
-            for (int i = l; i < r; i++)
-                idxmap.push_back(save_points[i].second);
-            // for (int i = dr1; i < r; i++)
-            //     idxmap.push_back(save_points[i].second);
-            refined_x.resize(idxmap.size() * d);
-#pragma omp parallel for // i-l: index
-            for (int i = 0; i < idxmap.size(); i++)
-                memcpy(refined_x.data() + i * d, x + idxmap[i] * d, d * sizeof(float));
-            // for(int i = 0; i < n; i ++) {
-            //     printf("%d ", idxmap[i]);
-            // }
-            // puts("");
-            rnndescent.build(idxmap.size(), verbose, refined_x.data(), false, false);
-            // rnndescent.build(idxmap.size(), verbose, refined_x.data(), true, false);
-            // rnndescent.build(idxmap.size(), verbose, refined_x.data(), true, false);
-            // delete disComputer;
-            disComputer = nullptr;
         } else {
             // throw std::runtime_error("Not Implemented");
             // rnndescent.build(ntotal, verbose, x, true, true);

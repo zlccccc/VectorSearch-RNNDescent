@@ -76,7 +76,7 @@ struct SimdDistanceComputerFP32L2 : MyDistanceComputer {
         // prefetch_L2(matrixl2norms.data() + i);
         // const float dp0 = faiss::fvec_inner_product(query, y, d);
         // const float dp0 = cblas_sdot(d, query, 1, y, 1);
-        const float dp0 = CorrelationSum(query, y, d);
+        const float dp0 = CorrelationSum(q, y, d);
         return queryl2norms[idq] + matrixl2norms[i] - 2 * dp0;
     }
 

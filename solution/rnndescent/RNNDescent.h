@@ -484,19 +484,22 @@ struct RNNDescent {
         // puts("<- calculate");
 
         int refinemax = 64; // 不需要更多了
-        if (d != 512)
+        if (d == 256)
+            refinemax = 384; // 256维当前主要靠更大的精排候选提recall@10
+        else if (d != 512)
             refinemax = 128; // 经过了PCA; 所以需要多一点
         refinemax = std::min(refinemax, (int)retset.size());
-        // nth_element(retset.begin(), retset.begin() + refinemax, retset.end());
-        // 去重
-        retset.resize(refinemax); // 48 maybe is okay
+        retset.resize(refinemax);
 
         for (size_t i = 0; i < retset.size(); i++)
             retset[i].id = search_from_ids[retset[i].id & 0x7fffffff];
 
-        for (size_t i = 0; i < retset.size(); i += 4)
+        size_t exact_end = retset.size() / 4 * 4;
+        for (size_t i = 0; i < exact_end; i += 4)
             realqdis.distances_batch_4(queryid, retset[i].id, retset[i + 1].id, retset[i + 2].id, retset[i + 3].id, retset[i].distance, retset[i + 1].distance,
                                        retset[i + 2].distance, retset[i + 3].distance);
+        for (size_t i = exact_end; i < retset.size(); i++)
+            retset[i].distance = realqdis(queryid, retset[i].id);
         sort(retset.begin(), retset.end());
 
         for (size_t i = 0; i < topk; i++) {
@@ -547,6 +550,9 @@ struct RNNDescent {
 
     void reset_time() {
 #ifdef INTERNAL_CLOCK_TEST
+        if (query_count == 0) {
+            return;
+        }
         printf("RNN Descent Running Time: mean bfs %f times; %f nodes; init_time = "
                "%f, getneighbor_time = %f, calculate_time = %f, update_time = %f; "
                "recalculate_time = %f; alltime = %f; calculate_dist_count = %f; "
