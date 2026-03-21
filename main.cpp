@@ -849,8 +849,8 @@ BenchmarkConfig parse_args(int argc, char **argv) {
         }
     }
 
-    if (config.topk <= 0 || config.repeat <= 0 || config.warmup_topk <= 0) {
-        throw runtime_error("topk/repeat/warmup-topk must be positive");
+    if (config.topk <= 0 || config.repeat <= 0 || config.warmup_topk < 0) {
+        throw runtime_error("topk/repeat must be positive and warmup-topk must be non-negative");
     }
     return config;
 }

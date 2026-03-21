@@ -12,7 +12,7 @@
 #include <memory_resource>
 #include <numeric>
 #include <random>
-#include <set>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -280,15 +280,12 @@ struct RNNDescent {
         auto qdis = SelectedDistanceComputerFactory::create_build_graph(data_view.data_ptr(), data_view.row_count(), data_view.dimension());
         init_graph(graph, n, *qdis, build_config);
         for (int t1 = 0; t1 < build_config.T1; ++t1) {
-            if (verbose)
-                std::cout << "Iter " << t1 << " : " << std::flush;
+            Logger::info(verbose, "Iter %d : ", t1);
             for (int t2 = 0; t2 < build_config.T2; ++t2) {
                 update_neighbors(graph, n, *qdis, build_config);
-                if (verbose)
-                    std::cout << "#" << std::flush;
+                Logger::info(verbose, "#");
             }
-            if (verbose)
-                Logger::line(verbose, "");
+            Logger::line(verbose, "");
 
             if (t1 != build_config.T1 - 1)
                 add_reverse_edges(graph, n, build_config);
@@ -334,24 +331,27 @@ struct RNNDescent {
             KNNGraph graph;
             generate_graph(graph, data_view, n, verbose, safe_build_config); // highest level
                                                                              // #pragma omp parallel for
-            std::set<int> S;                                                 // 不能重复
+            std::mt19937 padding_rng(safe_build_config.random_seed + 1);
+            std::uniform_int_distribution<int> padding_dist(0, n - 1);
+            std::unordered_set<int> selected_ids;
             for (int i = 0; i < n; i++) {
                 auto &pool = graph[i];
                 sort(pool.begin(), pool.end());
                 edges[i].reserve((pool.size() + 3) / 4 * 4);
                 // 需要清理下内存; 变成4的倍数方便后面reorder
-                S.clear();
+                selected_ids.clear();
+                selected_ids.reserve(pool.size() * 2 + 4);
                 for (auto &edge : pool) {
-                    if (!S.count(edge.id())) { // 这个地方感觉不太应该写成这样; 如果写得好的话, 理论上刚开始的edge id不会重复
-                        S.insert(edge.id());
+                    if (!selected_ids.count(edge.id())) { // 这个地方感觉不太应该写成这样; 如果写得好的话, 理论上刚开始的edge id不会重复
+                        selected_ids.insert(edge.id());
                         edges[i].emplace_back(edge.id());
                     }
                 }
                 while (edges[i].size() % 4 != 0) { // 补到差不多
-                    int id = random() % n;
-                    while (S.count(id))
-                        id = random() % n;
-                    S.insert(id);
+                    int id = padding_dist(padding_rng);
+                    while (selected_ids.count(id))
+                        id = padding_dist(padding_rng);
+                    selected_ids.insert(id);
                     edges[i].emplace_back(id);
                 }
                 std::vector<XNeighbor>().swap(pool);
@@ -430,7 +430,8 @@ struct RNNDescent {
             }
 #ifdef INTERNAL_CLOCK_TEST
             Logger::info(verbose, "search from ids = %d; have_next = %d; cannot_search = %d\n", (int)search_from_ids.size(), all_have_next, cannot_search);
-            assert(n == search_from_ids.size());
+            if (n != search_from_ids.size())
+                throw std::runtime_error("search_from_ids size mismatch after reordering");
 #endif
 
             for (int i = 0; i < n; i++) // 连graph的时候边id需更新
@@ -489,14 +490,18 @@ struct RNNDescent {
         const int search_L = safe_search_config.search_L;
         const int num_initialize = safe_search_config.num_initialize;
         const int refine_max = safe_search_config.refine_max;
-        assert(0 <= threadid && threadid < num_threads);
+        if (!(0 <= threadid && threadid < num_threads))
+            throw std::runtime_error("thread id out of range");
 #ifdef INTERNAL_CLOCK_TEST
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = prevtime;
         float init_time = 0, getneighbor_time = 0, calculate_time = 0, update_time = 0;
-        assert(num_initialize >= topk);
-        assert(num_initialize >= search_L);
-        assert(max_degree * beam_size >= max_degree);
 #endif
+        if (num_initialize < topk)
+            throw std::runtime_error("num_initialize must be >= topk");
+        if (num_initialize < search_L)
+            throw std::runtime_error("num_initialize must be >= search_L");
+        if (max_degree * beam_size < max_degree)
+            throw std::runtime_error("beam expansion overflow");
         FAISS_THROW_IF_NOT_MSG(graph_distance_computer != nullptr, "The index is not build yet.");
 
         auto &retset = threadRetset[threadid];
@@ -504,7 +509,8 @@ struct RNNDescent {
         auto &finalset = threadFinalset[threadid];
         auto &vt = threadVt[threadid];
         // Initialize
-        assert(num_initialize % 4 == 0);
+        if (num_initialize % 4 != 0)
+            throw std::runtime_error("num_initialize must be a multiple of 4");
         retset.resize(num_initialize);
         usefulset.resize(max_degree * beam_size + 1);
         finalset.resize(search_L);

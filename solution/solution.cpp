@@ -12,20 +12,19 @@ void Solution::build(int d, const std::vector<float> &base, int warmup_topk, con
         throw std::runtime_error("base vectors must not be empty");
     if (base.size() % d != 0)
         throw std::runtime_error("base size must be divisible by dimension");
-    if (warmup_topk <= 0)
-        throw std::runtime_error("warmup topk must be positive");
     index_ = std::make_unique<rnndescent::IndexRNNDescent>(d, true, build_config, search_config, pca_config);
     const auto base_view = rnndescent::RNNDescent::FloatMatrixView::from_vector(base, d);
     index_->build(base_view);
 
-    warmup(base, d, warmup_topk);
+    if (warmup_topk > 0)
+        warmup(base, d, warmup_topk);
 }
 
 void Solution::warmup(const std::vector<float> &base, int d, int warmup_topk) {
     if (!index_)
         throw std::runtime_error("warmup called before build");
     if (warmup_topk <= 0)
-        throw std::runtime_error("warmup topk must be positive");
+        return;
     if (d <= 0)
         throw std::runtime_error("warmup dimension must be positive");
     if (base.empty())
@@ -35,8 +34,10 @@ void Solution::warmup(const std::vector<float> &base, int d, int warmup_topk) {
     // (代码里面那个usefulset不如直接heap里面用一用得了; 根本不需要额外开空间)
     auto prevtime = std::chrono::system_clock::now();
     const int size = base.size() / d;
-    const int warmup_count = 10000;
+    const int warmup_count = std::min(size, 10000);
     const int warmup_search_count = 1;
+    if (warmup_count <= 0)
+        return;
     std::vector<float> query(d * warmup_count);
     std::mt19937 rng(0);
     std::uniform_int_distribution<int> dist(0, size - 1);
