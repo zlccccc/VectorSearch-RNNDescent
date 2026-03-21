@@ -179,6 +179,7 @@ struct RNNDescent {
         int K0 = 48;
         int random_seed = 2021;
         int num_threads = 16;
+        long long neighbor_pool_size_limit_bytes = 16ll * 1024 * 1024 * 1024;
         bool save_neighbor = true;
         bool random_init = true;
     };
@@ -198,6 +199,7 @@ struct RNNDescent {
         config.R = std::max(config.R, 1);
         config.K0 = std::max(config.K0, 1);
         config.num_threads = std::max(config.num_threads, 1);
+        config.neighbor_pool_size_limit_bytes = std::max(config.neighbor_pool_size_limit_bytes, 0ll);
         return config;
     }
 
@@ -300,7 +302,7 @@ struct RNNDescent {
                 add_reverse_edges(graph, build_config);
         }
 
-#pragma omp parallel for
+#pragma omp parallel for num_threads(build_config.num_threads)
         for (int u = 0; u < ntotal; ++u) { // remove edges
             auto &pool = graph[u];
             std::sort(pool.begin(), pool.end());
@@ -447,7 +449,7 @@ struct RNNDescent {
 
             std::vector<float> fastsearch_pool;
             fastsearch_pool.resize(ntotal * d);
-#pragma omp parallel for
+#pragma omp parallel for num_threads(safe_build_config.num_threads)
             for (int i = 0; i < ntotal; i++) {
                 int u = search_from_ids[i];
                 // printf("u = %d; matrix.size() = %d\n",u, matrix.size());
@@ -456,7 +458,7 @@ struct RNNDescent {
             fastqdis = std::make_unique<SaveneighborDiscomputer>(fastsearch_pool.data(), ntotal, d);
         }
         { // 空间局部性优化
-            NeighborsContainerType::init_neighbors_pool(d, edges, 16ll * 1024 * 1024 * 1024, safe_build_config.save_neighbor);
+            NeighborsContainerType::init_neighbors_pool(d, edges, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
             for (int i = 0; i < ntotal; i++) {
                 int u = search_from_ids[i];
                 auto &pool = edges[u];
@@ -777,7 +779,7 @@ struct RNNDescent {
             graph[i].reserve(build_config.R * 2);
         }
 
-#pragma omp parallel
+#pragma omp parallel num_threads(build_config.num_threads)
         {
             std::mt19937 rng(build_config.random_seed * 7741 + omp_get_thread_num());
 #pragma omp for
@@ -802,7 +804,7 @@ struct RNNDescent {
     void update_neighbors(KNNGraph &graph, MyDistanceComputer &qdis, const BuildConfig &build_config) {
         std::vector<std::vector<XNeighbor>> new_pools(build_config.num_threads);
         std::vector<std::vector<XNeighbor>> old_pools(build_config.num_threads);
-#pragma omp parallel for schedule(dynamic, 16)
+#pragma omp parallel for num_threads(build_config.num_threads) schedule(dynamic, 16)
         for (int u = 0; u < ntotal; ++u) {
             auto &nhood = graph[u];
             auto &pool = nhood;
@@ -854,7 +856,7 @@ struct RNNDescent {
     void add_reverse_edges(KNNGraph &graph, const BuildConfig &build_config) {
         std::vector<std::vector<XNeighbor>> reverse_pools(ntotal);
 
-#pragma omp parallel for
+#pragma omp parallel for num_threads(build_config.num_threads)
         for (int u = 0; u < ntotal; ++u) {
             for (auto &nn : graph[u]) {
                 std::lock_guard<std::mutex> guard(lockwarppers[nn.id()]);
@@ -862,7 +864,7 @@ struct RNNDescent {
             }
         }
 
-#pragma omp parallel for
+#pragma omp parallel for num_threads(build_config.num_threads)
         for (int u = 0; u < ntotal; ++u) {
             auto &pool = graph[u];
             for (auto &nn : pool) {
@@ -878,7 +880,7 @@ struct RNNDescent {
             }
         }
 
-#pragma omp parallel for
+#pragma omp parallel for num_threads(build_config.num_threads)
         for (int u = 0; u < ntotal; ++u) {
             for (auto &nn : reverse_pools[u]) {
                 std::lock_guard<std::mutex> guard(lockwarppers[nn.id()]);
@@ -886,7 +888,7 @@ struct RNNDescent {
             }
         }
 
-#pragma omp parallel for
+#pragma omp parallel for num_threads(build_config.num_threads)
         for (int u = 0; u < ntotal; ++u) {
             auto &pool = graph[u];
             std::sort(pool.begin(), pool.end()); // 这里sort可能需要考虑度数了

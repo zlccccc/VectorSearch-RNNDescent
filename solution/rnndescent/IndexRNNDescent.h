@@ -36,6 +36,11 @@ int sgemm_(const char *transa, const char *transb, FINTEGER *m, FINTEGER *n, FIN
 } // namespace
 
 struct IndexRNNDescent {
+    struct PCAConfig {
+        bool enabled = false;
+        int out_dim = 0;
+    };
+
     bool verbose;
     std::unique_ptr<faiss::Index> index;
     std::unique_ptr<MyDistanceComputer> disComputer;
@@ -46,6 +51,7 @@ struct IndexRNNDescent {
     RNNDescent rnndescent;
     RNNDescent::BuildConfig build_config;
     RNNDescent::SearchConfig search_config;
+    PCAConfig pca_config;
 
     explicit IndexRNNDescent(int d = 0, faiss::MetricType metric = faiss::METRIC_L2) : verbose(false), d(d), rnndescent(d), metric_type(metric), ntotal(0) {}
 
@@ -76,21 +82,12 @@ struct IndexRNNDescent {
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = std::chrono::high_resolution_clock::now();
         float process_time;
         ntotal = n;
-        // if (false) {
-        if (false && (d == 1024 || d == 1536)) {
+        const bool use_pca = pca_config.enabled && pca_config.out_dim > 0 && pca_config.out_dim < d;
+        if (use_pca) {
             puts("train PCA Matrix");
+            pca = faiss::PCAMatrix();
             pca.d_in = d;
-            if (d == 512) {
-                pca.d_out = 384;
-            } else if (d == 1024) {
-                pca.d_out = 256;
-            } else if (d == 1536) {
-                pca.d_out = 384;
-            } else {
-                throw std::runtime_error("Invalid dimension");
-            }
-            // throw std::runtime_error("Invalid dimension");
-            // pca.verbose = true;
+            pca.d_out = pca_config.out_dim;
             pca.train(n, x);
             std::vector<float> pcaMatrix;
             pcaMatrix.resize(n * pca.d_out);
@@ -106,8 +103,11 @@ struct IndexRNNDescent {
             const int maxquery = 10000;
             pcax.reserve(pca.d_out * maxquery);
         } else {
+            pca = faiss::PCAMatrix();
+            rnndescent.d = d;
             rnndescent.build(RNNDescent::FloatMatrixView::from_buffer(x, ntotal, d), verbose, build_config, search_config);
         }
+
 
         nowtime = std::chrono::high_resolution_clock::now();
         process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
@@ -224,7 +224,7 @@ struct IndexRNNDescent {
         printf("search: PCA Process done in %f ms/item\n", process_time / n);
 #endif
 
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
         for (int queryid = 0; queryid < n; queryid++) {
             int threadid = omp_get_thread_num();
             rnndescent.searchSingle(threadid, queryid, *disComputer, search_config, build_config.K0, result.slice(queryid), false);
@@ -262,6 +262,11 @@ struct IndexRNNDescent {
         rnndescent.reset();
         index.reset();
         disComputer.reset();
+        pca = faiss::PCAMatrix();
+        pcax.clear();
+        meand.clear();
+        refined_x.clear();
+        idxmap.clear();
         ntotal = 0;
     }
 };

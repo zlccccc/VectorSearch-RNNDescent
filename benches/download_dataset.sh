@@ -41,9 +41,13 @@ download_file() {
     url="$1"
     output="$2"
     if command -v curl >/dev/null 2>&1; then
-        curl -L --fail --retry 3 --retry-delay 1 -o "$output" "$url"
+        if [ -f "$output" ]; then
+            curl -L --fail --retry 3 --retry-delay 1 -C - -o "$output" "$url"
+        else
+            curl -L --fail --retry 3 --retry-delay 1 -o "$output" "$url"
+        fi
     elif command -v wget >/dev/null 2>&1; then
-        wget -O "$output" "$url"
+        wget -c -O "$output" "$url"
     else
         echo "curl or wget is required to download datasets" >&2
         exit 1
@@ -91,9 +95,9 @@ link_standard_names() {
 resolve_url() {
     dataset_name="$1"
     case "$dataset_name" in
-        siftsmall) echo "http://corpus-texmex.irisa.fr/siftsmall.tar.gz" ;;
-        sift) echo "http://corpus-texmex.irisa.fr/sift.tar.gz" ;;
-        gist) echo "http://corpus-texmex.irisa.fr/gist.tar.gz" ;;
+        siftsmall) echo "ftp://ftp.irisa.fr/local/texmex/corpus/siftsmall.tar.gz" ;;
+        sift) echo "ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz" ;;
+        gist) echo "ftp://ftp.irisa.fr/local/texmex/corpus/gist.tar.gz" ;;
         *)
             echo "unsupported dataset: ${dataset_name}" >&2
             usage
@@ -128,6 +132,12 @@ main() {
     rm -rf "${dataset_dir}"
     mkdir -p "${dataset_dir}"
     tar -xzf "${archive_path}" -C "${dataset_dir}"
+
+    nested_dir="${dataset_dir}/${dataset_name}"
+    if [ -d "${nested_dir}" ]; then
+        find "${nested_dir}" -mindepth 1 -maxdepth 1 -exec mv {} "${dataset_dir}"/ \;
+        rmdir "${nested_dir}"
+    fi
 
     link_standard_names "${dataset_name}" "${dataset_dir}"
 

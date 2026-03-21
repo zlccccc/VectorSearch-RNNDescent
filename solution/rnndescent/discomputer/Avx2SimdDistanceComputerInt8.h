@@ -10,6 +10,7 @@
 #include <faiss/impl/NNDescent.h>
 #include <faiss/utils/prefetch.h>
 #include <string.h>
+#include <fstream>
 #include <vector>
 
 namespace {
@@ -88,6 +89,21 @@ inline void CorrelationSum4(const int8_t *q, const int8_t *x0, const int8_t *x1,
 static std::vector<uint8_t, rnndescent::AlignedAllocator<uint8_t>> global_pool;
 static long long pool_start_ptr; // start position
 static long long preserve_limit;
+
+long long read_mem_available_bytes() {
+    std::ifstream meminfo("/proc/meminfo");
+    if (!meminfo.is_open())
+        return -1;
+
+    std::string key;
+    long long value = 0;
+    std::string unit;
+    while (meminfo >> key >> value >> unit) {
+        if (key == "MemAvailable:")
+            return value * 1024;
+    }
+    return -1;
+}
 
 void alignment_ptr() { pool_start_ptr = (pool_start_ptr + rnndescent::alignSize - 1) / rnndescent::alignSize * rnndescent::alignSize; }
 
@@ -282,34 +298,62 @@ struct Int8Neighbors { // 全都变成offset!
 
     static void init_neighbors_pool(int dim, std::vector<std::vector<int>> &edges, long long max_pool_size = 16ll * 1024 * 1024 * 1024,
                                     bool save_neighbor = true) {
-        // long long max_pool_size = global_pool.size();
-        // max_pool_size = 0;
-        int n = edges.size();
+        constexpr long long kDefaultPoolCap = 2ll * 1024 * 1024 * 1024;
         pool_start_ptr = 0; // clear all neighbors
-        long long total_edges = 0, total_size = 0;
+
+        long long total_edges = 0;
+        long long required_size = 0;
+        long long cached_bytes = 0;
         for (auto &nhood : edges) {
             total_edges += nhood.size();
+            required_size += nhood.size() * 4;
+            required_size = (required_size + alignSize - 1) / alignSize * alignSize;
             if (save_neighbor) {
-                total_size += nhood.size() * dim; // neighbor pool size
-                total_size += nhood.size() * 4;   // l2norm
+                cached_bytes += nhood.size() * (long long)dim;
+                cached_bytes += nhood.size() * 4;
             }
-            total_size += nhood.size() * 4;
-            total_size = (total_size + alignSize - 1) / alignSize * alignSize;
         }
-        // assert(total_size <= max_pool_size); // save all items in pool
 
-        // max_pool_size = std::max(max_pool_size, total_edges * 4 * 2);
-        max_pool_size = std::min(max_pool_size, total_size); // 本地测下来多几十分
-        // max_pool_size = std::min(max_pool_size, (total_edges * dim) + total_edges * 4 * 2); // 本地测下来多几十分
+        const long long configured_pool_cap = max_pool_size > 0 ? max_pool_size : kDefaultPoolCap;
+        const long long requested_size = std::min(required_size + cached_bytes, configured_pool_cap);
+        long long target_size = std::max(required_size, requested_size);
+
+        const long long available_bytes = read_mem_available_bytes();
+        if (available_bytes > 0) {
+            constexpr long long kSystemReserveBytes = 2ll * 1024 * 1024 * 1024;
+            const long long usable_bytes = std::max(0ll, available_bytes - kSystemReserveBytes);
+            const long long checked_cap = std::max(required_size, usable_bytes);
+            if (target_size > checked_cap) {
+                printf("neighbor cache pool capped by free memory: requested %.2fG -> %.2fG (available %.2fG\n", (double)target_size / 1024 / 1024 / 1024,
+                       (double)checked_cap / 1024 / 1024 / 1024, (double)available_bytes / 1024 / 1024 / 1024);
+                target_size = checked_cap;
+            }
+        }
+
+        while (true) {
+            try {
+                global_pool.clear();
+                global_pool.resize(target_size);
+                break;
+            } catch (const std::bad_alloc &) {
+                if (target_size <= required_size) {
+                    throw;
+                }
+                const long long reduced_cache = std::max(0ll, (target_size - required_size) / 2);
+                target_size = required_size + reduced_cache;
+                target_size = (target_size / alignSize) * alignSize;
+            }
+        }
+
         if (save_neighbor) {
-            preserve_limit = max_pool_size - total_edges * 4 * 2; // float(l2dis), int(edge)
+            preserve_limit = std::max(0ll, target_size - required_size);
         } else {
             preserve_limit = 0;
         }
-        global_pool.resize(max_pool_size); // max-limit = total_edges * dim
-        // assert(max_pool_size == (total_edges * dim) + total_edges * 4 * 2);                 // save all neighbors
-        printf("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, (float)preserve_limit / (total_edges * dim) * 100,
-               (float)max_pool_size / 1024 / 1024 / 1024);
+
+        const double cache_ratio = (save_neighbor && cached_bytes > 0) ? (100.0 * preserve_limit / cached_bytes) : 0.0;
+        printf("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, cache_ratio,
+               (double)target_size / 1024 / 1024 / 1024);
     }
 
     void compute_distance(int idq, std::vector<float> &result) { // 计算所有距离
