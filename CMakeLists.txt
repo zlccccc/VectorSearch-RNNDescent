@@ -46,7 +46,7 @@ include_directories(
 
 # include_directories(${OpenBLAS_INCLUDE_DIRS})
 
-file(GLOB cpp_srcs ${CMAKE_SOURCE_DIR}/* ${CMAKE_SOURCE_DIR}/solution/*.cpp ${CMAKE_SOURCE_DIR}/solution/*.h)
+file(GLOB cpp_srcs ${CMAKE_SOURCE_DIR}/main.cpp ${CMAKE_SOURCE_DIR}/solution/*.cpp)
 
 link_directories(
 /usr/local/lib64

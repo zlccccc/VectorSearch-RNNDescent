@@ -25,6 +25,8 @@ struct CblasDistanceComputerFP32L2 : MyDistanceComputer {
 
     int row_count() const override { return static_cast<int>(n); }
 
+    int dimension() const override { return static_cast<int>(d); }
+
     float operator()(int idq, int i) final override {
         const float *__restrict q = query + idq * d;
         const float *__restrict y = matrix + i * d;

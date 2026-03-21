@@ -88,6 +88,8 @@ struct SimdDistanceComputerFP16L2 : MyDistanceComputer {
 
     int row_count() const override { return static_cast<int>(n); }
 
+    int dimension() const override { return static_cast<int>(d); }
+
     float operator()(int idq, int i) final override {
         const float16_t *__restrict y0 = matrix.data() + i * d;
         const float16_t *__restrict q = query.data() + idq * d;

@@ -60,7 +60,7 @@ void Solution::warmup(const vector<float> &base, int d, int warmup_topk) {
     for (int i = 0; i < warmup_search_count; i++) {
         search(query, warmup_result, warmup_topk);
     }
-    index->rnndescent.reset_time();
+    index->reset_time();
     auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - prevtime).count();
     printf("Warmup done in %f ms\n", warmup_time);
 }
@@ -72,18 +72,18 @@ void Solution::search(const vector<float> &query, vector<int> &res, int topk) {
         throw std::runtime_error("search topk must be positive");
     if (query.empty())
         return;
-    if (query.size() % index->d != 0)
+    if (query.size() % index->dimension() != 0)
         throw std::runtime_error("query size must be divisible by index dimension");
     // #pragma omp parallel for
-    // for (int k = 0; k < query.size() / index->d; k++) {
-    //     index->searchSingle(&query[k * index->d], topk, distances, res + k * topk);
+    // for (int k = 0; k < query.size() / index->dimension(); k++) {
+    //     index->searchSingle(&query[k * index->dimension()], topk, distances, res + k * topk);
     // }
-    int n = query.size() / index->d;
+    int n = query.size() / index->dimension();
     if ((int)res.size() != n * topk)
         res.resize(n * topk);
     if ((int)distances.size() != n * topk)
         distances.resize(n * topk);
-    const auto query_view = rnndescent::RNNDescent::FloatMatrixView::from_vector(query, index->d);
+    const auto query_view = rnndescent::RNNDescent::FloatMatrixView::from_vector(query, index->dimension());
     const auto result_view = rnndescent::RNNDescent::SearchResultView::from_vectors(res, distances, topk);
     index->search(query_view, result_view); // 调低一下分数
 }

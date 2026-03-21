@@ -22,6 +22,10 @@ struct MyDistanceComputer {
         throw std::runtime_error("row_count is not implemented for this distance computer");
     }
 
+    virtual int dimension() const {
+        throw std::runtime_error("dimension is not implemented for this distance computer");
+    }
+
     virtual void *get_query_ptr(int idx0) {
         (void)idx0;
         throw std::runtime_error("get_query_ptr is not implemented for this distance computer");

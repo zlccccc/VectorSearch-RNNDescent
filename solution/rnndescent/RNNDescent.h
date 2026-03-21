@@ -227,7 +227,9 @@ struct RNNDescent {
 
     using KNNGraph = std::vector<std::vector<XNeighbor>>;
 
-    explicit RNNDescent(const int d) : d(d) {}
+    RNNDescent(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config, const SearchConfig &search_config) {
+        build(data_view, verbose, build_config, search_config);
+    }
 
 #ifdef INTERNAL_CLOCK_TEST
     struct PerfStats {
@@ -262,7 +264,7 @@ struct RNNDescent {
 
     void generate_graph(KNNGraph &graph, const FloatMatrixView &data_view, int n, bool verbose, const BuildConfig &build_config) {
         printf("generte graph ntotal = %d\n", n);
-        auto qdis = SelectedDistanceComputerFactory::create_build_graph(data_view.data_ptr(), data_view.row_count(), d);
+        auto qdis = SelectedDistanceComputerFactory::create_build_graph(data_view.data_ptr(), data_view.row_count(), data_view.dimension());
         init_graph(graph, n, *qdis, build_config);
         for (int t1 = 0; t1 < build_config.T1; ++t1) {
             if (verbose)
@@ -300,11 +302,10 @@ struct RNNDescent {
 
     void build(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config, const SearchConfig &search_config) {
         data_view.validate("build data");
-        FAISS_THROW_IF_NOT_MSG(data_view.dimension() == d, "build data dimension does not match index dimension");
-
         const BuildConfig safe_build_config = sanitize_build_config(build_config);
         const SearchConfig safe_search_config = sanitize_search_config(search_config);
         const int n = data_view.row_count();
+        const int dim = data_view.dimension();
 
         reset();
         lockwarppers.clear();
@@ -319,8 +320,8 @@ struct RNNDescent {
         {
             KNNGraph graph;
             generate_graph(graph, data_view, n, verbose, safe_build_config); // highest level
-                                                                          // #pragma omp parallel for
-            std::set<int> S;                                              // 不能重复
+                                                                             // #pragma omp parallel for
+            std::set<int> S;                                                 // 不能重复
             for (int i = 0; i < n; i++) {
                 auto &pool = graph[i];
                 sort(pool.begin(), pool.end());
@@ -423,22 +424,22 @@ struct RNNDescent {
                 rollback_ids[search_from_ids[i]] = i;
 
             std::vector<float> fastsearch_pool;
-            fastsearch_pool.resize(n * d);
+            fastsearch_pool.resize(n * dim);
 #pragma omp parallel for num_threads(safe_build_config.num_threads)
             for (int i = 0; i < n; i++) {
                 int u = search_from_ids[i];
                 // printf("u = %d; matrix.size() = %d\n",u, matrix.size());
-                memcpy(fastsearch_pool.data() + i * d, data_view.row_ptr(u), d * sizeof(float));
+                memcpy(fastsearch_pool.data() + i * dim, data_view.row_ptr(u), dim * sizeof(float));
             }
-            fastqdis = SelectedDistanceComputerFactory::create_cached_graph(fastsearch_pool.data(), n, d);
+            fastqdis = SelectedDistanceComputerFactory::create_cached_graph(fastsearch_pool.data(), n, dim);
         }
         { // 空间局部性优化
-            SelectedNeighborsContainerType::init_neighbors_pool(d, edges, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
+            SelectedNeighborsContainerType::init_neighbors_pool(dim, edges, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
             for (int i = 0; i < n; i++) {
                 int u = search_from_ids[i];
                 auto &pool = edges[u];
                 final_graph_neighbors.emplace_back(
-                    SelectedNeighborsContainerType(d, pool, fastqdis.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
+                    SelectedNeighborsContainerType(dim, pool, fastqdis.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
             }
         }
         has_built = true;
@@ -723,13 +724,13 @@ struct RNNDescent {
     }
 
     void reset() {
+        std::cout << "Resetting RNNDescent index." << std::endl;
         has_built = false;
         std::vector<SelectedNeighborsContainerType>().swap(final_graph_neighbors);
         // final_graph_neighbors.resize(0);
         // final_graph.resize(0);
         search_from_ids.resize(0);
         // std::vector<MyVisitedTable>().swap(threadVt); // 这个比较大
-
         fastqdis.reset();
         reset_time();
     }
@@ -892,7 +893,6 @@ struct RNNDescent {
 
     bool has_built = false;
 
-    int d; // dimensions
     std::vector<SelectedNeighborsContainerType> final_graph_neighbors;
     std::unique_ptr<MyDistanceComputer> fastqdis; // 新的disComputer
 };
