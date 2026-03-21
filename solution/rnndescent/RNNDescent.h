@@ -27,6 +27,7 @@
 #include "discomputer/PlatformSimdDistanceComputer.h"
 #include "Assertions.h"
 #include "Logger.h"
+#include "Views.h"
 // #include "discomputer/Avx512SimdDistanceComputerFP32.h"
 // #define INTERNAL_CLOCK_TEST
 
@@ -74,104 +75,6 @@ struct XNeighbor {
 };
 
 struct RNNDescent {
-    struct FloatMatrixView {
-      public:
-        FloatMatrixView() = default;
-        FloatMatrixView(const float *data, int rows, int dim) : data_(data), rows(rows), dim(dim) {}
-
-        static FloatMatrixView from_buffer(const float *data, int rows, int dim) { return FloatMatrixView(data, rows, dim); }
-
-        static FloatMatrixView from_vector(const std::vector<float> &data, int dim) {
-            RNNDESCENT_ASSERT_MSG(dim > 0, "matrix view requires positive dimension");
-            RNNDESCENT_ASSERT_MSG(data.size() % dim == 0, "matrix view vector size must be divisible by dimension");
-            return FloatMatrixView(data.data(), static_cast<int>(data.size() / dim), dim);
-        }
-
-        void validate(const char *name) const {
-            (void)name;
-            RNNDESCENT_ASSERT_MSG(data_ != nullptr, "matrix view data pointer is null");
-            RNNDESCENT_ASSERT_MSG(rows > 0, "matrix view requires positive row count");
-            RNNDESCENT_ASSERT_MSG(dim > 0, "matrix view requires positive dimension");
-        }
-
-        const float *data_ptr() const { return data_; }
-        int row_count() const { return rows; }
-        int dimension() const { return dim; }
-
-        const float *row_ptr(int row) const { return data_ + (size_t)row * dim; }
-
-      private:
-        const float *data_ = nullptr;
-        int rows = 0;
-        int dim = 0;
-    };
-
-    struct MutableFloatMatrixView {
-      public:
-        MutableFloatMatrixView() = default;
-        MutableFloatMatrixView(float *data, int rows, int dim) : data_(data), rows(rows), dim(dim) {}
-
-        static MutableFloatMatrixView from_buffer(float *data, int rows, int dim) { return MutableFloatMatrixView(data, rows, dim); }
-
-        static MutableFloatMatrixView from_vector(std::vector<float> &data, int dim) {
-            RNNDESCENT_ASSERT_MSG(dim > 0, "mutable matrix view requires positive dimension");
-            RNNDESCENT_ASSERT_MSG(data.size() % dim == 0, "mutable matrix view vector size must be divisible by dimension");
-            return MutableFloatMatrixView(data.data(), static_cast<int>(data.size() / dim), dim);
-        }
-
-        void validate(const char *name) const {
-            (void)name;
-            RNNDESCENT_ASSERT_MSG(data_ != nullptr, "mutable matrix view data pointer is null");
-            RNNDESCENT_ASSERT_MSG(rows > 0, "mutable matrix view requires positive row count");
-            RNNDESCENT_ASSERT_MSG(dim > 0, "mutable matrix view requires positive dimension");
-        }
-
-        float *data_ptr() const { return data_; }
-        int row_count() const { return rows; }
-        int dimension() const { return dim; }
-
-        float *row_ptr(int row) const { return data_ + (size_t)row * dim; }
-
-      private:
-        float *data_ = nullptr;
-        int rows = 0;
-        int dim = 0;
-    };
-
-    struct SearchResultView {
-      public:
-        SearchResultView() = default;
-        SearchResultView(int *indices, float *distances, int topk) : indices_(indices), distances_(distances), topk_(topk) {}
-
-        static SearchResultView from_buffers(int *indices, float *distances, int topk) { return SearchResultView(indices, distances, topk); }
-
-        static SearchResultView from_vectors(std::vector<int> &indices, std::vector<float> &distances, int topk) {
-            RNNDESCENT_ASSERT_MSG(topk > 0, "search topk must be positive");
-            RNNDESCENT_ASSERT_MSG(indices.size() == distances.size(), "search result vector sizes must match");
-            return SearchResultView(indices.data(), distances.data(), topk);
-        }
-
-        void validate() const {
-            RNNDESCENT_ASSERT_MSG(indices_ != nullptr, "search result indices buffer is null");
-            RNNDESCENT_ASSERT_MSG(distances_ != nullptr, "search result distance buffer is null");
-            RNNDESCENT_ASSERT_MSG(topk_ > 0, "search topk must be positive");
-        }
-
-        int *indices_ptr() const { return indices_; }
-        float *distances_ptr() const { return distances_; }
-        int topk() const { return topk_; }
-
-        SearchResultView slice(int queryid) const {
-            validate();
-            return SearchResultView(indices_ + queryid * topk_, distances_ + queryid * topk_, topk_);
-        }
-
-      private:
-        int *indices_ = nullptr;
-        float *distances_ = nullptr;
-        int topk_ = 0;
-    };
-
     struct BuildConfig {
         int T1 = 4;
         int T2 = 15;
@@ -204,14 +107,29 @@ struct RNNDescent {
         return config;
     }
 
-    static SearchConfig sanitize_search_config(SearchConfig config, int topk = 1) {
+    static SearchConfig sanitize_search_config(SearchConfig config, int topk = 1, int max_points = 0) {
         config.beam_size = std::max(config.beam_size, 1);
         config.num_threads = std::max(config.num_threads, 1);
         config.search_L = std::max(config.search_L, std::max(1, topk));
         config.num_initialize = std::max(config.num_initialize, config.search_L);
-        if (config.num_initialize % 4 != 0)
-            config.num_initialize = (config.num_initialize + 3) / 4 * 4;
         config.refine_max = std::max(config.refine_max, std::max(topk, 1));
+        if (max_points > 0) {
+            config.search_L = std::min(config.search_L, max_points);
+            config.refine_max = std::min(config.refine_max, max_points);
+            if (max_points >= 4) {
+                const int max_aligned_points = (max_points / 4) * 4;
+                config.num_initialize = std::min(config.num_initialize, max_aligned_points);
+                config.num_initialize = std::max(config.num_initialize, std::max(config.search_L, topk));
+                config.num_initialize = std::min(config.num_initialize, max_aligned_points);
+                config.num_initialize = (config.num_initialize / 4) * 4;
+                config.search_L = std::min(config.search_L, config.num_initialize);
+            } else {
+                config.num_initialize = max_points;
+                config.search_L = std::min(config.search_L, config.num_initialize);
+            }
+        } else if (config.num_initialize % 4 != 0) {
+            config.num_initialize = (config.num_initialize + 3) / 4 * 4;
+        }
         return config;
     };
 
@@ -314,9 +232,9 @@ struct RNNDescent {
     void build(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config, const SearchConfig &search_config) {
         data_view.validate("build data");
         const BuildConfig safe_build_config = sanitize_build_config(build_config);
-        const SearchConfig safe_search_config = sanitize_search_config(search_config);
         const int n = data_view.row_count();
         const int dim = data_view.dimension();
+        const SearchConfig safe_search_config = sanitize_search_config(search_config, 1, n);
 
         reset();
         node_locks_.clear();
@@ -485,7 +403,12 @@ struct RNNDescent {
         RNNDESCENT_ASSERT_MSG(max_degree > 0, "search max_degree must be positive");
         const int topk = result.topk();
 
-        const SearchConfig safe_search_config = sanitize_search_config(search_config, topk);
+        const int available_points = static_cast<int>(search_from_ids.size());
+        if (available_points <= 0)
+            throw std::runtime_error("search entry points are not initialized");
+        if (topk > available_points)
+            throw std::runtime_error("search topk exceeds indexed point count");
+        const SearchConfig safe_search_config = sanitize_search_config(search_config, topk, available_points);
         const int num_threads = safe_search_config.num_threads;
         const int beam_size = safe_search_config.beam_size;
         const int search_L = safe_search_config.search_L;

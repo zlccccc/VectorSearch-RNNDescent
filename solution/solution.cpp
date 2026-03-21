@@ -1,5 +1,6 @@
 #include "solution.h"
 #include "rnndescent/Logger.h"
+#include "rnndescent/Views.h"
 
 #include <cstring>
 #include <random>
@@ -13,7 +14,7 @@ void Solution::build(int d, const std::vector<float> &base, const WarmupConfig &
     if (base.size() % d != 0)
         throw std::runtime_error("base size must be divisible by dimension");
     index_ = std::make_unique<rnndescent::IndexRNNDescent>(d, true, build_config, search_config, pca_config);
-    const auto base_view = rnndescent::RNNDescent::FloatMatrixView::from_vector(base, d);
+    const auto base_view = rnndescent::FloatMatrixView::from_vector(base, d);
     index_->build(base_view);
 
     if (warmup_config.topk > 0)
@@ -78,8 +79,8 @@ void Solution::search(const std::vector<float> &query, std::vector<int> &res, in
         res.resize(n * topk);
     if ((int)distances_.size() != n * topk)
         distances_.resize(n * topk);
-    const auto query_view = rnndescent::RNNDescent::FloatMatrixView::from_vector(query, index_->dimension());
-    const auto result_view = rnndescent::RNNDescent::SearchResultView::from_vectors(res, distances_, topk);
+    const auto query_view = rnndescent::FloatMatrixView::from_vector(query, index_->dimension());
+    const auto result_view = rnndescent::SearchResultView::from_vectors(res, distances_, topk);
     index_->search(query_view, result_view); // 调低一下分数
 }
 

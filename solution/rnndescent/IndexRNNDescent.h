@@ -12,6 +12,7 @@
 #include "Logger.h"
 #include "Assertions.h"
 #include "RNNDescent.h"
+#include "Views.h"
 #include <cblas.h>
 #include <faiss/VectorTransform.h>
 
@@ -53,11 +54,11 @@ struct IndexRNNDescent {
     PCAConfig pca_config;
     std::unique_ptr<faiss::PCAMatrix> pca;
     std::vector<float> pca_query_buffer;
-    void rebuild_graph_index(const RNNDescent::FloatMatrixView &base_view) {
+    void rebuild_graph_index(const FloatMatrixView &base_view) {
         rnndescent = std::make_unique<RNNDescent>(base_view, verbose, build_config, search_config);
     }
 
-    void pca_apply_noalloc(const RNNDescent::FloatMatrixView &input, const RNNDescent::MutableFloatMatrixView &output) {
+    void pca_apply_noalloc(const FloatMatrixView &input, const MutableFloatMatrixView &output) {
         RNNDESCENT_ASSERT_MSG(pca != nullptr && pca->is_trained, "Transformation not trained yet");
         input.validate("pca input");
         output.validate("pca output");
@@ -88,7 +89,7 @@ struct IndexRNNDescent {
 
   public:
 
-    void build(const RNNDescent::FloatMatrixView &base) {
+    void build(const FloatMatrixView &base) {
         RNNDESCENT_ASSERT_MSG(refine_distance_computer == nullptr, "incremental add is not supported");
         base.validate("add data");
         RNNDESCENT_ASSERT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
@@ -116,13 +117,13 @@ struct IndexRNNDescent {
             prevtime = nowtime;
             Logger::info(verbose, "PCA Process done in %f ms\n", process_time);
             const int projected_dim = pca->d_out;
-            rebuild_graph_index(RNNDescent::FloatMatrixView::from_vector(pcaMatrix, projected_dim));
+            rebuild_graph_index(FloatMatrixView::from_vector(pcaMatrix, projected_dim));
 
             const int maxquery = 10000;
             pca_query_buffer.reserve(pca->d_out * maxquery);
         } else {
             pca.reset();
-            rebuild_graph_index(RNNDescent::FloatMatrixView::from_buffer(x, n, input_dimension_));
+            rebuild_graph_index(FloatMatrixView::from_buffer(x, n, input_dimension_));
         }
 
         nowtime = std::chrono::high_resolution_clock::now();
@@ -134,7 +135,7 @@ struct IndexRNNDescent {
         refine_distance_computer = SelectedDistanceComputerFactory::create_refine_search(x, n, dimension());
     }
 
-    void search(const RNNDescent::FloatMatrixView &queries, const RNNDescent::SearchResultView &result) {
+    void search(const FloatMatrixView &queries, const SearchResultView &result) {
         RNNDESCENT_ASSERT_MSG(refine_distance_computer != nullptr, "index has not been built");
         RNNDESCENT_ASSERT_MSG(rnndescent != nullptr, "search graph has not been initialized");
         RNNDESCENT_ASSERT_MSG(rnndescent->graph_distance_computer != nullptr, "search graph has not been initialized");
@@ -153,8 +154,8 @@ struct IndexRNNDescent {
         if (pca && pca->is_trained) {
             pca_query_buffer.resize(n * pca->d_out);
             // pca->apply_noalloc(n, x, pca_query_buffer.data());  // 这句话太慢了
-            pca_apply_noalloc(RNNDescent::FloatMatrixView::from_buffer(x, static_cast<int>(n), dimension()),
-                              RNNDescent::MutableFloatMatrixView::from_vector(pca_query_buffer, pca->d_out));
+            pca_apply_noalloc(FloatMatrixView::from_buffer(x, static_cast<int>(n), dimension()),
+                              MutableFloatMatrixView::from_vector(pca_query_buffer, pca->d_out));
             rnndescent->graph_distance_computer->set_query(pca_query_buffer.data(), n);
         } else {
             rnndescent->graph_distance_computer->set_query(x, n);
