@@ -11,10 +11,10 @@
 #include <unordered_set>
 
 #include "Logger.h"
+#include "Assertions.h"
 #include "RNNDescent.h"
 #include <cblas.h>
 #include <faiss/VectorTransform.h>
-#include <faiss/impl/FaissAssert.h>
 
 namespace rnndescent {
 
@@ -60,19 +60,19 @@ struct IndexRNNDescent {
     }
 
     void pca_apply_noalloc(const RNNDescent::FloatMatrixView &input, const RNNDescent::MutableFloatMatrixView &output) {
-        FAISS_THROW_IF_NOT_MSG(pca != nullptr && pca->is_trained, "Transformation not trained yet");
+        RNNDESCENT_ASSERT_MSG(pca != nullptr && pca->is_trained, "Transformation not trained yet");
         input.validate("pca input");
         output.validate("pca output");
-        FAISS_THROW_IF_NOT_MSG(input.row_count() == output.row_count(), "pca input/output row count mismatch");
-        FAISS_THROW_IF_NOT_MSG(input.dimension() == pca->d_in, "pca input dimension mismatch");
-        FAISS_THROW_IF_NOT_MSG(output.dimension() == pca->d_out, "pca output dimension mismatch");
+        RNNDESCENT_ASSERT_MSG(input.row_count() == output.row_count(), "pca input/output row count mismatch");
+        RNNDESCENT_ASSERT_MSG(input.dimension() == pca->d_in, "pca input dimension mismatch");
+        RNNDESCENT_ASSERT_MSG(output.dimension() == pca->d_out, "pca output dimension mismatch");
         const idx_t n = input.row_count();
         const float *x = input.data_ptr();
         float *xt = output.data_ptr();
 
         float c_factor;
         if (pca->have_bias) {
-            FAISS_THROW_IF_NOT_MSG(pca->b.size() == pca->d_out, "Bias not initialized");
+            RNNDESCENT_ASSERT_MSG(pca->b.size() == pca->d_out, "Bias not initialized");
 #pragma omp parallel for
             for (int i = 0; i < n; i++)
                 memcpy(xt + i * pca->d_out, pca->b.data(), pca->d_out * sizeof(float));
@@ -81,7 +81,7 @@ struct IndexRNNDescent {
             c_factor = 0.0;
         }
 
-        FAISS_THROW_IF_NOT_MSG(pca->A.size() == pca->d_out * pca->d_in, "Transformation matrix not initialized");
+        RNNDESCENT_ASSERT_MSG(pca->A.size() == pca->d_out * pca->d_in, "Transformation matrix not initialized");
 
         float one = 1;
         FINTEGER nbiti = pca->d_out, ni = n, di = pca->d_in;
@@ -91,9 +91,9 @@ struct IndexRNNDescent {
   public:
 
     void build(const RNNDescent::FloatMatrixView &base) {
-        FAISS_THROW_IF_NOT(refine_distance_computer == nullptr); // 暂时不支持增删
+        RNNDESCENT_ASSERT_MSG(refine_distance_computer == nullptr, "incremental add is not supported");
         base.validate("add data");
-        FAISS_THROW_IF_NOT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
+        RNNDESCENT_ASSERT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
         const idx_t n = base.row_count();
         const float *x = base.data_ptr();
 
@@ -132,18 +132,18 @@ struct IndexRNNDescent {
         prevtime = nowtime;
         Logger::info(verbose, "RNN Descent build done in %f ms\n", process_time);
 
-        assert(refine_distance_computer == nullptr);
+        RNNDESCENT_ASSERT_MSG(refine_distance_computer == nullptr, "refine distance computer has already been initialized");
         refine_distance_computer = SelectedDistanceComputerFactory::create_refine_search(x, n, dimension());
     }
 
     void search(const RNNDescent::FloatMatrixView &queries, const RNNDescent::SearchResultView &result, const faiss::SearchParameters *params = nullptr) {
-        FAISS_THROW_IF_NOT_MSG(!params, "search params not supported for this index");
-        FAISS_THROW_IF_NOT_MSG(refine_distance_computer != nullptr, "index has not been built");
-        FAISS_THROW_IF_NOT_MSG(rnndescent != nullptr, "search graph has not been initialized");
-        FAISS_THROW_IF_NOT_MSG(rnndescent->graph_distance_computer != nullptr, "search graph has not been initialized");
+        RNNDESCENT_ASSERT_MSG(!params, "search params not supported for this index");
+        RNNDESCENT_ASSERT_MSG(refine_distance_computer != nullptr, "index has not been built");
+        RNNDESCENT_ASSERT_MSG(rnndescent != nullptr, "search graph has not been initialized");
+        RNNDESCENT_ASSERT_MSG(rnndescent->graph_distance_computer != nullptr, "search graph has not been initialized");
         queries.validate("query batch");
         result.validate();
-        FAISS_THROW_IF_NOT_MSG(queries.dimension() == dimension(), "query dimension does not match index dimension");
+        RNNDESCENT_ASSERT_MSG(queries.dimension() == dimension(), "query dimension does not match index dimension");
         const idx_t n = queries.row_count();
         const idx_t k = result.topk();
         const float *x = queries.data_ptr();

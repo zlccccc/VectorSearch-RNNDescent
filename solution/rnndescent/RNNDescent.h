@@ -25,6 +25,7 @@
 // #include "discomputer/FaissDistComputerL2.h"
 
 #include "discomputer/PlatformSimdDistanceComputer.h"
+#include "Assertions.h"
 #include "Logger.h"
 // #include "discomputer/Avx512SimdDistanceComputerFP32.h"
 // #define INTERNAL_CLOCK_TEST
@@ -81,16 +82,16 @@ struct RNNDescent {
         static FloatMatrixView from_buffer(const float *data, int rows, int dim) { return FloatMatrixView(data, rows, dim); }
 
         static FloatMatrixView from_vector(const std::vector<float> &data, int dim) {
-            FAISS_THROW_IF_NOT_MSG(dim > 0, "matrix view requires positive dimension");
-            FAISS_THROW_IF_NOT_MSG(data.size() % dim == 0, "matrix view vector size must be divisible by dimension");
+            RNNDESCENT_ASSERT_MSG(dim > 0, "matrix view requires positive dimension");
+            RNNDESCENT_ASSERT_MSG(data.size() % dim == 0, "matrix view vector size must be divisible by dimension");
             return FloatMatrixView(data.data(), static_cast<int>(data.size() / dim), dim);
         }
 
         void validate(const char *name) const {
             (void)name;
-            FAISS_THROW_IF_NOT_MSG(data_ != nullptr, "matrix view data pointer is null");
-            FAISS_THROW_IF_NOT_MSG(rows > 0, "matrix view requires positive row count");
-            FAISS_THROW_IF_NOT_MSG(dim > 0, "matrix view requires positive dimension");
+            RNNDESCENT_ASSERT_MSG(data_ != nullptr, "matrix view data pointer is null");
+            RNNDESCENT_ASSERT_MSG(rows > 0, "matrix view requires positive row count");
+            RNNDESCENT_ASSERT_MSG(dim > 0, "matrix view requires positive dimension");
         }
 
         const float *data_ptr() const { return data_; }
@@ -113,16 +114,16 @@ struct RNNDescent {
         static MutableFloatMatrixView from_buffer(float *data, int rows, int dim) { return MutableFloatMatrixView(data, rows, dim); }
 
         static MutableFloatMatrixView from_vector(std::vector<float> &data, int dim) {
-            FAISS_THROW_IF_NOT_MSG(dim > 0, "mutable matrix view requires positive dimension");
-            FAISS_THROW_IF_NOT_MSG(data.size() % dim == 0, "mutable matrix view vector size must be divisible by dimension");
+            RNNDESCENT_ASSERT_MSG(dim > 0, "mutable matrix view requires positive dimension");
+            RNNDESCENT_ASSERT_MSG(data.size() % dim == 0, "mutable matrix view vector size must be divisible by dimension");
             return MutableFloatMatrixView(data.data(), static_cast<int>(data.size() / dim), dim);
         }
 
         void validate(const char *name) const {
             (void)name;
-            FAISS_THROW_IF_NOT_MSG(data_ != nullptr, "mutable matrix view data pointer is null");
-            FAISS_THROW_IF_NOT_MSG(rows > 0, "mutable matrix view requires positive row count");
-            FAISS_THROW_IF_NOT_MSG(dim > 0, "mutable matrix view requires positive dimension");
+            RNNDESCENT_ASSERT_MSG(data_ != nullptr, "mutable matrix view data pointer is null");
+            RNNDESCENT_ASSERT_MSG(rows > 0, "mutable matrix view requires positive row count");
+            RNNDESCENT_ASSERT_MSG(dim > 0, "mutable matrix view requires positive dimension");
         }
 
         float *data_ptr() const { return data_; }
@@ -145,15 +146,15 @@ struct RNNDescent {
         static SearchResultView from_buffers(int *indices, float *distances, int topk) { return SearchResultView(indices, distances, topk); }
 
         static SearchResultView from_vectors(std::vector<int> &indices, std::vector<float> &distances, int topk) {
-            FAISS_THROW_IF_NOT_MSG(topk > 0, "search topk must be positive");
-            FAISS_THROW_IF_NOT_MSG(indices.size() == distances.size(), "search result vector sizes must match");
+            RNNDESCENT_ASSERT_MSG(topk > 0, "search topk must be positive");
+            RNNDESCENT_ASSERT_MSG(indices.size() == distances.size(), "search result vector sizes must match");
             return SearchResultView(indices.data(), distances.data(), topk);
         }
 
         void validate() const {
-            FAISS_THROW_IF_NOT_MSG(indices_ != nullptr, "search result indices buffer is null");
-            FAISS_THROW_IF_NOT_MSG(distances_ != nullptr, "search result distance buffer is null");
-            FAISS_THROW_IF_NOT_MSG(topk_ > 0, "search topk must be positive");
+            RNNDESCENT_ASSERT_MSG(indices_ != nullptr, "search result indices buffer is null");
+            RNNDESCENT_ASSERT_MSG(distances_ != nullptr, "search result distance buffer is null");
+            RNNDESCENT_ASSERT_MSG(topk_ > 0, "search topk must be positive");
         }
 
         int *indices_ptr() const { return indices_; }
@@ -216,7 +217,7 @@ struct RNNDescent {
 
     static void gen_random(std::mt19937 &rng, std::vector<int> &addr, const int N) {
         const int size = addr.size();
-        FAISS_THROW_IF_NOT_MSG(0 <= size && size <= N, "gen_random requires 0 <= size <= N");
+        RNNDESCENT_ASSERT_MSG(0 <= size && size <= N, "gen_random requires 0 <= size <= N");
         if (size == 0)
             return;
 
@@ -481,7 +482,7 @@ struct RNNDescent {
     void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree,
                       const SearchResultView &result) {
         result.validate();
-        FAISS_THROW_IF_NOT_MSG(max_degree > 0, "search max_degree must be positive");
+        RNNDESCENT_ASSERT_MSG(max_degree > 0, "search max_degree must be positive");
         const int topk = result.topk();
 
         const SearchConfig safe_search_config = sanitize_search_config(search_config, topk);
@@ -502,7 +503,7 @@ struct RNNDescent {
             throw std::runtime_error("num_initialize must be >= search_L");
         if (max_degree * beam_size < max_degree)
             throw std::runtime_error("beam expansion overflow");
-        FAISS_THROW_IF_NOT_MSG(graph_distance_computer != nullptr, "The index is not build yet.");
+        RNNDESCENT_ASSERT_MSG(graph_distance_computer != nullptr, "The index is not build yet.");
 
         auto &retset = threadRetset[threadid];
         auto &usefulset = threadUsefulset[threadid];

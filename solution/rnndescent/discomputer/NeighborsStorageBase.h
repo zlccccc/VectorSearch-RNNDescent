@@ -1,11 +1,11 @@
 #pragma once
 
+#include "../Assertions.h"
 #include "../Logger.h"
 #include "MyDistanceComputer.h"
 #include "utils.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -30,10 +30,10 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
     NeighborsStorageBase() = default;
 
     NeighborsStorageBase(int dim, std::vector<int> &neighbor, MyDistanceComputer *dis, std::vector<int> &rollback_ids, bool save_neighbor) : dim(dim) {
-        assert(global_pool.size() != 0);
+        RNNDESCENT_ASSERT_MSG(!global_pool.empty(), "neighbors pool has not been initialized");
         size = neighbor.size();
         this->dis = dis;
-        assert(size % 4 == 0);
+        RNNDESCENT_ASSERT_MSG(size % 4 == 0, "neighbor cache size must be a multiple of 4");
 
         alignment_ptr();
         if (save_neighbor && 1ll * size * dim * (long long)sizeof(CodeType) <= preserve_limit) {
@@ -136,7 +136,7 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
     static void alignment_ptr() { pool_start_ptr = (pool_start_ptr + alignSize - 1) / alignSize * alignSize; }
 
     static void *allocate_ptr(size_t size) {
-        assert(pool_start_ptr + (long long)size <= (long long)global_pool.size());
+        RNNDESCENT_ASSERT_MSG(pool_start_ptr + (long long)size <= (long long)global_pool.size(), "neighbor pool allocation overflow");
         void *ptr = &global_pool[(size_t)pool_start_ptr];
         pool_start_ptr += (long long)size;
         return ptr;
