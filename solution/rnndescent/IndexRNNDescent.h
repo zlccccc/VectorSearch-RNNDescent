@@ -1,6 +1,5 @@
 #pragma once
 
-#include <faiss/Index.h>
 #include <omp.h>
 
 #include <cinttypes>
@@ -18,7 +17,6 @@
 
 namespace rnndescent {
 
-using idx_t = faiss::idx_t;
 using FINTEGER = int;
 
 extern "C" {
@@ -66,7 +64,7 @@ struct IndexRNNDescent {
         RNNDESCENT_ASSERT_MSG(input.row_count() == output.row_count(), "pca input/output row count mismatch");
         RNNDESCENT_ASSERT_MSG(input.dimension() == pca->d_in, "pca input dimension mismatch");
         RNNDESCENT_ASSERT_MSG(output.dimension() == pca->d_out, "pca output dimension mismatch");
-        const idx_t n = input.row_count();
+        const int n = input.row_count();
         const float *x = input.data_ptr();
         float *xt = output.data_ptr();
 
@@ -94,7 +92,7 @@ struct IndexRNNDescent {
         RNNDESCENT_ASSERT_MSG(refine_distance_computer == nullptr, "incremental add is not supported");
         base.validate("add data");
         RNNDESCENT_ASSERT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
-        const idx_t n = base.row_count();
+        const int n = base.row_count();
         const float *x = base.data_ptr();
 
         build_config = RNNDescent::sanitize_build_config(build_config);
@@ -136,19 +134,15 @@ struct IndexRNNDescent {
         refine_distance_computer = SelectedDistanceComputerFactory::create_refine_search(x, n, dimension());
     }
 
-    void search(const RNNDescent::FloatMatrixView &queries, const RNNDescent::SearchResultView &result, const faiss::SearchParameters *params = nullptr) {
-        RNNDESCENT_ASSERT_MSG(!params, "search params not supported for this index");
+    void search(const RNNDescent::FloatMatrixView &queries, const RNNDescent::SearchResultView &result) {
         RNNDESCENT_ASSERT_MSG(refine_distance_computer != nullptr, "index has not been built");
         RNNDESCENT_ASSERT_MSG(rnndescent != nullptr, "search graph has not been initialized");
         RNNDESCENT_ASSERT_MSG(rnndescent->graph_distance_computer != nullptr, "search graph has not been initialized");
         queries.validate("query batch");
         result.validate();
         RNNDESCENT_ASSERT_MSG(queries.dimension() == dimension(), "query dimension does not match index dimension");
-        const idx_t n = queries.row_count();
-        const idx_t k = result.topk();
+        const int n = queries.row_count();
         const float *x = queries.data_ptr();
-        float *distances = result.distances_ptr();
-        int *labels = result.indices_ptr();
 #ifdef INTERNAL_CLOCK_TEST
         auto prevtime = std::chrono::high_resolution_clock::now();
         auto nowtime = prevtime, starttime = prevtime;
