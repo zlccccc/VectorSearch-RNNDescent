@@ -1,7 +1,23 @@
 #pragma once
 
-#include <bits/stdc++.h>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <memory>
+#include <mutex>
 #include <memory_resource>
+#include <numeric>
+#include <random>
+#include <set>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include <omp.h>
 
 // #include "discomputer/CblasDistComputerIP.h"
 #include "discomputer/CblasDistComputerFP32.h"

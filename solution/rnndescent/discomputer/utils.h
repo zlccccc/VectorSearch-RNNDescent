@@ -1,6 +1,11 @@
 #pragma once
 
-#include <bits/stdc++.h>
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <vector>
 
 namespace rnndescent {
 

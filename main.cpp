@@ -1,12 +1,55 @@
 #include "solution/solution.h"
 #include "solution/rnndescent/Logger.h"
-#include <bits/stdc++.h>
-#include <filesystem>
 
-using namespace std;
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <numeric>
+#include <queue>
+#include <random>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
 namespace fs = std::filesystem;
+namespace chrono = std::chrono;
 
 namespace {
+
+using std::accumulate;
+using std::cerr;
+using std::cout;
+using std::endl;
+using std::exception;
+using std::ifstream;
+using std::ios;
+using std::max;
+using std::max_element;
+using std::min;
+using std::min_element;
+using std::ofstream;
+using std::ostringstream;
+using std::pair;
+using std::priority_queue;
+using std::runtime_error;
+using std::sort;
+using std::stoi;
+using std::stoll;
+using std::string;
+using std::time_t;
+using std::to_string;
+using std::transform;
+using std::unordered_set;
+using std::vector;
 
 struct DenseVectors {
     vector<float> values;
@@ -203,11 +246,12 @@ float calc_l2_sqr(const vector<float> &lhs, int lhs_idx, const vector<float> &rh
     return res;
 }
 
-void randvector(vector<float> &data, int row_idx, int dim) {
+void randvector(std::mt19937 &rng, vector<float> &data, int row_idx, int dim) {
+    static std::uniform_real_distribution<float> dist(0.0f, 1.0f);
     float sum = 0.0f;
     const size_t offset = 1ULL * row_idx * dim;
     for (int i = 0; i < dim; i++) {
-        data[offset + i] = rand() * 1.0f / RAND_MAX;
+        data[offset + i] = dist(rng);
         sum += data[offset + i] * data[offset + i];
     }
     sum = sqrt(sum);
@@ -523,14 +567,14 @@ void run_random_benchmark(BenchmarkConfig config) {
     Solution solution;
     BenchmarkStats stats;
     rnndescent::Logger::line("start random benchmark");
+    std::mt19937 rng(0);
     vector<float> dataset(1ULL * config.data_size * config.dim);
-    srand(0);
     for (int i = 0; i < config.data_size; i++)
-        randvector(dataset, i, config.dim);
+        randvector(rng, dataset, i, config.dim);
 
     vector<float> query(1ULL * config.test_iter * config.dim);
     for (int i = 0; i < config.test_iter; i++)
-        randvector(query, i, config.dim);
+        randvector(rng, query, i, config.dim);
 
     vector<int> result((size_t)config.topk * config.test_iter);
     apply_solution_preset(config);
@@ -546,13 +590,14 @@ void run_random_benchmark(BenchmarkConfig config) {
         const auto before_test = chrono::high_resolution_clock::now();
         solution.search(query, result, config.topk);
         const auto after_test = chrono::high_resolution_clock::now();
-        const float t = chrono::duration<double, milli>(after_test - before_test).count() / config.test_iter;
+        const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / config.test_iter;
         stats.latency_ms.push_back(t);
         cout << "[" << i << "] average test time: " << t << " ms; " << 1000. / t << " offline score" << endl;
     }
 
-    stats.accuracy = evaluate_accuracy_exact(dataset, query, result, solution.distances, config.data_size, config.dim, config.topk, config.exact_check_queries);
-    print_sample_results(dataset, query, result, solution.distances, config.dim, config.topk, config.output_iter);
+    stats.accuracy = evaluate_accuracy_exact(dataset, query, result, solution.distance_buffer(), config.data_size, config.dim, config.topk,
+                                             config.exact_check_queries);
+    print_sample_results(dataset, query, result, solution.distance_buffer(), config.dim, config.topk, config.output_iter);
     write_benchmark_report(config, stats);
     solution.reset();
 }
@@ -599,15 +644,15 @@ void run_dataset_benchmark(BenchmarkConfig config) {
         const auto before_test = chrono::high_resolution_clock::now();
         solution.search(query.values, result, config.topk);
         const auto after_test = chrono::high_resolution_clock::now();
-        const float t = chrono::duration<double, milli>(after_test - before_test).count() / query.rows;
+        const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / query.rows;
         stats.latency_ms.push_back(t);
         cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " qps(k)" << endl;
     }
 
     if (gt.rows > 0) {
-        stats.accuracy = evaluate_accuracy_with_gt(dataset.values, query.values, gt, result, solution.distances, dataset.dim, config.topk);
+        stats.accuracy = evaluate_accuracy_with_gt(dataset.values, query.values, gt, result, solution.distance_buffer(), dataset.dim, config.topk);
     }
-    print_sample_results(dataset.values, query.values, result, solution.distances, dataset.dim, config.topk, config.output_iter);
+    print_sample_results(dataset.values, query.values, result, solution.distance_buffer(), dataset.dim, config.topk, config.output_iter);
     write_benchmark_report(config, stats);
     solution.reset();
 }
@@ -628,7 +673,7 @@ string timestamp_string() {
     const time_t tt = chrono::system_clock::to_time_t(now);
     std::tm tm = *std::localtime(&tt);
     ostringstream oss;
-    oss << put_time(&tm, "%Y%m%d-%H%M%S");
+    oss << std::put_time(&tm, "%Y%m%d-%H%M%S");
     return oss.str();
 }
 

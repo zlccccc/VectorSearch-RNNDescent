@@ -14,9 +14,12 @@ class Solution {
     void warmup(const std::vector<float> &base, int d, int warmup_topk);
     void search(const std::vector<float> &query, std::vector<int> &res, int topk);
     void reset();
-    std::unique_ptr<rnndescent::IndexRNNDescent> index;
-    std::vector<float> distances;
+    const std::vector<float> &distance_buffer() const { return distances_; }
     ~Solution() = default;
+
+  private:
+    std::unique_ptr<rnndescent::IndexRNNDescent> index_;
+    std::vector<float> distances_;
 };
 
 #endif
