@@ -6,6 +6,7 @@
 #include "MyDistanceComputer.h"
 #include "NeighborsStorageBase.h"
 #include "utils.h"
+#include "../Logger.h"
 #include <algorithm>
 #include <cmath>
 #include <faiss/impl/NNDescent.h>
@@ -137,7 +138,7 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
         // scale = (maxvalue - minvalue) / 2.0;
         // mean = (maxvalue + minvalue) / 2.0;
         scale /= maxscale;
-        printf("Int8 QT scale = %f; mean = %f; maxvalue = %f\n", scale, mean[0], scale * maxscale);
+        Logger::info("Int8 QT scale = %f; mean = %f; maxvalue = %f\n", scale, mean[0], scale * maxscale);
         scale2 = scale * scale;
 
         (this->matrix).resize(n * d);

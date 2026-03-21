@@ -9,6 +9,7 @@
 // #include "discomputer/FaissDistComputerL2.h"
 
 #include "discomputer/PlatformSimdDistanceComputer.h"
+#include "Logger.h"
 // #include "discomputer/Avx512SimdDistanceComputerFP32.h"
 // #define INTERNAL_CLOCK_TEST
 
@@ -259,7 +260,7 @@ struct RNNDescent {
     ~RNNDescent() { reset(); }
 
     void generate_graph(KNNGraph &graph, const FloatMatrixView &data_view, int n, bool verbose, const BuildConfig &build_config) {
-        printf("generte graph ntotal = %d\n", n);
+        Logger::info(verbose, "generte graph ntotal = %d\n", n);
         auto qdis = SelectedDistanceComputerFactory::create_build_graph(data_view.data_ptr(), data_view.row_count(), data_view.dimension());
         init_graph(graph, n, *qdis, build_config);
         for (int t1 = 0; t1 < build_config.T1; ++t1) {
@@ -271,7 +272,7 @@ struct RNNDescent {
                     std::cout << "#" << std::flush;
             }
             if (verbose)
-                printf("\n");
+                Logger::line(verbose, "");
 
             if (t1 != build_config.T1 - 1)
                 add_reverse_edges(graph, n, build_config);
@@ -293,7 +294,7 @@ struct RNNDescent {
             all_edges_size += graph[u].size();
             graph[u].shrink_to_fit();
         }
-        printf("graph edges size = %d\n", all_edges_size);
+        Logger::info(verbose, "graph edges size = %d\n", all_edges_size);
     }
 
     void build(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config, const SearchConfig &search_config) {
@@ -307,8 +308,8 @@ struct RNNDescent {
         node_locks_.clear();
 
         if (verbose)
-            printf("Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", safe_build_config.S, safe_build_config.R, safe_build_config.T1,
-                   safe_build_config.T2, n, safe_search_config.num_threads);
+            Logger::info(verbose, "Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", safe_build_config.S, safe_build_config.R,
+                         safe_build_config.T1, safe_build_config.T2, n, safe_search_config.num_threads);
         SelectedNeighborsContainerType::clear_memory();
 
         std::vector<std::vector<int>> edges; // distance并不重要
@@ -341,7 +342,7 @@ struct RNNDescent {
             }
         }
         // 确定全局入口点
-        printf("n = %d; initialize = %d\n", n, safe_search_config.num_initialize);
+        Logger::info(verbose, "n = %d; initialize = %d\n", n, safe_search_config.num_initialize);
         {
             std::mt19937 rng(safe_build_config.random_seed);
             search_from_ids.reserve(n);
@@ -356,7 +357,7 @@ struct RNNDescent {
         std::vector<int> rollback_ids(n); // 连graph的时候边id需更新
 
         { // ID重排
-            puts("Start Reordering The Graph.");
+            Logger::line(verbose, "Start Reordering The Graph.");
             // bfs from those indexes
             // search_from_ids.resize(numSearchInitializeItem); // range
             // for (int i = 0; i < search_from_ids.size(); i++)
@@ -393,8 +394,8 @@ struct RNNDescent {
                 for (int i = 0; i < cluster_id.size(); i++)
                     cluster_size[cluster_id[i]]++;
                 for (int v : cluster_size)
-                    printf("%d ", v);
-                puts(" <<- initial cluster size");
+                    Logger::info(verbose, "%d ", v);
+                Logger::line(verbose, " <<- initial cluster size");
                 std::vector<int> bfs_length_count;
                 for (int i = 0; i < search_from_ids.size(); i++) {
                     int v = bfs_distance[search_from_ids[i]];
@@ -403,7 +404,7 @@ struct RNNDescent {
                     bfs_length_count[v]++;
                 }
                 for (int i = 0; i < bfs_length_count.size(); i++)
-                    printf("bfs_length %d: %d\n", i, bfs_length_count[i]);
+                    Logger::info(verbose, "bfs_length %d: %d\n", i, bfs_length_count[i]);
             }
 
             int cannot_search = 0; // 这里先暂时不处理这种情况; 会有概率有的点搜不到
@@ -412,7 +413,7 @@ struct RNNDescent {
                     search_from_ids.push_back(i), cannot_search++;
             }
 #ifdef INTERNAL_CLOCK_TEST
-            printf("search from ids = %d; have_next = %d; cannot_search = %d\n", (int)search_from_ids.size(), all_have_next, cannot_search);
+            Logger::info(verbose, "search from ids = %d; have_next = %d; cannot_search = %d\n", (int)search_from_ids.size(), all_have_next, cannot_search);
             assert(n == search_from_ids.size());
 #endif
 
@@ -701,24 +702,24 @@ struct RNNDescent {
         if (perf_stats.query_count == 0) {
             return;
         }
-        printf("RNN Descent Running Time: mean bfs %f times; %f nodes; init_time = "
-               "%f, getneighbor_time = %f, calculate_time = %f, update_time = %f; "
-               "recalculate_time = %f; alltime = %f; calculate_dist_count = %f; "
-               "for_count = %f; useful_count = %f\n",
-               (float)perf_stats.bfs_length / perf_stats.query_count, (float)perf_stats.bfs_items / perf_stats.query_count,
-               perf_stats.init_time / perf_stats.query_count, perf_stats.getneighbor_time / perf_stats.query_count,
-               perf_stats.calculate_time / perf_stats.query_count, perf_stats.update_time / perf_stats.query_count,
-               perf_stats.recalculate_time / perf_stats.query_count,
-               (perf_stats.init_time + perf_stats.getneighbor_time + perf_stats.calculate_time + perf_stats.update_time + perf_stats.recalculate_time) /
-                   perf_stats.query_count,
-               (float)perf_stats.calculate_distance_count / perf_stats.query_count, (float)perf_stats.for_count / perf_stats.query_count,
-               (float)perf_stats.useful_count / perf_stats.query_count);
+        Logger::info("RNN Descent Running Time: mean bfs %f times; %f nodes; init_time = "
+                     "%f, getneighbor_time = %f, calculate_time = %f, update_time = %f; "
+                     "recalculate_time = %f; alltime = %f; calculate_dist_count = %f; "
+                     "for_count = %f; useful_count = %f\n",
+                     (float)perf_stats.bfs_length / perf_stats.query_count, (float)perf_stats.bfs_items / perf_stats.query_count,
+                     perf_stats.init_time / perf_stats.query_count, perf_stats.getneighbor_time / perf_stats.query_count,
+                     perf_stats.calculate_time / perf_stats.query_count, perf_stats.update_time / perf_stats.query_count,
+                     perf_stats.recalculate_time / perf_stats.query_count,
+                     (perf_stats.init_time + perf_stats.getneighbor_time + perf_stats.calculate_time + perf_stats.update_time + perf_stats.recalculate_time) /
+                         perf_stats.query_count,
+                     (float)perf_stats.calculate_distance_count / perf_stats.query_count, (float)perf_stats.for_count / perf_stats.query_count,
+                     (float)perf_stats.useful_count / perf_stats.query_count);
         perf_stats.reset();
 #endif
     }
 
     void reset() {
-        std::cout << "Resetting RNNDescent index." << std::endl;
+        Logger::line(true, "Resetting RNNDescent index.");
         std::vector<SelectedNeighborsContainerType>().swap(final_graph_neighbors);
         // final_graph_neighbors.resize(0);
         // final_graph.resize(0);

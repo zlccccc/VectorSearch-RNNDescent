@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../Logger.h"
 #include "MyDistanceComputer.h"
 #include "utils.h"
 
@@ -85,8 +86,9 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
             const long long usable_bytes = std::max(0ll, available_bytes - kSystemReserveBytes);
             const long long checked_cap = std::max(required_size, usable_bytes);
             if (target_size > checked_cap) {
-                printf("neighbor cache pool capped by free memory: requested %.2fG -> %.2fG (available %.2fG)\n", (double)target_size / 1024 / 1024 / 1024,
-                       (double)checked_cap / 1024 / 1024 / 1024, (double)available_bytes / 1024 / 1024 / 1024);
+                Logger::info("neighbor cache pool capped by free memory: requested %.2fG -> %.2fG (available %.2fG)\n",
+                             (double)target_size / 1024 / 1024 / 1024, (double)checked_cap / 1024 / 1024 / 1024,
+                             (double)available_bytes / 1024 / 1024 / 1024);
                 target_size = checked_cap;
             }
         }
@@ -111,7 +113,8 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
             preserve_limit = 0;
 
         const double cache_ratio = (save_neighbor && cached_bytes > 0) ? (100.0 * preserve_limit / cached_bytes) : 0.0;
-        printf("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, cache_ratio, (double)target_size / 1024 / 1024 / 1024);
+        Logger::info("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, cache_ratio,
+                     (double)target_size / 1024 / 1024 / 1024);
     }
 
   protected:

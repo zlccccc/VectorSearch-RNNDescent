@@ -10,17 +10,11 @@
 #include <queue>
 #include <unordered_set>
 
+#include "Logger.h"
 #include "RNNDescent.h"
 #include <cblas.h>
-#include <faiss/IndexFlat.h>
-#include <faiss/IndexPQ.h>
-#include <faiss/IndexScalarQuantizer.h>
 #include <faiss/VectorTransform.h>
-#include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
-#include <faiss/utils/Heap.h>
-#include <faiss/utils/distances.h>
-#include <faiss/utils/random.h>
 
 namespace rnndescent {
 
@@ -61,56 +55,8 @@ struct IndexRNNDescent {
     PCAConfig pca_config;
     std::unique_ptr<faiss::PCAMatrix> pca;
     std::vector<float> pca_query_buffer;
-
-  public:
     void rebuild_graph_index(const RNNDescent::FloatMatrixView &base_view) {
         rnndescent = std::make_unique<RNNDescent>(base_view, verbose, build_config, search_config);
-    }
-
-    void build(const RNNDescent::FloatMatrixView &base) {
-        FAISS_THROW_IF_NOT(refine_distance_computer == nullptr); // 暂时不支持增删
-        base.validate("add data");
-        FAISS_THROW_IF_NOT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
-        const idx_t n = base.row_count();
-        const float *x = base.data_ptr();
-
-        build_config = RNNDescent::sanitize_build_config(build_config);
-        search_config = RNNDescent::sanitize_search_config(search_config);
-
-        auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = std::chrono::high_resolution_clock::now();
-        float process_time;
-        const bool use_pca = pca_config.enabled && pca_config.out_dim > 0 && pca_config.out_dim < dimension();
-        if (use_pca) {
-            puts("Train PCA Matrix");
-            pca = std::make_unique<faiss::PCAMatrix>();
-            pca->d_in = dimension();
-            pca->d_out = pca_config.out_dim;
-            pca->train(n, x);
-            std::vector<float> pcaMatrix;
-            pcaMatrix.resize(n * pca->d_out);
-            pca->apply_noalloc(n, x, pcaMatrix.data());
-            printf("End Calc PCA Matrix\n");
-            nowtime = std::chrono::high_resolution_clock::now();
-            process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-            prevtime = nowtime;
-            printf("PCA Process done in %f ms\n", process_time);
-            const int projected_dim = pca->d_out;
-            rebuild_graph_index(RNNDescent::FloatMatrixView::from_vector(pcaMatrix, projected_dim));
-
-            const int maxquery = 10000;
-            pca_query_buffer.reserve(pca->d_out * maxquery);
-        } else {
-            pca.reset();
-            rebuild_graph_index(RNNDescent::FloatMatrixView::from_buffer(x, n, input_dimension_));
-        }
-
-        nowtime = std::chrono::high_resolution_clock::now();
-        process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-        prevtime = nowtime;
-        printf("RNN Descent build done in %f ms\n", process_time);
-
-        assert(refine_distance_computer == nullptr);
-        refine_distance_computer = SelectedDistanceComputerFactory::create_refine_search(x, n, dimension());
     }
 
     void pca_apply_noalloc(const RNNDescent::FloatMatrixView &input, const RNNDescent::MutableFloatMatrixView &output) {
@@ -130,8 +76,6 @@ struct IndexRNNDescent {
 #pragma omp parallel for
             for (int i = 0; i < n; i++)
                 memcpy(xt + i * pca->d_out, pca->b.data(), pca->d_out * sizeof(float));
-            // for (int j = 0; j < pca->d_out; j++)
-            //     xt[i * pca->d_out + j] = pca->b[j];
             c_factor = 1.0;
         } else {
             c_factor = 0.0;
@@ -141,10 +85,55 @@ struct IndexRNNDescent {
 
         float one = 1;
         FINTEGER nbiti = pca->d_out, ni = n, di = pca->d_in;
-        // int nbiti = pca->d_out, ni = n, di = pca->d_in;
         sgemm_("Transposed", "Not transposed", &nbiti, &ni, &di, &one, pca->A.data(), &di, x, &di, &c_factor, xt, &nbiti);
-        // cblas的sgemm如果想要omp优化，需要安装成支持多线程的版本
-        // cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans, nbiti, ni, di, one, pca->A.data(), di, x, di, c_factor, xt, nbiti);
+    }
+
+  public:
+
+    void build(const RNNDescent::FloatMatrixView &base) {
+        FAISS_THROW_IF_NOT(refine_distance_computer == nullptr); // 暂时不支持增删
+        base.validate("add data");
+        FAISS_THROW_IF_NOT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
+        const idx_t n = base.row_count();
+        const float *x = base.data_ptr();
+
+        build_config = RNNDescent::sanitize_build_config(build_config);
+        search_config = RNNDescent::sanitize_search_config(search_config);
+
+        auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = std::chrono::high_resolution_clock::now();
+        float process_time;
+        const bool use_pca = pca_config.enabled && pca_config.out_dim > 0 && pca_config.out_dim < dimension();
+        if (use_pca) {
+            Logger::line(verbose, "Train PCA Matrix");
+            pca = std::make_unique<faiss::PCAMatrix>();
+            pca->d_in = dimension();
+            pca->d_out = pca_config.out_dim;
+            pca->train(n, x);
+            std::vector<float> pcaMatrix;
+            pcaMatrix.resize(n * pca->d_out);
+            pca->apply_noalloc(n, x, pcaMatrix.data());
+            Logger::line(verbose, "End Calc PCA Matrix");
+            nowtime = std::chrono::high_resolution_clock::now();
+            process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+            prevtime = nowtime;
+            Logger::info(verbose, "PCA Process done in %f ms\n", process_time);
+            const int projected_dim = pca->d_out;
+            rebuild_graph_index(RNNDescent::FloatMatrixView::from_vector(pcaMatrix, projected_dim));
+
+            const int maxquery = 10000;
+            pca_query_buffer.reserve(pca->d_out * maxquery);
+        } else {
+            pca.reset();
+            rebuild_graph_index(RNNDescent::FloatMatrixView::from_buffer(x, n, input_dimension_));
+        }
+
+        nowtime = std::chrono::high_resolution_clock::now();
+        process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+        prevtime = nowtime;
+        Logger::info(verbose, "RNN Descent build done in %f ms\n", process_time);
+
+        assert(refine_distance_computer == nullptr);
+        refine_distance_computer = SelectedDistanceComputerFactory::create_refine_search(x, n, dimension());
     }
 
     void search(const RNNDescent::FloatMatrixView &queries, const RNNDescent::SearchResultView &result, const faiss::SearchParameters *params = nullptr) {
@@ -181,7 +170,7 @@ struct IndexRNNDescent {
         nowtime = std::chrono::high_resolution_clock::now();
         process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
         prevtime = nowtime;
-        printf("search: PCA Process done in %f ms/item\n", process_time / n);
+        Logger::info(verbose, "search: PCA Process done in %f ms/item\n", process_time / n);
 #endif
 
 #pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
@@ -195,8 +184,8 @@ struct IndexRNNDescent {
         process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
         prevtime = nowtime;
         auto all_time = std::chrono::duration<float, std::milli>(nowtime - starttime).count();
-        printf("search: RNNDescent Search Process done in %f ms/item; all = %f ms/item; internal point %f\n", process_time / n, all_time / n,
-               1000. * n / all_time);
+        Logger::info(verbose, "search: RNNDescent Search Process done in %f ms/item; all = %f ms/item; internal point %f\n", process_time / n,
+                     all_time / n, 1000. * n / all_time);
 #endif
     }
 

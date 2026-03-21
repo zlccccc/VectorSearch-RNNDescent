@@ -1,11 +1,7 @@
 #include "solution.h"
+#include "rnndescent/Logger.h"
 
-#include <faiss/IndexFlat.h>
-#include <faiss/IndexHNSW.h>
-#include <faiss/IndexIVFFlat.h>
-#include <faiss/IndexNNDescent.h>
-
-void Solution::build(int d, const vector<float> &base, int warmup_topk, const rnndescent::RNNDescent::BuildConfig &build_config,
+void Solution::build(int d, const std::vector<float> &base, int warmup_topk, const rnndescent::RNNDescent::BuildConfig &build_config,
                      const rnndescent::RNNDescent::SearchConfig &search_config, const rnndescent::IndexRNNDescent::PCAConfig &pca_config) {
     if (d <= 0)
         throw std::runtime_error("build dimension must be positive");
@@ -22,7 +18,7 @@ void Solution::build(int d, const vector<float> &base, int warmup_topk, const rn
     warmup(base, d, warmup_topk);
 }
 
-void Solution::warmup(const vector<float> &base, int d, int warmup_topk) {
+void Solution::warmup(const std::vector<float> &base, int d, int warmup_topk) {
     if (!index)
         throw std::runtime_error("warmup called before build");
     if (warmup_topk <= 0)
@@ -49,10 +45,10 @@ void Solution::warmup(const vector<float> &base, int d, int warmup_topk) {
     }
     index->flush_perf_stats();
     auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - prevtime).count();
-    printf("Warmup done in %f ms\n", warmup_time);
+    rnndescent::Logger::info("Warmup done in %f ms\n", warmup_time);
 }
 
-void Solution::search(const vector<float> &query, vector<int> &res, int topk) {
+void Solution::search(const std::vector<float> &query, std::vector<int> &res, int topk) {
     if (!index)
         throw std::runtime_error("search called before build");
     if (topk <= 0)

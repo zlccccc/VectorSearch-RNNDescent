@@ -4,6 +4,7 @@
 // #include "simd/dot.h"
 #include <arm_neon.h>
 
+#include "../Logger.h"
 #include "utils.h"
 #include <algorithm>
 #include <cmath>
@@ -104,7 +105,7 @@ struct SimdDistanceComputerInt16L2 : MyDistanceComputer {
         scale = (maxvalue - minvalue) / 2.0;
         mean = (maxvalue + minvalue) / 2.0;
         scale /= maxscale;
-        printf("Int16 QT scale = %f; mean = %f\n", scale, mean);
+        Logger::info("Int16 QT scale = %f; mean = %f\n", scale, mean);
         scale2 = scale * scale;
 #pragma omp parallel for
         for (int i = 0; i < n; i++) {

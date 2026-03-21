@@ -1,4 +1,5 @@
 #include "solution/solution.h"
+#include "solution/rnndescent/Logger.h"
 #include <bits/stdc++.h>
 #include <filesystem>
 
@@ -403,15 +404,15 @@ void print_sample_results(const vector<float> &dataset, const vector<float> &que
     for (int i = 0; i < min(output_iter, query_count); i++) {
         for (int k = 0; k < topk; k++)
             cout << result[i * topk + k] << " ";
-        puts(" <- result id");
+        rnndescent::Logger::line(" <- result id");
         for (int k = 0; k < topk; k++)
             cout << solution_distances[i * topk + k] << " ";
-        puts(" <- solution distance");
+        rnndescent::Logger::line(" <- solution distance");
         for (int k = 0; k < topk; k++) {
             const float real = calc_l2_sqr(dataset, result[i * topk + k], query, i, dim);
             cout << real << " ";
         }
-        puts(" <- real distance");
+        rnndescent::Logger::line(" <- real distance");
     }
 }
 
@@ -521,7 +522,7 @@ AccuracyStats evaluate_accuracy_with_gt(const vector<float> &dataset, const vect
 void run_random_benchmark(BenchmarkConfig config) {
     Solution solution;
     BenchmarkStats stats;
-    puts("start random benchmark");
+    rnndescent::Logger::line("start random benchmark");
     vector<float> dataset(1ULL * config.data_size * config.dim);
     srand(0);
     for (int i = 0; i < config.data_size; i++)
