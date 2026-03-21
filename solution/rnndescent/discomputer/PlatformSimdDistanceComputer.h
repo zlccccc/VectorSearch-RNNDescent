@@ -30,6 +30,11 @@
 #endif
 
 namespace rnndescent {
+#if defined(RNNDESCENT_FORCE_AVX512) || ((defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && defined(__AVX512F__) && defined(__AVX512BW__))
+using SelectedNeighborsContainerType = UInt8Neighbors;
+using SelectedSaveNeighborDiscomputer = SimdDistanceComputerUInt8L2;
+#else
 using SelectedNeighborsContainerType = Int8Neighbors;
 using SelectedSaveNeighborDiscomputer = SimdDistanceComputerInt8L2;
+#endif
 } // namespace rnndescent

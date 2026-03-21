@@ -71,6 +71,21 @@ string normalize_dataset_name(string dataset_name) {
     return dataset_name;
 }
 
+void apply_default_dataset_mode(BenchmarkConfig &config) {
+    if (config.mode != "random" || !config.dataset_dir.empty() || !config.base_path.empty() || !config.query_path.empty())
+        return;
+
+    const char *dataset_env = std::getenv("DATASET");
+    const string dataset_name = dataset_env != nullptr ? normalize_dataset_name(dataset_env) : "sift";
+    const fs::path dataset_dir = fs::path("benches") / "datasets" / dataset_name;
+    if (!fs::exists(dataset_dir))
+        return;
+
+    config.mode = "dataset";
+    config.dataset_name = dataset_name;
+    config.dataset_dir = dataset_dir.string();
+}
+
 void apply_common_config(BenchmarkConfig &config) {
     const int thread_limit = std::min(16, omp_get_max_threads());
     config.build_config.num_threads = thread_limit;
@@ -88,21 +103,21 @@ void apply_dimension_default_preset(BenchmarkConfig &config) {
     if (config.dim == 256) {
         config.search_config.num_initialize = 1024;
         config.search_config.search_L = 512;
-        config.search_config.refine_max = 384;
-        config.build_config.K0 = 48;
+        config.search_config.refine_max = 128;
+        config.build_config.K0 = 64;
     } else if (config.dim == 512) {
         config.search_config.num_initialize = 1024;
-        config.search_config.search_L = 256;
-        config.search_config.refine_max = 64;
+        config.search_config.search_L = 512;
+        config.search_config.refine_max = 128;
         config.build_config.K0 = 64;
     } else if (config.dim == 1024) {
         config.search_config.num_initialize = 160;
-        config.search_config.search_L = 128;
+        config.search_config.search_L = 160;
         config.search_config.refine_max = 128;
         config.build_config.K0 = 32;
     } else if (config.dim == 1536) {
         config.search_config.num_initialize = 512;
-        config.search_config.search_L = 192;
+        config.search_config.search_L = 224;
         config.search_config.refine_max = 128;
         config.build_config.K0 = 48;
     } else {
@@ -799,13 +814,14 @@ BenchmarkConfig parse_args(int argc, char **argv) {
 int main(int argc, char **argv) {
     try {
         BenchmarkConfig config = parse_args(argc, argv);
+        apply_default_dataset_mode(config);
         if (config.mode == "dataset") {
             run_dataset_benchmark(config);
         } else if (config.mode == "random") {
             if (config.dim_explicit) {
                 run_random_benchmark(config);
             } else {
-                for (int dim : {256, 512, 1024}) {
+                for (int dim : {256, 512}) {
                     BenchmarkConfig current = config;
                     current.dim = dim;
                     cout << "\n=== random benchmark dim=" << dim << " ===" << endl;

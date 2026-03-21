@@ -92,20 +92,6 @@ inline void CorrelationSub(int size, const float *l, float *res) {
     }
 }
 
-// 缓存内存池; AlignedAllocator?
-static std::vector<uint8_t, rnndescent::AlignedAllocator<uint8_t>> global_pool;
-static long long pool_start_ptr; // start position
-static long long preserve_limit;
-
-void alignment_ptr() { pool_start_ptr = (pool_start_ptr + rnndescent::alignSize - 1) / rnndescent::alignSize * rnndescent::alignSize; }
-
-void *allocate_ptr(int size) {
-    assert(pool_start_ptr + size <= global_pool.size());
-    void *ptr = &global_pool[pool_start_ptr];
-    pool_start_ptr += size;
-    return ptr;
-}
-
 } // namespace
 
 namespace rnndescent {
@@ -233,98 +219,35 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
 };
 
 // neighbor number, dim
-struct Int8Neighbors { // 全都变成offset!
-    // std::vector<int, AlignedAllocator<int>> edges;
-    // std::vector<float, AlignedAllocator<float>> l2norms;
-    // std::vector<int8_t, AlignedAllocator<int8_t>> pool;
-    int *edges = nullptr;
-    float *l2norms = nullptr;
-    int8_t *pool = nullptr;
-    int dim = 0, size = 0;
-    MyDistanceComputer *dis = nullptr;
+struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // 全都变成offset!
+    using Base = NeighborsStorageBase<Int8Neighbors, int8_t, float>;
+    using Base::dim;
+    using Base::dis;
+    using Base::edges;
+    using Base::l2norms;
+    using Base::pool;
+    using Base::size;
+
     Int8Neighbors() = default;
-    Int8Neighbors(int dim, std::vector<int> &neighbor, MyDistanceComputer *dis, std::vector<int> &rollback_ids, bool save_neighbor) : dim(dim) {
-        assert(global_pool.size() != 0);
-        size = neighbor.size();
-        this->dis = dis;
-        assert(size % 4 == 0);
+    Int8Neighbors(int dim, std::vector<int> &neighbor, MyDistanceComputer *dis, std::vector<int> &rollback_ids, bool save_neighbor)
+        : Base(dim, neighbor, dis, rollback_ids, save_neighbor) {
+        reorder_block(size, this->dim, pool);
+    }
 
-        alignment_ptr();
-        if (save_neighbor && (long long)size * dim <= preserve_limit) {
-            pool = (int8_t *)allocate_ptr(size * dim);
-            l2norms = (float *)allocate_ptr(size * 4); // 其实空间开不开都行
-            preserve_limit -= size * dim;
-        }
-
-        edges = (int *)allocate_ptr(size * 4);
-        for (int i = 0; i < size; ++i)
-            edges[i] = rollback_ids[neighbor[i]];
-
-        if (pool != nullptr) {
+    static void reorder_block(int size, int dim, int8_t *pool) {
+        if (pool == nullptr)
+            return;
 #pragma omp parallel for
-            for (int i = 0; i < size; ++i)
-                dis->copy_index(edges[i], pool + i * dim, l2norms[i]);
-
-#pragma omp parallel for
-            for (int i = 0; i < size; i += 4)
-                reorder(dim, pool + i * dim);
-        }
-    }
-
-    void reorder(int dim, int8_t *x) {
-        std::vector<int8_t> reorder_value(4 * dim);
-        for (int i = 0; i < dim; i += 16) {
-            for (int id = 0; id < 4; ++id) {
-                int8x16_t item = vld1q_s8(x + id * dim + i);
-                vst1q_s8(reorder_value.data() + i * 4 + id * 16, item);
-                // for (int k = 0; k < 16; k++) {
-                //     reorder_value[i * 4 + id * 16 + k] = x[id * dim + i + k];
-                // }
+        for (int base = 0; base < size; base += 4) {
+            int8_t *x = pool + base * dim;
+            std::vector<int8_t> reorder_value(4 * dim);
+            for (int i = 0; i < dim; i += 16) {
+                for (int id = 0; id < 4; id++) {
+                    memcpy(reorder_value.data() + i * 4 + id * 16, x + id * dim + i, 16);
+                }
             }
+            memcpy(x, reorder_value.data(), 4 * dim);
         }
-        // for (int i = 0; i < dim; i ++) {
-        //     for (int id = 0; id < 4; ++id) {
-        //         reorder_value[i * 4 + id] = x[id * dim + i];
-        //     }
-        // }
-        memcpy(x, reorder_value.data(), 4 * dim);
-    }
-
-    static void clear_memory() {
-        std::vector<uint8_t, rnndescent::AlignedAllocator<uint8_t>>().swap(global_pool);
-        pool_start_ptr = 0; // clear all neighbors
-    }
-
-    static void init_neighbors_pool(int dim, std::vector<std::vector<int>> &edges, long long max_pool_size = 16ll * 1024 * 1024 * 1024,
-                                    bool save_neighbor = true) {
-        // long long max_pool_size = global_pool.size();
-        // max_pool_size = 0;
-        int n = edges.size();
-        pool_start_ptr = 0; // clear all neighbors
-        long long total_edges = 0, total_size = 0;
-        for (auto &nhood : edges) {
-            total_edges += nhood.size();
-            if (save_neighbor) {
-                total_size += nhood.size() * dim; // neighbor pool size
-                total_size += nhood.size() * 4;   // l2norm
-            }
-            total_size += nhood.size() * 4;
-            total_size = (total_size + alignSize - 1) / alignSize * alignSize;
-        }
-        // assert(total_size <= max_pool_size); // save all items in pool
-
-        // max_pool_size = std::max(max_pool_size, total_edges * 4 * 2);
-        max_pool_size = std::min(max_pool_size, total_size); // 本地测下来多几十分
-        // max_pool_size = std::min(max_pool_size, (total_edges * dim) + total_edges * 4 * 2); // 本地测下来多几十分
-        if (save_neighbor) {
-            preserve_limit = max_pool_size - total_edges * 4 * 2; // float(l2dis), int(edge)
-        } else {
-            preserve_limit = 0;
-        }
-        global_pool.resize(max_pool_size); // max-limit = total_edges * dim
-        // assert(max_pool_size == (total_edges * dim) + total_edges * 4 * 2);                 // save all neighbors
-        printf("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, (float)preserve_limit / (total_edges * dim) * 100,
-               (float)max_pool_size / 1024 / 1024 / 1024);
     }
 
     void compute_distance(int idq, std::vector<float> &result) { // 计算所有距离
