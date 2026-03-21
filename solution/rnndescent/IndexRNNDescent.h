@@ -43,7 +43,7 @@ struct IndexRNNDescent {
     };
 
     bool verbose;
-    std::unique_ptr<MyDistanceComputer> disComputer;
+    std::unique_ptr<MyDistanceComputer> refine_distance_computer;
     bool is_trained = false;
 
     std::unique_ptr<RNNDescent> rnndescent;
@@ -55,7 +55,7 @@ struct IndexRNNDescent {
 
     ~IndexRNNDescent() { reset(); }
 
-    int dimension() const { return disComputer ? disComputer->dimension() : input_dimension_; }
+    int dimension() const { return refine_distance_computer ? refine_distance_computer->dimension() : input_dimension_; }
 
   private:
     int input_dimension_ = 0;
@@ -69,7 +69,7 @@ struct IndexRNNDescent {
     std::vector<float> pca_query_buffer;
     void add(const RNNDescent::FloatMatrixView &base) {
         FAISS_THROW_IF_NOT(is_trained);
-        FAISS_THROW_IF_NOT(disComputer == nullptr); // 暂时不支持增删
+        FAISS_THROW_IF_NOT(refine_distance_computer == nullptr); // 暂时不支持增删
         base.validate("add data");
         FAISS_THROW_IF_NOT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
         const idx_t n = base.row_count();
@@ -110,8 +110,8 @@ struct IndexRNNDescent {
         prevtime = nowtime;
         printf("RNN Descent build done in %f ms\n", process_time);
 
-        assert(disComputer == nullptr);
-        disComputer = SelectedDistanceComputerFactory::create_refine_search(x, n, dimension());
+        assert(refine_distance_computer == nullptr);
+        refine_distance_computer = SelectedDistanceComputerFactory::create_refine_search(x, n, dimension());
     }
 
     void train(const RNNDescent::FloatMatrixView &base) {
@@ -151,22 +151,15 @@ struct IndexRNNDescent {
         FINTEGER nbiti = pca->d_out, ni = n, di = pca->d_in;
         // int nbiti = pca->d_out, ni = n, di = pca->d_in;
         sgemm_("Transposed", "Not transposed", &nbiti, &ni, &di, &one, pca->A.data(), &di, x, &di, &c_factor, xt, &nbiti);
+        // cblas的sgemm如果想要omp优化，需要安装成支持多线程的版本
         // cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans, nbiti, ni, di, one, pca->A.data(), di, x, di, c_factor, xt, nbiti);
-
-        //         // 貌似评测机的sgemm已经自带了多线程? 但是我咋这么不信呢; 但是事实就是加上去一点用没有
-        // #pragma omp parallel for
-        //         for (int i = 0; i < 16; i++) {
-        //             int nk = ni / 16;
-        //             cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans, nbiti, nk, di, one, pca.A.data(), di, x + i * nk * d, di, c_factor, xt + i * nk *
-        //             pca.d_out, nbiti);
-        //         }
     }
 
     void search(const RNNDescent::FloatMatrixView &queries, const RNNDescent::SearchResultView &result, const faiss::SearchParameters *params = nullptr) {
         FAISS_THROW_IF_NOT_MSG(!params, "search params not supported for this index");
-        FAISS_THROW_IF_NOT_MSG(disComputer != nullptr, "index has not been built");
+        FAISS_THROW_IF_NOT_MSG(refine_distance_computer != nullptr, "index has not been built");
         FAISS_THROW_IF_NOT_MSG(rnndescent != nullptr, "search graph has not been initialized");
-        FAISS_THROW_IF_NOT_MSG(rnndescent->fastqdis != nullptr, "search graph has not been initialized");
+        FAISS_THROW_IF_NOT_MSG(rnndescent->graph_distance_computer != nullptr, "search graph has not been initialized");
         queries.validate("query batch");
         result.validate();
         FAISS_THROW_IF_NOT_MSG(queries.dimension() == dimension(), "query dimension does not match index dimension");
@@ -181,15 +174,15 @@ struct IndexRNNDescent {
         float process_time;
 #endif
 
-        disComputer->set_query(x, n);
+        refine_distance_computer->set_query(x, n);
         if (pca && pca->is_trained) {
             pca_query_buffer.resize(n * pca->d_out);
             // pca->apply_noalloc(n, x, pca_query_buffer.data());  // 这句话太慢了
             pca_apply_noalloc(RNNDescent::FloatMatrixView::from_buffer(x, static_cast<int>(n), dimension()),
                               RNNDescent::MutableFloatMatrixView::from_vector(pca_query_buffer, pca->d_out));
-            rnndescent->fastqdis->set_query(pca_query_buffer.data(), n);
+            rnndescent->graph_distance_computer->set_query(pca_query_buffer.data(), n);
         } else {
-            rnndescent->fastqdis->set_query(x, n);
+            rnndescent->graph_distance_computer->set_query(x, n);
         }
 
 #ifdef INTERNAL_CLOCK_TEST
@@ -202,7 +195,7 @@ struct IndexRNNDescent {
 #pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
         for (int queryid = 0; queryid < n; queryid++) {
             int threadid = omp_get_thread_num();
-            rnndescent->searchSingle(threadid, queryid, *disComputer, search_config, build_config.K0, result.slice(queryid));
+            rnndescent->searchSingle(threadid, queryid, *refine_distance_computer, search_config, build_config.K0, result.slice(queryid));
         }
 
 #ifdef INTERNAL_CLOCK_TEST
@@ -217,7 +210,7 @@ struct IndexRNNDescent {
 
     void reset() {
         rnndescent.reset();
-        disComputer.reset();
+        refine_distance_computer.reset();
         pca.reset();
         pca_query_buffer.clear();
     }

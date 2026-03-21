@@ -431,7 +431,7 @@ struct RNNDescent {
                 // printf("u = %d; matrix.size() = %d\n",u, matrix.size());
                 memcpy(fastsearch_pool.data() + i * dim, data_view.row_ptr(u), dim * sizeof(float));
             }
-            fastqdis = SelectedDistanceComputerFactory::create_cached_graph(fastsearch_pool.data(), n, dim);
+            graph_distance_computer = SelectedDistanceComputerFactory::create_cached_graph(fastsearch_pool.data(), n, dim);
         }
         { // 空间局部性优化
             SelectedNeighborsContainerType::init_neighbors_pool(dim, edges, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
@@ -439,7 +439,7 @@ struct RNNDescent {
                 int u = search_from_ids[i];
                 auto &pool = edges[u];
                 final_graph_neighbors.emplace_back(
-                    SelectedNeighborsContainerType(dim, pool, fastqdis.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
+                    SelectedNeighborsContainerType(dim, pool, graph_distance_computer.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
             }
         }
         has_built = true;
@@ -509,7 +509,7 @@ struct RNNDescent {
             retset[i + 1].id = i + 1; // have flag
             retset[i + 2].id = i + 2; // have flag
             retset[i + 3].id = i + 3; // have flag
-            fastqdis->distances_batch_4(queryid, i + 0, i + 1, i + 2, i + 3, retset[i].distance, retset[i + 1].distance, retset[i + 2].distance,
+            graph_distance_computer->distances_batch_4(queryid, i + 0, i + 1, i + 2, i + 3, retset[i].distance, retset[i + 1].distance, retset[i + 2].distance,
                                         retset[i + 3].distance);
         }
 
@@ -731,7 +731,7 @@ struct RNNDescent {
         // final_graph.resize(0);
         search_from_ids.resize(0);
         // std::vector<MyVisitedTable>().swap(threadVt); // 这个比较大
-        fastqdis.reset();
+        graph_distance_computer.reset();
         reset_time();
     }
 
@@ -894,7 +894,7 @@ struct RNNDescent {
     bool has_built = false;
 
     std::vector<SelectedNeighborsContainerType> final_graph_neighbors;
-    std::unique_ptr<MyDistanceComputer> fastqdis; // 新的disComputer
+    std::unique_ptr<MyDistanceComputer> graph_distance_computer;
 };
 
 } // namespace rnndescent
