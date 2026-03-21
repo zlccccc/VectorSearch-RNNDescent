@@ -18,6 +18,10 @@ struct MyDistanceComputer {
     // compute four distances
     virtual void distances_batch_4(int idq, int idx0, int idx1, int idx2, int idx3, float &dis0, float &dis1, float &dis2, float &dis3) = 0;
 
+    virtual int row_count() const {
+        throw std::runtime_error("row_count is not implemented for this distance computer");
+    }
+
     virtual void *get_query_ptr(int idx0) {
         (void)idx0;
         throw std::runtime_error("get_query_ptr is not implemented for this distance computer");

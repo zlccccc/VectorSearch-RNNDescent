@@ -120,6 +120,8 @@ struct SimdDistanceComputerInt16L2 : MyDistanceComputer {
         }
     }
 
+    int row_count() const override { return static_cast<int>(n); }
+
     float operator()(int idq, int i) final override {
         float32_t result;
         const int16_t *__restrict q = query.data() + idq * d;

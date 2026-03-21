@@ -19,7 +19,7 @@ void Solution::build(int d, const vector<float> &base, int warmup_topk,
         throw std::runtime_error("warmup topk must be positive");
     index.reset();
     int size = base.size() / d;
-    auto rnndescentindex = std::make_unique<rnndescent::IndexRNNDescent>(d, faiss::METRIC_L2);
+    auto rnndescentindex = std::make_unique<rnndescent::IndexRNNDescent>(d);
     // auto rnndescentindex = new rnndescent::IndexRNNDescent(d, faiss::METRIC_INNER_PRODUCT);
     auto &built_index = *rnndescentindex;
     built_index.build_config = build_config;

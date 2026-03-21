@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 // Optional manual overrides for benchmarking / deployment:
 //   RNNDESCENT_FORCE_AVX512
 //   RNNDESCENT_FORCE_AVX2
@@ -30,11 +32,26 @@
 #endif
 
 namespace rnndescent {
-#if defined(RNNDESCENT_FORCE_AVX512) || ((defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && defined(__AVX512F__) && defined(__AVX512BW__))
+#if defined(RNNDESCENT_FORCE_AVX512) ||                                                                                                                        \
+    ((defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && defined(__AVX512F__) && defined(__AVX512BW__))
 using SelectedNeighborsContainerType = UInt8Neighbors;
 using SelectedSaveNeighborDiscomputer = SimdDistanceComputerUInt8L2;
 #else
 using SelectedNeighborsContainerType = Int8Neighbors;
 using SelectedSaveNeighborDiscomputer = SimdDistanceComputerInt8L2;
 #endif
+
+struct SelectedDistanceComputerFactory {
+    static std::unique_ptr<MyDistanceComputer> create_build_graph(const float *data, int n, int d) {
+        return std::make_unique<SimdDistanceComputerInt8L2>(data, n, d);
+    }
+
+    static std::unique_ptr<MyDistanceComputer> create_cached_graph(const float *data, int n, int d) {
+        return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d);
+    }
+
+    static std::unique_ptr<MyDistanceComputer> create_refine_search(const float *data, int n, int d) {
+        return std::make_unique<SimdDistanceComputerFP32L2>(data, n, d);
+    }
+};
 } // namespace rnndescent

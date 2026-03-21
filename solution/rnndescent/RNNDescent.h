@@ -59,18 +59,13 @@ struct XNeighbor {
 
 namespace rnndescent {
 
-using NeighborsContainerType = SelectedNeighborsContainerType;
-using SaveneighborDiscomputer = SelectedSaveNeighborDiscomputer;
-
 struct RNNDescent {
     struct FloatMatrixView {
       public:
         FloatMatrixView() = default;
         FloatMatrixView(const float *data, int rows, int dim) : data_(data), rows(rows), dim(dim) {}
 
-        static FloatMatrixView from_buffer(const float *data, int rows, int dim) {
-            return FloatMatrixView(data, rows, dim);
-        }
+        static FloatMatrixView from_buffer(const float *data, int rows, int dim) { return FloatMatrixView(data, rows, dim); }
 
         static FloatMatrixView from_vector(const std::vector<float> &data, int dim) {
             FAISS_THROW_IF_NOT_MSG(dim > 0, "matrix view requires positive dimension");
@@ -89,9 +84,7 @@ struct RNNDescent {
         int row_count() const { return rows; }
         int dimension() const { return dim; }
 
-        const float *row_ptr(int row) const {
-            return data_ + (size_t)row * dim;
-        }
+        const float *row_ptr(int row) const { return data_ + (size_t)row * dim; }
 
       private:
         const float *data_ = nullptr;
@@ -104,9 +97,7 @@ struct RNNDescent {
         MutableFloatMatrixView() = default;
         MutableFloatMatrixView(float *data, int rows, int dim) : data_(data), rows(rows), dim(dim) {}
 
-        static MutableFloatMatrixView from_buffer(float *data, int rows, int dim) {
-            return MutableFloatMatrixView(data, rows, dim);
-        }
+        static MutableFloatMatrixView from_buffer(float *data, int rows, int dim) { return MutableFloatMatrixView(data, rows, dim); }
 
         static MutableFloatMatrixView from_vector(std::vector<float> &data, int dim) {
             FAISS_THROW_IF_NOT_MSG(dim > 0, "mutable matrix view requires positive dimension");
@@ -125,9 +116,7 @@ struct RNNDescent {
         int row_count() const { return rows; }
         int dimension() const { return dim; }
 
-        float *row_ptr(int row) const {
-            return data_ + (size_t)row * dim;
-        }
+        float *row_ptr(int row) const { return data_ + (size_t)row * dim; }
 
       private:
         float *data_ = nullptr;
@@ -140,9 +129,7 @@ struct RNNDescent {
         SearchResultView() = default;
         SearchResultView(int *indices, float *distances, int topk) : indices_(indices), distances_(distances), topk_(topk) {}
 
-        static SearchResultView from_buffers(int *indices, float *distances, int topk) {
-            return SearchResultView(indices, distances, topk);
-        }
+        static SearchResultView from_buffers(int *indices, float *distances, int topk) { return SearchResultView(indices, distances, topk); }
 
         static SearchResultView from_vectors(std::vector<int> &indices, std::vector<float> &distances, int topk) {
             FAISS_THROW_IF_NOT_MSG(topk > 0, "search topk must be positive");
@@ -273,25 +260,15 @@ struct RNNDescent {
 #endif
     ~RNNDescent() { reset(); }
 
-    std::unique_ptr<MyDistanceComputer> GenerateDistanceComputer(const FloatMatrixView &data_view) {
-        data_view.validate("distance computer input");
-        // return new FaissDistanceComputerL2(data, n, dim);
-        // return new CblasDistanceComputerFP32L2(data, n, d);
-        // return new SimdDistanceComputerFP16L2(data, n, dim);
-        return std::make_unique<SimdDistanceComputerInt8L2>(data_view.data_ptr(), data_view.row_count(), d);
-        // return new SimdDistanceComputerInt8L2Norm(data, n, dim);
-        throw std::runtime_error("Invalid metric type");
-    }
-
-    void generate_graph(KNNGraph &graph, const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config) {
-        printf("generte graph ntotal = %d\n", ntotal);
-        auto qdis = GenerateDistanceComputer(data_view);
-        init_graph(graph, *qdis, build_config);
+    void generate_graph(KNNGraph &graph, const FloatMatrixView &data_view, int n, bool verbose, const BuildConfig &build_config) {
+        printf("generte graph ntotal = %d\n", n);
+        auto qdis = SelectedDistanceComputerFactory::create_build_graph(data_view.data_ptr(), data_view.row_count(), d);
+        init_graph(graph, n, *qdis, build_config);
         for (int t1 = 0; t1 < build_config.T1; ++t1) {
             if (verbose)
                 std::cout << "Iter " << t1 << " : " << std::flush;
             for (int t2 = 0; t2 < build_config.T2; ++t2) {
-                update_neighbors(graph, *qdis, build_config);
+                update_neighbors(graph, n, *qdis, build_config);
                 if (verbose)
                     std::cout << "#" << std::flush;
             }
@@ -299,11 +276,11 @@ struct RNNDescent {
                 printf("\n");
 
             if (t1 != build_config.T1 - 1)
-                add_reverse_edges(graph, build_config);
+                add_reverse_edges(graph, n, build_config);
         }
 
 #pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < ntotal; ++u) { // remove edges
+        for (int u = 0; u < n; ++u) { // remove edges
             auto &pool = graph[u];
             std::sort(pool.begin(), pool.end());
             pool.erase(std::unique(pool.begin(), pool.end(), [](XNeighbor &a, XNeighbor &b) { return a.id() == b.id(); }), pool.end());
@@ -311,7 +288,7 @@ struct RNNDescent {
 
         // 这里的resize可能会导致图不联通; 这件事情需要在上面build的时候就考虑到
         int all_edges_size = 0;
-        for (int u = 0; u < ntotal; ++u) {
+        for (int u = 0; u < n; ++u) {
             // 清理内存
             if (graph[u].size() > build_config.K0)
                 graph[u].resize(build_config.K0);
@@ -335,16 +312,15 @@ struct RNNDescent {
         if (verbose)
             printf("Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", safe_build_config.S, safe_build_config.R, safe_build_config.T1,
                    safe_build_config.T2, n, safe_search_config.num_threads);
-        NeighborsContainerType::clear_memory();
+        SelectedNeighborsContainerType::clear_memory();
 
         std::vector<std::vector<int>> edges; // distance并不重要
         edges.resize(n);
         {
             KNNGraph graph;
-            ntotal = n;
-            generate_graph(graph, data_view, verbose, safe_build_config); // highest level
-                                               // #pragma omp parallel for
-            std::set<int> S; // 不能重复
+            generate_graph(graph, data_view, n, verbose, safe_build_config); // highest level
+                                                                          // #pragma omp parallel for
+            std::set<int> S;                                              // 不能重复
             for (int i = 0; i < n; i++) {
                 auto &pool = graph[i];
                 sort(pool.begin(), pool.end());
@@ -352,15 +328,15 @@ struct RNNDescent {
                 // 需要清理下内存; 变成4的倍数方便后面reorder
                 S.clear();
                 for (auto &edge : pool) {
-                    if (!S.count(edge.id())) {  // 这个地方感觉不太应该写成这样; 如果写得好的话, 理论上刚开始的edge id不会重复
+                    if (!S.count(edge.id())) { // 这个地方感觉不太应该写成这样; 如果写得好的话, 理论上刚开始的edge id不会重复
                         S.insert(edge.id());
                         edges[i].emplace_back(edge.id());
                     }
                 }
                 while (edges[i].size() % 4 != 0) { // 补到差不多
-                    int id = random() % ntotal;
+                    int id = random() % n;
                     while (S.count(id))
-                        id = random() % ntotal;
+                        id = random() % n;
                     S.insert(id);
                     edges[i].emplace_back(id);
                 }
@@ -371,17 +347,16 @@ struct RNNDescent {
         printf("n = %d; initialize = %d\n", n, safe_search_config.num_initialize);
         {
             std::mt19937 rng(safe_build_config.random_seed);
-            search_from_ids.reserve(ntotal);
+            search_from_ids.reserve(n);
             search_from_ids.resize(safe_search_config.num_initialize);
             if (safe_build_config.random_init)
                 gen_random(rng, search_from_ids, n);
             else
                 iota(search_from_ids.begin(), search_from_ids.end(), 0);
         }
-        ntotal = n;
 
         // 重排ID, 加速运行
-        std::vector<int> rollback_ids(ntotal); // 连graph的时候边id需更新
+        std::vector<int> rollback_ids(n); // 连graph的时候边id需更新
 
         { // ID重排
             puts("Start Reordering The Graph.");
@@ -389,15 +364,15 @@ struct RNNDescent {
             // search_from_ids.resize(numSearchInitializeItem); // range
             // for (int i = 0; i < search_from_ids.size(); i++)
             //     printf("%d ",search_from_ids[i]); puts("<");
-            MyVisitedTable vis(ntotal);
+            MyVisitedTable vis(n);
 
             // cluster_id: 重排ID以后, 从哪个cluster可以bfs到当前点
-            std::vector<int> cluster_id(ntotal);
+            std::vector<int> cluster_id(n);
             for (int i = 0; i < search_from_ids.size(); i++) {
                 vis.set(search_from_ids[i]);
                 cluster_id[search_from_ids[i]] = i;
             }
-            std::vector<int> bfs_distance(ntotal); // 只是用来记录一下
+            std::vector<int> bfs_distance(n); // 只是用来记录一下
             int all_have_next = 0;
             // std::vector<int> current_layer;
             for (int i = 0; i < search_from_ids.size(); i++) {
@@ -435,34 +410,35 @@ struct RNNDescent {
             }
 
             int cannot_search = 0; // 这里先暂时不处理这种情况; 会有概率有的点搜不到
-            for (int i = 0; i < ntotal; i++) {
+            for (int i = 0; i < n; i++) {
                 if (!vis.get(i))
                     search_from_ids.push_back(i), cannot_search++;
             }
 #ifdef INTERNAL_CLOCK_TEST
             printf("search from ids = %d; have_next = %d; cannot_search = %d\n", (int)search_from_ids.size(), all_have_next, cannot_search);
-            assert(ntotal == search_from_ids.size());
+            assert(n == search_from_ids.size());
 #endif
 
-            for (int i = 0; i < ntotal; i++) // 连graph的时候边id需更新
+            for (int i = 0; i < n; i++) // 连graph的时候边id需更新
                 rollback_ids[search_from_ids[i]] = i;
 
             std::vector<float> fastsearch_pool;
-            fastsearch_pool.resize(ntotal * d);
+            fastsearch_pool.resize(n * d);
 #pragma omp parallel for num_threads(safe_build_config.num_threads)
-            for (int i = 0; i < ntotal; i++) {
+            for (int i = 0; i < n; i++) {
                 int u = search_from_ids[i];
                 // printf("u = %d; matrix.size() = %d\n",u, matrix.size());
                 memcpy(fastsearch_pool.data() + i * d, data_view.row_ptr(u), d * sizeof(float));
             }
-            fastqdis = std::make_unique<SaveneighborDiscomputer>(fastsearch_pool.data(), ntotal, d);
+            fastqdis = SelectedDistanceComputerFactory::create_cached_graph(fastsearch_pool.data(), n, d);
         }
         { // 空间局部性优化
-            NeighborsContainerType::init_neighbors_pool(d, edges, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
-            for (int i = 0; i < ntotal; i++) {
+            SelectedNeighborsContainerType::init_neighbors_pool(d, edges, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
+            for (int i = 0; i < n; i++) {
                 int u = search_from_ids[i];
                 auto &pool = edges[u];
-                final_graph_neighbors.emplace_back(NeighborsContainerType(d, pool, fastqdis.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
+                final_graph_neighbors.emplace_back(
+                    SelectedNeighborsContainerType(d, pool, fastqdis.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
             }
         }
         has_built = true;
@@ -473,7 +449,7 @@ struct RNNDescent {
         threadUsefulset.resize(safe_search_config.num_threads);
         threadFinalset.resize(safe_search_config.num_threads);
         for (int i = 0; i < safe_search_config.num_threads; i++) {
-            threadVt[i].init(ntotal);
+            threadVt[i].init(n);
             threadRetset[i].reserve(std::max(safe_search_config.num_initialize, safe_search_config.search_L));
             neighborDistance[i].reserve(safe_search_config.search_L);
             threadFinalset[i].reserve(safe_search_config.search_L);
@@ -483,15 +459,14 @@ struct RNNDescent {
 
     std::vector<int> search_from_ids;
 
-
     std::vector<MyVisitedTable> threadVt;                  // threadRetset和之前的retset起到的价值差不多
     std::vector<std::vector<SingleNeighbor>> threadRetset; // threadRetset和之前的retset起到的价值差不多
     std::vector<std::vector<SingleNeighbor>> threadUsefulset;
     std::vector<std::vector<SingleNeighbor>> threadFinalset;
     std::vector<std::vector<float>> neighborDistance;
 
-    void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree, const SearchResultView &result,
-                      bool output) {
+    void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree,
+                      const SearchResultView &result) {
         result.validate();
         FAISS_THROW_IF_NOT_MSG(max_degree > 0, "search max_degree must be positive");
         const int topk = result.topk();
@@ -704,19 +679,6 @@ struct RNNDescent {
         nowtime = std::chrono::high_resolution_clock::now();
         float recalculate_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
         prevtime = nowtime;
-        if (output) {
-            printf("bfs: %d; calc=%d\n", bfs_length, calcdis);
-            // for (int x = 0; x < 10; ++x)
-            //     printf("%f ", finalset[x].distance);
-            // for (int x = 0; x < 10; ++x)
-            //     for (int y = 0; y < 10; ++y)
-            //         printf("%f ", qdis.symmetric_dis(x, y)); puts("<- inside dfs");
-            // puts("<- dist");
-            printf("time: init_time = %f, getneighbor_time = %f, calculate_time = %f, "
-                   "update_time = %f; recalculate_time = %f; alltime = %f\n",
-                   init_time, getneighbor_time, calculate_time, update_time, recalculate_time,
-                   init_time + getneighbor_time + calculate_time + update_time + recalculate_time);
-        }
         {
             // 需要atomic加锁
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -748,34 +710,36 @@ struct RNNDescent {
                "%f, getneighbor_time = %f, calculate_time = %f, update_time = %f; "
                "recalculate_time = %f; alltime = %f; calculate_dist_count = %f; "
                "for_count = %f; useful_count = %f\n",
-               (float)perf_stats.bfs_length / perf_stats.query_count, (float)perf_stats.bfs_items / perf_stats.query_count, perf_stats.init_time / perf_stats.query_count, perf_stats.getneighbor_time / perf_stats.query_count,
-               perf_stats.calculate_time / perf_stats.query_count, perf_stats.update_time / perf_stats.query_count, perf_stats.recalculate_time / perf_stats.query_count,
-               (perf_stats.init_time + perf_stats.getneighbor_time + perf_stats.calculate_time + perf_stats.update_time + perf_stats.recalculate_time) / perf_stats.query_count, (float)perf_stats.calculate_distance_count / perf_stats.query_count,
-               (float)perf_stats.for_count / perf_stats.query_count, (float)perf_stats.useful_count / perf_stats.query_count);
+               (float)perf_stats.bfs_length / perf_stats.query_count, (float)perf_stats.bfs_items / perf_stats.query_count,
+               perf_stats.init_time / perf_stats.query_count, perf_stats.getneighbor_time / perf_stats.query_count,
+               perf_stats.calculate_time / perf_stats.query_count, perf_stats.update_time / perf_stats.query_count,
+               perf_stats.recalculate_time / perf_stats.query_count,
+               (perf_stats.init_time + perf_stats.getneighbor_time + perf_stats.calculate_time + perf_stats.update_time + perf_stats.recalculate_time) /
+                   perf_stats.query_count,
+               (float)perf_stats.calculate_distance_count / perf_stats.query_count, (float)perf_stats.for_count / perf_stats.query_count,
+               (float)perf_stats.useful_count / perf_stats.query_count);
         perf_stats.reset();
 #endif
     }
 
     void reset() {
         has_built = false;
-        ntotal = 0;
-        std::vector<NeighborsContainerType>().swap(final_graph_neighbors);
+        std::vector<SelectedNeighborsContainerType>().swap(final_graph_neighbors);
         // final_graph_neighbors.resize(0);
         // final_graph.resize(0);
         search_from_ids.resize(0);
         // std::vector<MyVisitedTable>().swap(threadVt); // 这个比较大
 
         fastqdis.reset();
-
         reset_time();
     }
 
     /// Initialize the KNN graph randomly
-    void init_graph(KNNGraph &graph, MyDistanceComputer &qdis, const BuildConfig &build_config) {
-        lockwarppers.resize(ntotal);
-        graph.reserve(ntotal);
-        graph.resize(ntotal);
-        for (int i = 0; i < ntotal; i++) {
+    void init_graph(KNNGraph &graph, int n, MyDistanceComputer &qdis, const BuildConfig &build_config) {
+        lockwarppers.resize(n);
+        graph.reserve(n);
+        graph.resize(n);
+        for (int i = 0; i < n; i++) {
             graph[i].reserve(build_config.R * 2);
         }
 
@@ -783,10 +747,10 @@ struct RNNDescent {
         {
             std::mt19937 rng(build_config.random_seed * 7741 + omp_get_thread_num());
 #pragma omp for
-            for (int i = 0; i < ntotal; i++) {
+            for (int i = 0; i < n; i++) {
                 std::vector<int> tmp(build_config.S);
 
-                gen_random(rng, tmp, ntotal);
+                gen_random(rng, tmp, n);
 
                 for (int j = 0; j < build_config.S; j++) {
                     int id = tmp[j];
@@ -801,11 +765,11 @@ struct RNNDescent {
         }
     }
 
-    void update_neighbors(KNNGraph &graph, MyDistanceComputer &qdis, const BuildConfig &build_config) {
+    void update_neighbors(KNNGraph &graph, int n, MyDistanceComputer &qdis, const BuildConfig &build_config) {
         std::vector<std::vector<XNeighbor>> new_pools(build_config.num_threads);
         std::vector<std::vector<XNeighbor>> old_pools(build_config.num_threads);
 #pragma omp parallel for num_threads(build_config.num_threads) schedule(dynamic, 16)
-        for (int u = 0; u < ntotal; ++u) {
+        for (int u = 0; u < n; ++u) {
             auto &nhood = graph[u];
             auto &pool = nhood;
             auto &new_pool = new_pools[omp_get_thread_num()];
@@ -853,11 +817,11 @@ struct RNNDescent {
             }
         }
     }
-    void add_reverse_edges(KNNGraph &graph, const BuildConfig &build_config) {
-        std::vector<std::vector<XNeighbor>> reverse_pools(ntotal);
+    void add_reverse_edges(KNNGraph &graph, int n, const BuildConfig &build_config) {
+        std::vector<std::vector<XNeighbor>> reverse_pools(n);
 
 #pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < ntotal; ++u) {
+        for (int u = 0; u < n; ++u) {
             for (auto &nn : graph[u]) {
                 std::lock_guard<std::mutex> guard(lockwarppers[nn.id()]);
                 reverse_pools[nn.id()].emplace_back(XNeighbor(u, nn.distance, nn.flag()));
@@ -865,7 +829,7 @@ struct RNNDescent {
         }
 
 #pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < ntotal; ++u) {
+        for (int u = 0; u < n; ++u) {
             auto &pool = graph[u];
             for (auto &nn : pool) {
                 nn.setflag(true);
@@ -881,7 +845,7 @@ struct RNNDescent {
         }
 
 #pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < ntotal; ++u) {
+        for (int u = 0; u < n; ++u) {
             for (auto &nn : reverse_pools[u]) {
                 std::lock_guard<std::mutex> guard(lockwarppers[nn.id()]);
                 graph[nn.id()].emplace_back(u, nn.distance, nn.flag()); // 所有edge
@@ -889,7 +853,7 @@ struct RNNDescent {
         }
 
 #pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < ntotal; ++u) {
+        for (int u = 0; u < n; ++u) {
             auto &pool = graph[u];
             std::sort(pool.begin(), pool.end()); // 这里sort可能需要考虑度数了
             if (pool.size() > build_config.R) {
@@ -928,12 +892,9 @@ struct RNNDescent {
 
     bool has_built = false;
 
-    int d;                // dimensions
-    int ntotal = 0;
-
-    std::vector<NeighborsContainerType> final_graph_neighbors;
+    int d; // dimensions
+    std::vector<SelectedNeighborsContainerType> final_graph_neighbors;
     std::unique_ptr<MyDistanceComputer> fastqdis; // 新的disComputer
-    // std::vector<MyVisitedTable> threadVt;
 };
 
 } // namespace rnndescent

@@ -86,6 +86,8 @@ struct SimdDistanceComputerFP16L2 : MyDistanceComputer {
         faiss::fvec_norms_L2sqr(matrixl2norms.data(), matrix, d, n);
     }
 
+    int row_count() const override { return static_cast<int>(n); }
+
     float operator()(int idq, int i) final override {
         const float16_t *__restrict y0 = matrix.data() + i * d;
         const float16_t *__restrict q = query.data() + idq * d;

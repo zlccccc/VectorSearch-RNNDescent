@@ -10,8 +10,8 @@
 #include <cmath>
 #include <faiss/impl/NNDescent.h>
 #include <faiss/utils/prefetch.h>
-#include <string.h>
 #include <fstream>
+#include <string.h>
 #include <vector>
 
 namespace {
@@ -130,7 +130,9 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
             }
             mean[k] = (maxvalue + minvalue) / 2;
 #pragma single
-            { scale = std::max(scale, (maxvalue - minvalue) / 2); }
+            {
+                scale = std::max(scale, (maxvalue - minvalue) / 2);
+            }
         }
         // scale = (maxvalue - minvalue) / 2.0;
         // mean = (maxvalue + minvalue) / 2.0;
@@ -159,6 +161,8 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
         // puts("");
         // assert(0);
     }
+
+    int row_count() const override { return static_cast<int>(n); }
 
     float operator()(int idq, int i) final override {
         const int8_t *__restrict x = query.data() + idq * d;
