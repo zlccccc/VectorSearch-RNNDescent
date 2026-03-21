@@ -5,10 +5,8 @@
 #include <faiss/IndexIVFFlat.h>
 #include <faiss/IndexNNDescent.h>
 
-void Solution::build(int d, const vector<float> &base, int warmup_topk,
-                     const rnndescent::RNNDescent::BuildConfig &build_config,
-                     const rnndescent::RNNDescent::SearchConfig &search_config,
-                     const rnndescent::IndexRNNDescent::PCAConfig &pca_config) {
+void Solution::build(int d, const vector<float> &base, int warmup_topk, const rnndescent::RNNDescent::BuildConfig &build_config,
+                     const rnndescent::RNNDescent::SearchConfig &search_config, const rnndescent::IndexRNNDescent::PCAConfig &pca_config) {
     if (d <= 0)
         throw std::runtime_error("build dimension must be positive");
     if (base.empty())
@@ -17,20 +15,9 @@ void Solution::build(int d, const vector<float> &base, int warmup_topk,
         throw std::runtime_error("base size must be divisible by dimension");
     if (warmup_topk <= 0)
         throw std::runtime_error("warmup topk must be positive");
-    index.reset();
-    int size = base.size() / d;
-    auto rnndescentindex = std::make_unique<rnndescent::IndexRNNDescent>(d);
-    // auto rnndescentindex = new rnndescent::IndexRNNDescent(d, faiss::METRIC_INNER_PRODUCT);
-    auto &built_index = *rnndescentindex;
-    built_index.build_config = build_config;
-    built_index.search_config = search_config;
-    built_index.pca_config = pca_config;
-    built_index.verbose = true;
-
+    index = std::make_unique<rnndescent::IndexRNNDescent>(d, true, build_config, search_config, pca_config);
     const auto base_view = rnndescent::RNNDescent::FloatMatrixView::from_vector(base, d);
-    built_index.train(base_view);
-    built_index.add(base_view);
-    index = std::move(rnndescentindex);
+    index->build(base_view);
 
     warmup(base, d, warmup_topk);
 }
@@ -60,7 +47,7 @@ void Solution::warmup(const vector<float> &base, int d, int warmup_topk) {
     for (int i = 0; i < warmup_search_count; i++) {
         search(query, warmup_result, warmup_topk);
     }
-    index->reset_time();
+    index->flush_perf_stats();
     auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - prevtime).count();
     printf("Warmup done in %f ms\n", warmup_time);
 }
@@ -88,35 +75,6 @@ void Solution::search(const vector<float> &query, vector<int> &res, int topk) {
     index->search(query_view, result_view); // 调低一下分数
 }
 
-void Solution::test(int d, const vector<float> &base, int topk) {
-    int size = base.size() / d;
-    if (topk <= 0)
-        throw std::runtime_error("test topk must be positive");
-
-    if (!index) {
-        cout << "Test: Index not built" << endl;
-        return;
-    }
-    int correct = 0, cnt = 0;
-    mutex mtx;
-    auto before_test = std::chrono::high_resolution_clock::now();
-    // #pragma omp parallel for
-    std::vector<float> distances(size);
-    std::vector<int> labels(size);
-    index->search(rnndescent::RNNDescent::FloatMatrixView::from_vector(base, d), rnndescent::RNNDescent::SearchResultView::from_vectors(labels, distances, 1));
-    for (int i = 0; i < size; i++) {
-        if (labels[i] == i)
-            correct++;
-        cnt++;
-        auto current_time = std::chrono::high_resolution_clock::now();
-        float duration = std::chrono::duration<double, std::milli>(current_time - before_test).count() / cnt;
-        if (cnt % 1000 == 0) {
-            printf("Search progress [%d / %d] top1 acc %f; avg duration = %fms (Parallel)\n", cnt, size, float(correct) / cnt, duration);
-        }
-    }
-    float recall = float(correct) / cnt;
-    std::cout << "Recall: " << recall << std::endl;
-}
 void Solution::reset() {
     if (index) {
         index->reset();

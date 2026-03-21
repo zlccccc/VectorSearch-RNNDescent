@@ -19,7 +19,6 @@ class Solution {
                const rnndescent::IndexRNNDescent::PCAConfig &pca_config = {});
     void warmup(const vector<float> &base, int d, int warmup_topk);
     void search(const vector<float> &query, vector<int> &res, int topk);
-    void test(int d, const vector<float> &base, int topk);
     void reset();
     std::unique_ptr<rnndescent::IndexRNNDescent> index;
     std::vector<float> distances;

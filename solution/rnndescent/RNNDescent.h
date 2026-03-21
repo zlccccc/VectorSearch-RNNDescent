@@ -442,8 +442,6 @@ struct RNNDescent {
                     SelectedNeighborsContainerType(dim, pool, graph_distance_computer.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
             }
         }
-        has_built = true;
-
         threadVt.resize(safe_search_config.num_threads);
         threadRetset.resize(safe_search_config.num_threads);
         neighborDistance.resize(safe_search_config.num_threads);
@@ -486,7 +484,7 @@ struct RNNDescent {
         assert(num_initialize >= search_L);
         assert(max_degree * beam_size >= max_degree);
 #endif
-        FAISS_THROW_IF_NOT_MSG(has_built, "The index is not build yet.");
+        FAISS_THROW_IF_NOT_MSG(graph_distance_computer != nullptr, "The index is not build yet.");
 
         auto &retset = threadRetset[threadid];
         auto &usefulset = threadUsefulset[threadid];
@@ -510,7 +508,7 @@ struct RNNDescent {
             retset[i + 2].id = i + 2; // have flag
             retset[i + 3].id = i + 3; // have flag
             graph_distance_computer->distances_batch_4(queryid, i + 0, i + 1, i + 2, i + 3, retset[i].distance, retset[i + 1].distance, retset[i + 2].distance,
-                                        retset[i + 3].distance);
+                                                       retset[i + 3].distance);
         }
 
         std::nth_element(retset.begin(), retset.begin() + search_L, retset.end());
@@ -702,7 +700,7 @@ struct RNNDescent {
     std::mutex m_mutex;
 #endif
 
-    void reset_time() {
+    void flush_perf_stats() {
 #ifdef INTERNAL_CLOCK_TEST
         if (perf_stats.query_count == 0) {
             return;
@@ -725,14 +723,13 @@ struct RNNDescent {
 
     void reset() {
         std::cout << "Resetting RNNDescent index." << std::endl;
-        has_built = false;
         std::vector<SelectedNeighborsContainerType>().swap(final_graph_neighbors);
         // final_graph_neighbors.resize(0);
         // final_graph.resize(0);
         search_from_ids.resize(0);
         // std::vector<MyVisitedTable>().swap(threadVt); // 这个比较大
         graph_distance_computer.reset();
-        reset_time();
+        flush_perf_stats();
     }
 
     /// Initialize the KNN graph randomly
@@ -767,8 +764,8 @@ struct RNNDescent {
     }
 
     void update_neighbors(KNNGraph &graph, int n, MyDistanceComputer &qdis, const BuildConfig &build_config) {
-        std::vector<std::vector<XNeighbor>> new_pools(build_config.num_threads);
-        std::vector<std::vector<XNeighbor>> old_pools(build_config.num_threads);
+        KNNGraph new_pools(build_config.num_threads);
+        KNNGraph old_pools(build_config.num_threads);
 #pragma omp parallel for num_threads(build_config.num_threads) schedule(dynamic, 16)
         for (int u = 0; u < n; ++u) {
             auto &nhood = graph[u];
@@ -890,8 +887,6 @@ struct RNNDescent {
             // graph[id].emplace_back(nn_id, distance, flag);
         }
     }
-
-    bool has_built = false;
 
     std::vector<SelectedNeighborsContainerType> final_graph_neighbors;
     std::unique_ptr<MyDistanceComputer> graph_distance_computer;

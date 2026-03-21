@@ -44,7 +44,6 @@ struct IndexRNNDescent {
 
     bool verbose;
     std::unique_ptr<MyDistanceComputer> refine_distance_computer;
-    bool is_trained = false;
 
     std::unique_ptr<RNNDescent> rnndescent;
     RNNDescent::BuildConfig build_config;
@@ -52,6 +51,9 @@ struct IndexRNNDescent {
     PCAConfig pca_config;
 
     explicit IndexRNNDescent(int d = 0) : verbose(false), input_dimension_(d) {}
+
+    IndexRNNDescent(int d, bool verbose, const RNNDescent::BuildConfig &build_config, const RNNDescent::SearchConfig &search_config, const PCAConfig &pca_config)
+        : verbose(verbose), build_config(build_config), search_config(search_config), pca_config(pca_config), input_dimension_(d) {}
 
     ~IndexRNNDescent() { reset(); }
 
@@ -67,8 +69,7 @@ struct IndexRNNDescent {
 
     std::unique_ptr<faiss::PCAMatrix> pca;
     std::vector<float> pca_query_buffer;
-    void add(const RNNDescent::FloatMatrixView &base) {
-        FAISS_THROW_IF_NOT(is_trained);
+    void build(const RNNDescent::FloatMatrixView &base) {
         FAISS_THROW_IF_NOT(refine_distance_computer == nullptr); // 暂时不支持增删
         base.validate("add data");
         FAISS_THROW_IF_NOT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
@@ -112,13 +113,6 @@ struct IndexRNNDescent {
 
         assert(refine_distance_computer == nullptr);
         refine_distance_computer = SelectedDistanceComputerFactory::create_refine_search(x, n, dimension());
-    }
-
-    void train(const RNNDescent::FloatMatrixView &base) {
-        base.validate("train data");
-        FAISS_THROW_IF_NOT_MSG(base.dimension() == dimension(), "train data dimension does not match index dimension");
-        // nndescent structure does not require training
-        is_trained = true;
     }
 
     void pca_apply_noalloc(const RNNDescent::FloatMatrixView &input, const RNNDescent::MutableFloatMatrixView &output) {
@@ -215,9 +209,9 @@ struct IndexRNNDescent {
         pca_query_buffer.clear();
     }
 
-    void reset_time() {
+    void flush_perf_stats() {
         if (rnndescent)
-            rnndescent->reset_time();
+            rnndescent->flush_perf_stats();
     }
 };
 
