@@ -15,14 +15,13 @@
 // #include "discomputer/Avx512SimdDistanceComputerUInt8.h"
 // #include "discomputer/NeonSimdDistanceComputerInt8.h"
 
-namespace {
+namespace rnndescent {
+
 struct MutexWarpper : std::mutex {
     MutexWarpper() = default;
     MutexWarpper(MutexWarpper const &) noexcept : std::mutex() {}
     bool operator==(MutexWarpper const &other) noexcept { return this == &other; }
 };
-
-std::vector<MutexWarpper> lockwarppers;
 
 struct XNeighbor {
     int id_;
@@ -55,9 +54,6 @@ struct XNeighbor {
         return distance < other.distance;
     }
 };
-} // namespace
-
-namespace rnndescent {
 
 struct RNNDescent {
     struct FloatMatrixView {
@@ -308,7 +304,7 @@ struct RNNDescent {
         const int dim = data_view.dimension();
 
         reset();
-        lockwarppers.clear();
+        node_locks_.clear();
 
         if (verbose)
             printf("Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", safe_build_config.S, safe_build_config.R, safe_build_config.T1,
@@ -734,7 +730,7 @@ struct RNNDescent {
 
     /// Initialize the KNN graph randomly
     void init_graph(KNNGraph &graph, int n, MyDistanceComputer &qdis, const BuildConfig &build_config) {
-        lockwarppers.resize(n);
+        node_locks_.resize(n);
         graph.reserve(n);
         graph.resize(n);
         for (int i = 0; i < n; i++) {
@@ -775,7 +771,7 @@ struct RNNDescent {
             new_pool.clear();
             old_pool.clear();
             {
-                std::lock_guard<std::mutex> guard(lockwarppers[u]);
+                std::lock_guard<std::mutex> guard(node_locks_[u]);
                 old_pool.resize(pool.size());
                 // std::copy(pool.begin(), pool.end(), old_pool.begin());
                 memcpy(old_pool.data(), pool.data(), pool.size() * sizeof(XNeighbor));
@@ -810,7 +806,7 @@ struct RNNDescent {
                 nn.setflag(false);
             }
             {
-                std::lock_guard<std::mutex> guard(lockwarppers[u]);
+                std::lock_guard<std::mutex> guard(node_locks_[u]);
                 pool.insert(pool.end(), new_pool.begin(), new_pool.end());
             }
         }
@@ -821,7 +817,7 @@ struct RNNDescent {
 #pragma omp parallel for num_threads(build_config.num_threads)
         for (int u = 0; u < n; ++u) {
             for (auto &nn : graph[u]) {
-                std::lock_guard<std::mutex> guard(lockwarppers[nn.id()]);
+                std::lock_guard<std::mutex> guard(node_locks_[nn.id()]);
                 reverse_pools[nn.id()].emplace_back(XNeighbor(u, nn.distance, nn.flag()));
             }
         }
@@ -845,7 +841,7 @@ struct RNNDescent {
 #pragma omp parallel for num_threads(build_config.num_threads)
         for (int u = 0; u < n; ++u) {
             for (auto &nn : reverse_pools[u]) {
-                std::lock_guard<std::mutex> guard(lockwarppers[nn.id()]);
+                std::lock_guard<std::mutex> guard(node_locks_[nn.id()]);
                 graph[nn.id()].emplace_back(u, nn.distance, nn.flag()); // 所有edge
             }
         }
@@ -862,7 +858,7 @@ struct RNNDescent {
 
     void insert_nn(KNNGraph &graph, int id, int nn_id, float distance, bool flag) {
         {
-            std::lock_guard<std::mutex> guard(lockwarppers[id]);
+            std::lock_guard<std::mutex> guard(node_locks_[id]);
             graph[id].emplace_back(nn_id, distance, flag);
 
             // if (distance > graph[id].front().distance)
@@ -890,6 +886,9 @@ struct RNNDescent {
 
     std::vector<SelectedNeighborsContainerType> final_graph_neighbors;
     std::unique_ptr<MyDistanceComputer> graph_distance_computer;
+
+  private:
+    std::vector<MutexWarpper> node_locks_;
 };
 
 } // namespace rnndescent

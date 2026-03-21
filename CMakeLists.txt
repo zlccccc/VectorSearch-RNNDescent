@@ -5,8 +5,8 @@ add_definitions(-std=c++17)
 
 # add_compile_options(-Wall -Wextra -O3)
 # add_compile_options(-O3)
-add_compile_options(-O3 -mcmodel=medium -mcpu=native)
-# add_compile_options(-O3 -mcpu=native)
+add_compile_options(-O3 -mcmodel=medium -march=native)
+# add_compile_options(-O3 -march=native)
 # add_compile_options(-O3 -mfpu=neon)
 # add_compile_options(-O3 -mfpu=vfpv3-fp16)
 # add_compile_options(-march=armv8.2-a+fp16fml)
@@ -53,11 +53,13 @@ link_directories(
 /usr/lib64
 )
 
-add_executable(${PROJECT_NAME} ${cpp_srcs})
-target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/openblas)
+set(APP_TARGET vector_search_app)
+add_executable(${APP_TARGET} ${cpp_srcs})
+set_target_properties(${APP_TARGET} PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
+target_include_directories(${APP_TARGET} PRIVATE /usr/include/openblas)
 
-#target_link_libraries(${PROJECT_NAME} faiss blas pthread m jemalloc)
-target_link_libraries(${PROJECT_NAME} faiss ${OpenBLAS_LIBRARIES} pthread openblas m)
+#target_link_libraries(${APP_TARGET} faiss blas pthread m jemalloc)
+target_link_libraries(${APP_TARGET} faiss ${OpenBLAS_LIBRARIES} pthread openblas m)
 
 #add_executable(bench_hnsw benches/bench_hnsw.cpp)
 #target_link_libraries(bench_hnsw faiss openblas)

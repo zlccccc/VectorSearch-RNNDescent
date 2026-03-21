@@ -42,14 +42,6 @@ struct IndexRNNDescent {
         int out_dim = 0;
     };
 
-    bool verbose;
-    std::unique_ptr<MyDistanceComputer> refine_distance_computer;
-
-    std::unique_ptr<RNNDescent> rnndescent;
-    RNNDescent::BuildConfig build_config;
-    RNNDescent::SearchConfig search_config;
-    PCAConfig pca_config;
-
     explicit IndexRNNDescent(int d = 0) : verbose(false), input_dimension_(d) {}
 
     IndexRNNDescent(int d, bool verbose, const RNNDescent::BuildConfig &build_config, const RNNDescent::SearchConfig &search_config, const PCAConfig &pca_config)
@@ -60,15 +52,21 @@ struct IndexRNNDescent {
     int dimension() const { return refine_distance_computer ? refine_distance_computer->dimension() : input_dimension_; }
 
   private:
+    bool verbose;
     int input_dimension_ = 0;
+    std::unique_ptr<MyDistanceComputer> refine_distance_computer;
+    std::unique_ptr<RNNDescent> rnndescent;
+    RNNDescent::BuildConfig build_config;
+    RNNDescent::SearchConfig search_config;
+    PCAConfig pca_config;
+    std::unique_ptr<faiss::PCAMatrix> pca;
+    std::vector<float> pca_query_buffer;
 
   public:
     void rebuild_graph_index(const RNNDescent::FloatMatrixView &base_view) {
         rnndescent = std::make_unique<RNNDescent>(base_view, verbose, build_config, search_config);
     }
 
-    std::unique_ptr<faiss::PCAMatrix> pca;
-    std::vector<float> pca_query_buffer;
     void build(const RNNDescent::FloatMatrixView &base) {
         FAISS_THROW_IF_NOT(refine_distance_computer == nullptr); // 暂时不支持增删
         base.validate("add data");
