@@ -4,7 +4,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <new>
+#include <type_traits>
 #include <vector>
 
 namespace rnndescent {
@@ -14,23 +17,29 @@ namespace rnndescent {
 constexpr int alignSize = 64;
 // constexpr int alignSize = 128;
 // constexpr int alignSize = 256;
-template <typename T> class AlignedAllocator : public std::allocator<T> {
+template <typename T> class AlignedAllocator {
   public:
-    typedef typename std::allocator<T>::pointer pointer;
-    typedef typename std::allocator<T>::size_type size_type;
+    using value_type = T;
+    using is_always_equal = std::true_type;
 
-    pointer allocate(size_type n, const void *hint = 0) {
-        pointer p = std::allocator<T>::allocate(n, hint);
-        if (n > 0) {
-            // 确保返回的指针是 16 字节对齐的
-            // void *aligned = std::aligned_alloc(16, n * sizeof(T));
-            void *aligned = std::aligned_alloc(alignSize, n * sizeof(T));
-            if (aligned) {
-                return static_cast<pointer>(aligned);
-            }
-        }
-        return p;
+    AlignedAllocator() noexcept = default;
+
+    template <typename U> AlignedAllocator(const AlignedAllocator<U> &) noexcept {}
+
+    T *allocate(std::size_t n) {
+        if (n > std::numeric_limits<std::size_t>::max() / sizeof(T))
+            throw std::bad_array_new_length();
+        return static_cast<T *>(::operator new(n * sizeof(T), alignment));
     }
+
+    void deallocate(T *p, std::size_t) noexcept { ::operator delete(p, alignment); }
+
+    template <typename U> bool operator==(const AlignedAllocator<U> &) const noexcept { return true; }
+
+    template <typename U> bool operator!=(const AlignedAllocator<U> &) const noexcept { return false; }
+
+  private:
+    static constexpr std::align_val_t alignment{std::max<std::size_t>(alignSize, alignof(T))};
 };
 
 /// set implementation optimized for fast access.
