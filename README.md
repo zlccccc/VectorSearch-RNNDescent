@@ -41,22 +41,24 @@ cmake --build build --parallel 4
 
 ## 测试
 
-测试通过 CTest 注册，默认随构建生成，不需要下载数据集或安装第三方测试框架。缓存测试会实际分配邻居向量，运行时的可用内存需超过程序预留给系统的 2 GiB。
+测试使用 [GoogleTest](https://google.github.io/googletest/) 编写，CTest 自动发现每个测试用例。默认构建测试，不需要下载数据集。CMake 优先复用本机安装的 GoogleTest 和 GoogleMock（1.14 或更新版本），例如 Ubuntu 的 `libgtest-dev` 和 `libgmock-dev`。找不到 GoogleTest 时，CMake 会下载并校验固定版本 1.17.0。若本机只装了 GoogleTest，可以补装 GoogleMock，或用 `-DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON` 使用同一份下载。缓存用例要求系统可用内存超过程序预留的 2 GiB。
 
-```bash
+~~~bash
 ctest --test-dir build --output-on-failure
 ctest --test-dir build -L unit --output-on-failure
-```
+ctest --test-dir build -L integration --output-on-failure
+ctest --test-dir build -R RecallTest --output-on-failure
+~~~
 
-| 测试 | 覆盖内容 |
+| 测试套件 | 覆盖内容 |
 |---|---|
-| `rnndescent.simd` | 对照标量结果校验 FP32、INT8/UINT8 距离，包括单条、四条一组、建图距离和非对齐维度 |
-| `rnndescent.cache` | 校验四邻居 SIMD 数据布局、ID 重映射、预算用尽时回退及缓存开关下的距离一致性 |
-| `rnndescent.benchmark` | 校验 CLI、显式随机模式、邻居池预算，以及 fvecs/bvecs/ivecs 的读取和坏文件处理 |
-| `rnndescent.solution` | 小数据集建图、查询、重建和重置，用穷举校验 Top K ID 及精排距离，覆盖 PCA 与缓存开关 |
-| `rnndescent.recall` | 固定随机种子，限制搜索预算，校验 Recall@10、缓存开关下的结果一致性和精排距离 |
+| `SimdDistanceTest`、`SimdQuantizationTest` | 对照标量结果校验 FP32、INT8/UINT8 距离，覆盖单条、四条一组、建图距离、非对齐维度和常量向量 |
+| `NeighborCacheLayoutTest`、`NeighborCacheTest` | 校验四邻居 SIMD 数据布局、ID 重映射、预算用尽时回退以及缓存开关下的距离一致性 |
+| `BenchmarkCliTest`、`BenchmarkDataTest` | 校验 CLI、显式随机模式、邻居池预算，以及 fvecs/bvecs/ivecs 的读取和坏文件处理 |
+| `SolutionTest` | 小数据集建图、查询、重建和重置，用穷举校验 Top K ID 和精排距离，覆盖 PCA 与缓存开关 |
+| `RecallTest` | 固定随机种子，限制搜索预算，校验 Recall`10、缓存开关下的结果一致性和精排距离 |
 
-只构建 benchmark 程序时可传入 `-DBUILD_TESTING=OFF`。
+只构建 benchmark 程序时，可在配置阶段传入 `-DBUILD_TESTING=OFF` 跳过测试依赖。
 
 ## Benchmark
 

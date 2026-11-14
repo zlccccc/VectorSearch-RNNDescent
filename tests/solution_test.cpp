@@ -1,16 +1,22 @@
-#include "Checks.h"
+#include "ReferenceDistance.h"
 #include "solution/solution.h"
 
 #include <algorithm>
 #include <array>
-#include <iostream>
+#include <gmock/gmock.h>
 #include <random>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 namespace tests {
+namespace {
 
-void test_solution() {
+using ::testing::HasSubstr;
+using ::testing::ThrowsMessage;
+
+TEST(SolutionTest, BuildsSearchesAndResetsWithPcaAndCache) {
     constexpr int dim = 65;
     constexpr int rows = 32;
     constexpr int topk = 5;
@@ -27,7 +33,8 @@ void test_solution() {
     }
     Solution solution;
     std::vector<int> ids;
-    require_error([&] { solution.search(queries, ids, topk); }, "search called before build");
+    EXPECT_THAT([&] { solution.search(queries, ids, topk); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("search called before build")));
 
     Solution::WarmupConfig warmup;
     warmup.topk = 0;
@@ -48,13 +55,16 @@ void test_solution() {
 
     for (const auto &[pca, cache] : {std::pair{false, false}, std::pair{false, true},
                                      std::pair{true, false}, std::pair{true, true}}) {
+        SCOPED_TRACE(::testing::Message() << "PCA=" << pca << ", cache=" << cache);
         build.neighbor_pool_size_limit_bytes = cache ? 1 << 20 : 0;
         solution.build(dim, base, warmup, build, search, {pca, pca ? 17 : 0});
-        require_error([&] { solution.search({1, 2}, ids, topk); }, "query size must be divisible");
+        EXPECT_THAT([&] { solution.search({1, 2}, ids, topk); },
+                    ThrowsMessage<std::runtime_error>(HasSubstr("query size must be divisible")));
         solution.search(queries, ids, topk);
         const auto &distances = solution.distance_buffer();
         constexpr size_t queries_count = sizeof(selected) / sizeof(selected[0]);
-        require(ids.size() == queries_count * topk && distances.size() == ids.size(), "result buffer shape");
+        ASSERT_EQ(ids.size(), queries_count * topk);
+        ASSERT_EQ(distances.size(), ids.size());
         for (size_t q = 0; q < queries_count; ++q) {
             std::array<std::pair<double, int>, rows> exact{};
             for (int i = 0; i < rows; ++i)
@@ -62,16 +72,17 @@ void test_solution() {
             std::sort(exact.begin(), exact.end());
             for (int i = 0; i < topk; ++i) {
                 const size_t offset = q * topk + i;
-                require(ids[offset] == exact[i].second, "top-k original row IDs after graph reorder");
-                require_near(distances[offset], exact[i].first, 1e-3, "rerank uses the original vectors");
+                EXPECT_EQ(ids[offset], exact[i].second) << "query " << q << ", rank " << i;
+                EXPECT_NEAR(distances[offset], exact[i].first, 1e-3) << "query " << q << ", rank " << i;
             }
         }
         solution.reset();
-        require_error([&] { solution.search(queries, ids, topk); }, "index has not been built");
+        EXPECT_THAT([&] { solution.search(queries, ids, topk); },
+                    ThrowsMessage<std::runtime_error>(HasSubstr("index has not been built")));
     }
 }
 
-void test_recall() {
+TEST(RecallTest, ImprovesWithSearchBudgetAndMatchesWithCache) {
     constexpr int dim = 65;
     constexpr int rows = 768;
     constexpr int query_count = 128;
@@ -112,7 +123,8 @@ void test_recall() {
     // The same graph is built for both cache settings.
     build.num_threads = 1;
 
-    auto run = [&](int entry_points, int search_l, int refine, bool cache, std::vector<int> &ids) {
+    auto run = [&](int entry_points, int search_l, int refine, bool cache, std::vector<int> &ids, double &recall) {
+        SCOPED_TRACE(::testing::Message() << "search_L=" << search_l << ", cache=" << cache);
         rnndescent::RNNDescent::SearchConfig search;
         search.num_threads = 2;
         search.beam_size = 2;
@@ -125,32 +137,42 @@ void test_recall() {
         solution.build(dim, base, warmup, build, search);
         solution.search(queries, ids, topk);
         const auto &distances = solution.distance_buffer();
-        require(ids.size() == query_count * topk && distances.size() == ids.size(), "limited search result shape");
+        ASSERT_EQ(ids.size(), query_count * topk);
+        ASSERT_EQ(distances.size(), ids.size());
         int hits = 0;
         for (int q = 0; q < query_count; ++q) {
             const auto first = ids.begin() + q * topk;
             for (int k = 0; k < topk; ++k) {
                 const int id = first[k];
                 const float distance = distances[q * topk + k];
-                require(id >= 0 && id < rows, "limited search returned an invalid row ID");
-                require(std::find(first, first + k, id) == first + k, "limited search returned a duplicate row ID");
-                require(k == 0 || distances[q * topk + k - 1] <= distance, "limited search results are not sorted");
+                SCOPED_TRACE(::testing::Message() << "query=" << q << ", rank=" << k);
+                ASSERT_GE(id, 0);
+                ASSERT_LT(id, rows);
+                EXPECT_TRUE(std::find(first, first + k, id) == first + k) << "duplicate ID " << id;
+                if (k > 0)
+                    EXPECT_LE(distances[q * topk + k - 1], distance);
                 const double exact = scalar_l2(base.data() + id * dim, queries.data() + q * dim, dim);
-                require_near(distance, exact, 1e-5 * exact + 1e-6, "limited search rerank distance");
+                EXPECT_NEAR(distance, exact, 1e-5 * exact + 1e-6);
                 hits += std::find(truth[q].begin(), truth[q].end(), id) != truth[q].end();
             }
         }
-        return static_cast<double>(hits) / (query_count * topk);
+        recall = static_cast<double>(hits) / (query_count * topk);
     };
 
     std::vector<int> low_ids, cached_ids, high_ids;
-    const double low = run(16, 12, 10, false, low_ids);
-    const double cached = run(16, 12, 10, true, cached_ids);
-    const double high = run(96, 64, 48, false, high_ids);
-    std::cout << "Recall@10: low=" << low << " cached=" << cached << " high=" << high << '\n';
-    require(low >= 0.60 && low <= 0.93, "low-budget recall must remain useful and below saturation");
-    require(low_ids == cached_ids, "changing neighbor caching changed low-budget query results");
-    require(high >= 0.95 && high - low >= 0.08, "increasing search budget must recover more true neighbors");
+    double low = 0, cached = 0, high = 0;
+    ASSERT_NO_FATAL_FAILURE(run(16, 12, 10, false, low_ids, low));
+    ASSERT_NO_FATAL_FAILURE(run(16, 12, 10, true, cached_ids, cached));
+    ASSERT_NO_FATAL_FAILURE(run(96, 64, 48, false, high_ids, high));
+    RecordProperty("recall_at_10_low", std::to_string(low));
+    RecordProperty("recall_at_10_cached", std::to_string(cached));
+    RecordProperty("recall_at_10_high", std::to_string(high));
+    EXPECT_GE(low, 0.60);
+    EXPECT_LE(low, 0.93) << "low-budget search should stay below saturation";
+    EXPECT_EQ(low_ids, cached_ids);
+    EXPECT_GE(high, 0.95);
+    EXPECT_GE(high - low, 0.08);
 }
 
+} // namespace
 } // namespace tests
