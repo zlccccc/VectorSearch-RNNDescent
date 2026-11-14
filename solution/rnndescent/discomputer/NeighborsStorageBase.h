@@ -29,15 +29,17 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
 
     NeighborsStorageBase() = default;
 
-    NeighborsStorageBase(int dim, std::vector<int> &neighbor, MyDistanceComputer *dis, std::vector<int> &rollback_ids, bool save_neighbor) : dim(dim) {
+    NeighborsStorageBase(int dim, const int *neighbor, int count, MyDistanceComputer *dis,
+                         const std::vector<int> &rollback_ids, bool save_neighbor)
+        : dim(dim), size(count), dis(dis) {
+        if (size == 0)
+            return;
         RNNDESCENT_ASSERT_MSG(!global_pool.empty(), "neighbors pool has not been initialized");
-        size = neighbor.size();
-        this->dis = dis;
         RNNDESCENT_ASSERT_MSG(size % 4 == 0, "neighbor cache size must be a multiple of 4");
 
         pool_start_ptr = aligned_size(pool_start_ptr);
         const long long cache_cost = additional_cache_bytes(size, dim);
-        if (save_neighbor && size > 0 && cache_cost <= preserve_limit) {
+        if (save_neighbor && cache_cost <= preserve_limit) {
             pool = reinterpret_cast<CodeType *>(allocate_ptr(static_cast<size_t>(size) * dim * sizeof(CodeType)));
             l2norms = reinterpret_cast<NormType *>(allocate_ptr(static_cast<size_t>(size) * sizeof(NormType)));
             preserve_limit -= cache_cost;
@@ -59,7 +61,7 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         pool_start_ptr = 0;
     }
 
-    static void init_neighbors_pool(int dim, std::vector<std::vector<int>> &edges, long long max_pool_size = 0,
+    static void init_neighbors_pool(int dim, const std::vector<size_t> &offsets, long long max_pool_size = 0,
                                     bool save_neighbor = true) {
         pool_start_ptr = 0;
         const bool cache_enabled = save_neighbor && max_pool_size > 0;
@@ -67,8 +69,8 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         long long total_edges = 0;
         long long required_size = 0;
         long long cached_bytes = 0;
-        for (const auto &nhood : edges) {
-            const auto count = static_cast<long long>(nhood.size());
+        for (size_t i = 1; i < offsets.size(); ++i) {
+            const auto count = static_cast<long long>(offsets[i] - offsets[i - 1]);
             total_edges += count;
             required_size += aligned_size(count * sizeof(int));
             if (cache_enabled)

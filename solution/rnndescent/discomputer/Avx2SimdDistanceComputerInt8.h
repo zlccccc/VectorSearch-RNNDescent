@@ -230,8 +230,8 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // å
     using Base::size;
 
     Int8Neighbors() = default;
-    Int8Neighbors(int dim, std::vector<int> &neighbor, MyDistanceComputer *dis, std::vector<int> &rollback_ids, bool save_neighbor)
-        : Base(dim, neighbor, dis, rollback_ids, save_neighbor) {
+    Int8Neighbors(int dim, const int *neighbor, int count, MyDistanceComputer *dis, const std::vector<int> &rollback_ids, bool save_neighbor)
+        : Base(dim, neighbor, count, dis, rollback_ids, save_neighbor) {
         reorder_block(size, this->dim, pool);
     }
 
