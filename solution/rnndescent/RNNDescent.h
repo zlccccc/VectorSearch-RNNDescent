@@ -17,6 +17,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 #include <omp.h>
 
 // #include "discomputer/CblasDistComputerIP.h"
@@ -219,15 +223,14 @@ struct RNNDescent {
         }
 
         // 这里的resize可能会导致图不联通; 这件事情需要在上面build的时候就考虑到
-        int all_edges_size = 0;
+        size_t all_edges_size = 0;
         for (int u = 0; u < n; ++u) {
             // 清理内存
             if (graph[u].size() > build_config.K0)
                 graph[u].resize(build_config.K0);
             all_edges_size += graph[u].size();
-            graph[u].shrink_to_fit();
         }
-        Logger::info(verbose, "graph edges size = %d\n", all_edges_size);
+        Logger::info(verbose, "graph edges size = %zu\n", all_edges_size);
     }
 
     void build(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config, const SearchConfig &search_config) {
@@ -238,45 +241,53 @@ struct RNNDescent {
         const SearchConfig safe_search_config = sanitize_search_config(search_config, 1, n);
 
         reset();
-        node_locks_.clear();
 
         if (verbose)
             Logger::info(verbose, "Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", safe_build_config.S, safe_build_config.R,
                          safe_build_config.T1, safe_build_config.T2, n, safe_search_config.num_threads);
         SelectedNeighborsContainerType::clear_memory();
 
-        std::vector<std::vector<int>> edges; // distance并不重要
-        edges.resize(n);
+        std::vector<int> edges;
+        std::vector<size_t> edge_offsets(static_cast<size_t>(n) + 1);
         {
             KNNGraph graph;
-            generate_graph(graph, data_view, n, verbose, safe_build_config); // highest level
-                                                                             // #pragma omp parallel for
+            generate_graph(graph, data_view, n, verbose, safe_build_config);
+            std::vector<MutexWarpper>().swap(node_locks_);
+
+            size_t padded_edge_count = 0;
+            for (const auto &neighbors : graph)
+                padded_edge_count += (neighbors.size() + 3) / 4 * 4;
+            edges.reserve(padded_edge_count);
             std::mt19937 padding_rng(safe_build_config.random_seed + 1);
             std::uniform_int_distribution<int> padding_dist(0, n - 1);
             std::unordered_set<int> selected_ids;
             for (int i = 0; i < n; i++) {
                 auto &pool = graph[i];
                 sort(pool.begin(), pool.end());
-                edges[i].reserve((pool.size() + 3) / 4 * 4);
                 // 需要清理下内存; 变成4的倍数方便后面reorder
                 selected_ids.clear();
                 selected_ids.reserve(pool.size() * 2 + 4);
                 for (auto &edge : pool) {
                     if (!selected_ids.count(edge.id())) { // 这个地方感觉不太应该写成这样; 如果写得好的话, 理论上刚开始的edge id不会重复
                         selected_ids.insert(edge.id());
-                        edges[i].emplace_back(edge.id());
+                        edges.push_back(edge.id());
                     }
                 }
-                while (edges[i].size() % 4 != 0) { // 补到差不多
+                while ((edges.size() - edge_offsets[i]) % 4 != 0) {
                     int id = padding_dist(padding_rng);
                     while (selected_ids.count(id))
                         id = padding_dist(padding_rng);
                     selected_ids.insert(id);
-                    edges[i].emplace_back(id);
+                    edges.push_back(id);
                 }
+                edge_offsets[i + 1] = edges.size();
                 std::vector<XNeighbor>().swap(pool);
             }
         }
+#if defined(__GLIBC__)
+        // Return pages freed by graph construction before allocating the search index.
+        malloc_trim(0);
+#endif
         // 确定全局入口点
         Logger::info(verbose, "n = %d; initialize = %d\n", n, safe_search_config.num_initialize);
         {
@@ -313,7 +324,8 @@ struct RNNDescent {
                 int u = search_from_ids[i];
                 // index_to_result_mapping[i] = u;  // same as search_from_ids
                 bool have_next = false;
-                for (int v : edges[u]) {
+                for (size_t edge = edge_offsets[u]; edge < edge_offsets[u + 1]; ++edge) {
+                    const int v = edges[edge];
                     if (!vis.get(v)) {
                         vis.set(v);
                         search_from_ids.push_back(v);
@@ -368,12 +380,15 @@ struct RNNDescent {
             graph_distance_computer = SelectedDistanceComputerFactory::create_cached_graph(fastsearch_pool.data(), n, dim);
         }
         { // 空间局部性优化
-            SelectedNeighborsContainerType::init_neighbors_pool(dim, edges, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
+            SelectedNeighborsContainerType::init_neighbors_pool(
+                dim, edge_offsets, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
+            final_graph_neighbors.reserve(n);
             for (int i = 0; i < n; i++) {
-                int u = search_from_ids[i];
-                auto &pool = edges[u];
-                final_graph_neighbors.emplace_back(
-                    SelectedNeighborsContainerType(dim, pool, graph_distance_computer.get(), rollback_ids, safe_build_config.save_neighbor)); // 全部save
+                const int u = search_from_ids[i];
+                const size_t begin = edge_offsets[u];
+                const int count = static_cast<int>(edge_offsets[u + 1] - begin);
+                const int *neighbors = count > 0 ? edges.data() + begin : nullptr;
+                final_graph_neighbors.emplace_back(dim, neighbors, count, graph_distance_computer.get(), rollback_ids, safe_build_config.save_neighbor);
             }
         }
         threadVt.resize(safe_search_config.num_threads);
@@ -679,17 +694,15 @@ struct RNNDescent {
     /// Initialize the KNN graph randomly
     void init_graph(KNNGraph &graph, int n, MyDistanceComputer &qdis, const BuildConfig &build_config) {
         node_locks_.resize(n);
-        graph.reserve(n);
         graph.resize(n);
-        for (int i = 0; i < n; i++) {
-            graph[i].reserve(build_config.R * 2);
-        }
 
 #pragma omp parallel num_threads(build_config.num_threads)
         {
             std::mt19937 rng(build_config.random_seed * 7741 + omp_get_thread_num());
 #pragma omp for
             for (int i = 0; i < n; i++) {
+                auto &neighbors = graph[i];
+                neighbors.reserve(build_config.S);
                 std::vector<int> tmp(build_config.S);
 
                 gen_random(rng, tmp, n);
@@ -700,35 +713,38 @@ struct RNNDescent {
                         continue;
                     float dist = qdis.symmetric_dis(i, id);
 
-                    graph[i].push_back(XNeighbor(id, dist, true));
+                    neighbors.emplace_back(id, dist, true);
                 }
-                std::make_heap(graph[i].begin(), graph[i].end());
+                std::make_heap(neighbors.begin(), neighbors.end());
             }
         }
     }
 
     void update_neighbors(KNNGraph &graph, int n, MyDistanceComputer &qdis, const BuildConfig &build_config) {
-        KNNGraph new_pools(build_config.num_threads);
-        KNNGraph old_pools(build_config.num_threads);
+        std::vector<std::vector<XNeighbor>> new_pools(build_config.num_threads);
+        std::vector<std::vector<XNeighbor>> old_pools(build_config.num_threads);
+        // Reuse small adjacency buffers across passes. Detach larger buffers to shed their excess capacity.
+        const size_t reusable_capacity = 2 * static_cast<size_t>(build_config.K0);
 #pragma omp parallel for num_threads(build_config.num_threads) schedule(dynamic, 16)
         for (int u = 0; u < n; ++u) {
-            auto &nhood = graph[u];
-            auto &pool = nhood;
+            auto &pool = graph[u];
             auto &new_pool = new_pools[omp_get_thread_num()];
             auto &old_pool = old_pools[omp_get_thread_num()];
             new_pool.clear();
-            old_pool.clear();
+            std::vector<XNeighbor> retired;
             {
                 std::lock_guard<std::mutex> guard(node_locks_[u]);
-                old_pool.resize(pool.size());
-                // std::copy(pool.begin(), pool.end(), old_pool.begin());
-                memcpy(old_pool.data(), pool.data(), pool.size() * sizeof(XNeighbor));
+                if (pool.capacity() > reusable_capacity)
+                    retired.swap(pool);
+                else
+                    old_pool.assign(pool.begin(), pool.end());
                 pool.clear();
             }
-            std::sort(old_pool.begin(), old_pool.end());
-            old_pool.erase(std::unique(old_pool.begin(), old_pool.end(), [](XNeighbor &a, XNeighbor &b) { return a.id() == b.id(); }), old_pool.end());
+            auto &candidates = retired.capacity() == 0 ? old_pool : retired;
+            std::sort(candidates.begin(), candidates.end());
+            candidates.erase(std::unique(candidates.begin(), candidates.end(), [](XNeighbor &a, XNeighbor &b) { return a.id() == b.id(); }), candidates.end());
 
-            for (auto &nn : old_pool) {
+            for (auto &nn : candidates) {
                 bool ok = true;
                 for (auto &other_nn : new_pool) {
                     if (!nn.flag() && !other_nn.flag()) {
@@ -760,47 +776,59 @@ struct RNNDescent {
         }
     }
     void add_reverse_edges(KNNGraph &graph, int n, const BuildConfig &build_config) {
-        std::vector<std::vector<XNeighbor>> reverse_pools(n);
+        std::vector<size_t> offsets(static_cast<size_t>(n) + 1);
+        const auto collect_incoming_edges = [&] {
+            std::fill(offsets.begin(), offsets.end(), 0);
+            for (auto &neighbors : graph) {
+                for (auto &neighbor : neighbors)
+                    ++offsets[neighbor.id() + 1];
+            }
+            std::partial_sum(offsets.begin(), offsets.end(), offsets.begin());
+            std::vector<XNeighbor> incoming(offsets.back());
+            std::vector<size_t> ends(offsets.begin(), offsets.end() - 1);
 
 #pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < n; ++u) {
-            for (auto &nn : graph[u]) {
-                std::lock_guard<std::mutex> guard(node_locks_[nn.id()]);
-                reverse_pools[nn.id()].emplace_back(XNeighbor(u, nn.distance, nn.flag()));
+            for (int u = 0; u < n; ++u) {
+                for (auto &neighbor : graph[u]) {
+                    const int v = neighbor.id();
+                    std::lock_guard<std::mutex> guard(node_locks_[v]);
+                    incoming[ends[v]++] = XNeighbor(u, neighbor.distance, neighbor.flag());
+                }
+            }
+            return incoming;
+        };
+
+        {
+            const auto incoming = collect_incoming_edges();
+#pragma omp parallel num_threads(build_config.num_threads)
+            {
+                std::vector<XNeighbor> merged;
+#pragma omp for
+                for (int u = 0; u < n; ++u) {
+                    auto &outgoing = graph[u];
+                    merged.assign(incoming.begin() + offsets[u], incoming.begin() + offsets[u + 1]);
+                    for (auto &neighbor : outgoing) {
+                        neighbor.setflag(true);
+                        merged.push_back(neighbor);
+                    }
+                    std::sort(merged.begin(), merged.end());
+                    const auto unique_end = std::unique(merged.begin(), merged.end(),
+                                                        [](XNeighbor &a, XNeighbor &b) { return a.id() == b.id(); });
+                    const auto count = std::min<size_t>(unique_end - merged.begin(), build_config.R);
+                    outgoing.assign(merged.begin(), merged.begin() + count);
+                }
             }
         }
 
+        // Transpose the selected edges after releasing the previous incoming-edge buffer.
+        auto incoming = collect_incoming_edges();
 #pragma omp parallel for num_threads(build_config.num_threads)
         for (int u = 0; u < n; ++u) {
-            auto &pool = graph[u];
-            for (auto &nn : pool) {
-                nn.setflag(true);
-            }
-            auto &rpool = reverse_pools[u];
-            rpool.insert(rpool.end(), pool.begin(), pool.end());
-            pool.clear();
-            std::sort(rpool.begin(), rpool.end()); // 这里sort可能需要考虑度数了
-            rpool.erase(std::unique(rpool.begin(), rpool.end(), [](XNeighbor &a, XNeighbor &b) { return a.id() == b.id(); }), rpool.end());
-            if (rpool.size() > build_config.R) {
-                rpool.resize(build_config.R);
-            }
-        }
-
-#pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < n; ++u) {
-            for (auto &nn : reverse_pools[u]) {
-                std::lock_guard<std::mutex> guard(node_locks_[nn.id()]);
-                graph[nn.id()].emplace_back(u, nn.distance, nn.flag()); // 所有edge
-            }
-        }
-
-#pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < n; ++u) {
-            auto &pool = graph[u];
-            std::sort(pool.begin(), pool.end()); // 这里sort可能需要考虑度数了
-            if (pool.size() > build_config.R) {
-                pool.resize(build_config.R);
-            }
+            const auto begin = incoming.begin() + offsets[u];
+            const auto end = incoming.begin() + offsets[u + 1];
+            std::sort(begin, end);
+            const auto count = std::min<size_t>(end - begin, build_config.R);
+            graph[u].assign(begin, begin + count);
         }
     }
 
