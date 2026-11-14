@@ -36,6 +36,7 @@ struct GroundTruth {
 
 struct BenchmarkConfig {
     string mode = "random";
+    bool mode_explicit = false;
     string dataset_name;
     string dataset_dir;
     string base_path;
@@ -88,7 +89,7 @@ inline string normalize_dataset_name(string dataset_name) {
 }
 
 inline void apply_default_dataset_mode(BenchmarkConfig &config) {
-    if (config.mode != "random" || !config.dataset_dir.empty() || !config.base_path.empty() || !config.query_path.empty()) {
+    if (config.mode_explicit || config.mode != "random" || !config.dataset_dir.empty() || !config.base_path.empty() || !config.query_path.empty()) {
         return;
     }
 

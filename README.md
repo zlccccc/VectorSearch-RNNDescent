@@ -1,212 +1,119 @@
 # RNNDescent 向量检索算法
 
-本项目实现了基于 RNNDescent（Recursive Nearest Neighbor Descent）的高效向量检索算法，适用于大规模高维向量数据的最近邻搜索任务。
+本项目实现了基于 RNNDescent 的近似最近邻检索，使用平方 L2 距离。构建阶段迭代生成近邻图并重排节点。查询阶段用 8 位量化向量在图中筛选候选，再用原始 FP32 向量重新排序。
 
 ## 许可声明
 
-本项目（外部调试版本）的知识产权归华为公司所有，未经授权不得用于商业目的。详细许可条款请见本文档末尾的**商用许可**章节。
+本项目（外部调试版本）的知识产权归华为公司所有，未经授权不得用于商业目的。请参阅文末的[商用许可](#商用许可)。
 
-## 项目简介
+## 构建
 
-RNNDescent 是一种基于图的近似最近邻搜索算法，通过构建和优化近邻图来加速向量检索过程。本实现支持大规模数据集（百万级）的高效检索，并围绕图构建、图搜索、精排和距离计算做了针对性的工程优化。
-
-### 核心特性
-
-- 支持多种向量维度与数据集 benchmark
-- 支持按数据集或测试场景配置 build/search 参数
-- 集成可配置的 PCA 降维链路
-- 支持并行计算，充分利用多核 CPU
-- 实现了多种距离计算优化（SIMD、BLAS 等）
-
-## 算法原理
-
-RNNDescent 算法通过以下步骤构建和优化近邻图：
-
-1. **初始图构建**：为每个数据点随机选择或通过启发式方法选择初始近邻
-2. **迭代优化**：重复应用局部搜索策略，不断改进近邻图的质量
-3. **搜索过程**：从种子点开始，在近邻图中进行贪婪搜索，找出近似最近邻
-
-当前主线版本的优化重点不再是“单条指令多线程搜索后整体重排”的旧实验方案，而是围绕下面这条稳定链路展开：
-
-1. **图构建优化**：通过 RNNDescent 迭代构建近邻图，并在构建后对节点顺序做重排，提升图搜索时的局部性。
-2. **图搜索优化**：搜索阶段使用重排后的图向量和专用距离计算器。启用邻居向量缓存后，可以降低候选扩展时的访存成本。
-3. **精排优化**：最终返回前，对候选集使用原始向量距离计算器做精排，保证返回距离和真实距离基本一致。
-4. **距离计算优化**：按平台选择 AVX512 / AVX2 / NEON / BLAS 路径，并复用统一的 distance-computer 工厂。
-5. **内存优化**：邻居向量缓存默认关闭。启用后，邻居池按预算和可用内存动态收缩。
-
-## 项目结构
-
-```
-├── main.cpp          # 主程序入口，包含测试和性能评估
-├── CMakeLists.txt    # CMake 构建配置
-├── run.sh            # 运行脚本
-└── solution/         # 核心算法实现
-    ├── solution.h    # Solution 类接口定义
-    ├── solution.cpp  # Solution 类实现
-    └── rnndescent/   # RNNDescent 算法核心实现
-        ├── IndexRNNDescent.h  # RNNDescent 索引接口
-        ├── RNNDescent.h       # RNNDescent 算法核心
-        └── discomputer/       # 距离计算模块
-```
-
-## 安装与编译
-
-### 依赖项
-
-- C++17 兼容的编译器
-- CMake 3.23 或更高版本
-- OpenMP（用于并行计算）
-- Faiss 库（用于基础向量操作）
-- BLAS 或 OpenBLAS（用于矩阵计算）
-
-### 编译步骤
-
-1. 确保所有依赖项已安装
-2. 执行以下命令进行编译：
+在 Linux 或 WSL 2 中使用支持 C++17 和 OpenMP 的编译器、CMake 3.23 或更新版本、Faiss 和 OpenBLAS。以下是 Ubuntu 24.04 的构建示例。已有 Faiss 安装时，把 `CMAKE_PREFIX_PATH` 指向其安装前缀即可。
 
 ```bash
-mkdir -p build
-cd build
-cmake ..
-make -j$(nproc)
+sudo apt install build-essential cmake git libopenblas-dev
+git clone --depth 1 --branch v1.8.0 https://github.com/facebookresearch/faiss.git /tmp/rnndescent-faiss
+cmake -S /tmp/rnndescent-faiss -B /tmp/rnndescent-faiss/build \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local/faiss" \
+  -DFAISS_ENABLE_GPU=OFF -DFAISS_ENABLE_PYTHON=OFF -DBUILD_TESTING=OFF \
+  -DBUILD_SHARED_LIBS=ON -DBLA_VENDOR=OpenBLAS
+cmake --build /tmp/rnndescent-faiss/build --parallel 4
+cmake --install /tmp/rnndescent-faiss/build
 ```
 
-3. 编译完成后，可执行文件将生成在 build 目录下
-
-## 使用方法
-
-## Benchmark 模式
-
-当前主程序支持两种 benchmark 模式：
-
-1. 随机数据压测
-2. 真实数据集压测（参考 `rnn-descent/benches` 的思路）
-
-### 随机数据压测
+回到本项目根目录构建，程序位于 `build/algorithm`。
 
 ```bash
-./build/algorithm
-./build/algorithm --mode random --data-size 100000 --dim 256 --topk 10 --repeat 5
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$HOME/.local/faiss"
+cmake --build build --parallel 4
 ```
 
-### 数据集压测
+用 `-DRNNDESCENT_SIMD=<值>` 选择编译目标。切换指令集时建议用不同的构建目录，以便分别保留可执行文件和测试结果。
 
-如果还没有数据集，可以先下载：
+| 值 | 平台与指令集 |
+|---|---|
+| `native`（默认） | x86-64 按构建机选择 AVX2 或 AVX-512 VNNI，AArch64 使用 NEON Dot Product |
+| `avx2` | x86-64，要求 AVX2 和 FMA |
+| `avx512` | x86-64，要求 AVX-512F、BW、VL 和 VNNI |
+| `neon` | AArch64，要求 NEON Dot Product（Linux 的 `asimddp`） |
+
+指令集在编译时选定。运行测试的机器也需要支持所选指令集。
+
+## 测试
+
+测试通过 CTest 注册，默认随构建生成，不需要下载数据集或安装第三方测试框架。缓存测试会实际分配邻居向量，运行时的可用内存需超过程序预留给系统的 2 GiB。
 
 ```bash
-sh benches/download_dataset.sh siftsmall
+ctest --test-dir build --output-on-failure
+ctest --test-dir build -L unit --output-on-failure
+```
+
+| 测试 | 覆盖内容 |
+|---|---|
+| `rnndescent.simd` | 对照标量结果校验 FP32、INT8/UINT8 距离，包括单条、四条一组、建图距离和非对齐维度 |
+| `rnndescent.cache` | 校验四邻居 SIMD 数据布局、ID 重映射、预算用尽时回退及缓存开关下的距离一致性 |
+| `rnndescent.benchmark` | 校验 CLI、显式随机模式、邻居池预算，以及 fvecs/bvecs/ivecs 的读取和坏文件处理 |
+| `rnndescent.solution` | 小数据集建图、查询、重建和重置，用穷举校验 Top K ID 及精排距离，覆盖 PCA 与缓存开关 |
+| `rnndescent.recall` | 固定随机种子，限制搜索预算，校验 Recall@10、缓存开关下的结果一致性和精排距离 |
+
+只构建 benchmark 程序时可传入 `-DBUILD_TESTING=OFF`。
+
+## Benchmark
+
+### 随机向量
+
+随机模式内置 256、512、1024、1536 维预设。下面在 10 万条归一化随机向量上，分别对 256、512、1024 维跑 1 万条查询。固定建图和搜索参数，方便对比维度或 SIMD 路径。将 `OMP_NUM_THREADS` 设为测量使用的线程数，benchmark 的建图和查图线程数最多为 16。
+
+```bash
+for dim in 256 512 1024; do
+  OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
+    ./build/algorithm --mode random --data-size 100000 --dim "$dim" \
+    --test-iter 10000 --topk 10 --repeat 10 --exact-check-queries 100 --output-iter 0 \
+    --K0 32 --num-initialize 160 --search-L 160 --refine-max 128 --beam-size 8 \
+    --disable-pca --neighbor-pool-gb 4
+done
+```
+
+用 `--neighbor-pool-gb 0` 测只存邻接 ID 的路径。正整数给出池的 GiB 上限，池包含邻接 ID、缓存向量和对齐开销。实际缓存容量还受系统可用内存限制，可从日志查看分配大小和覆盖比例。对比吞吐量时同时记录 Recall@K 和缓存覆盖，并交替测试各版本，避免把单轮 CPU 争用当成性能差异。
+
+### 真实数据集
+
+```bash
 sh benches/download_dataset.sh sift
-sh benches/download_dataset.sh gist
+OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 ./build/algorithm \
+  --mode dataset --dataset-dir benches/datasets/sift --topk 10 --repeat 5
 ```
 
+下载脚本还支持 `siftsmall` 和 `gist`。数据目录可使用 [benches/README.md](benches/README.md) 中的文件别名，也可用 `--base`、`--query` 和可选的 `--gt` 指定文件。底库和查询支持 `fvecs`、`bvecs`，预计算近邻使用 `ivecs`。传入 `--pca-out <维度>` 可开启建图与查询的 PCA 投影，精排仍使用原始向量。
 
-如果目录下包含类似下面这些文件：
+要固定真实数据的近邻顺序，同时测试不同的向量宽度，可以[用 SIFT128 生成 256、512、1024 维测试数据](benches/README.md#从-sift128-生成高维测试数据)，直接复用 ground truth。
 
-- `base.fvecs` 或 `base.bvecs`
-- `query.fvecs` 或 `query.bvecs`
-- `groundtruth.ivecs` 或 `gt.ivecs`
+### Recall 与 QPS
 
-可以直接跑：
+当默认参数的 Recall@10 接近 100% 时，可用较小的搜索预算比较代码版本。以下命令使用同一份 SIFT 数据、固定 `K0` 和缓存预算，从较低的 `search_L` 开始扫描。`num-initialize` 至少等于 `search-L`，`refine-max` 至少等于 `topk`。比较版本时保持底库、ground truth、线程数和配置一致。
 
 ```bash
-./build/algorithm --mode dataset --dataset-dir /path/to/siftsmall --topk 10 --repeat 5
+for budget in 16 32 64 128; do
+  if [ "$budget" -lt 32 ]; then init=32; else init="$budget"; fi
+  OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
+    RESULT_DIR="benches/results/sift-l$budget" ./build/algorithm \
+    --mode dataset --dataset-dir benches/datasets/sift --topk 10 --repeat 7 \
+    --K0 32 --num-initialize "$init" --search-L "$budget" --refine-max "$budget" \
+    --beam-size 8 --neighbor-pool-gb 4 --output-iter 0
+done
 ```
 
-也可以手动指定文件：
+### 读取结果
 
-```bash
-./build/algorithm --mode dataset \
-  --base /path/to/base.fvecs \
-  --query /path/to/query.fvecs \
-  --gt /path/to/groundtruth.ivecs \
-  --topk 10 --repeat 5
-```
+程序默认写到 `benches/results/<数据集名>/`，随机测试写到 `benches/results/random-<维度>d/`。每次生成带时间戳的报告，同时更新 `latest.txt`。可用 `RESULT_DIR` 为每个版本或每轮测试指定单独的目录。
 
-### 支持格式
+`latency_ms[i]` 是第 `i` 轮每条查询的平均毫秒数，对应 `QPS = 1000 / latency_ms[i]`。建图时间包含配置的预热。随机测试用 `--exact-check-queries` 指定穷举校验的查询条数，数据集模式提供 ground truth 后可用其计算 Recall@K。
 
-- dense vectors: `fvecs`, `bvecs`
-- ground truth: `ivecs`
+## 代码入口
 
-### 结果落盘
-
-每次 benchmark 会自动把结果写到：
-
-```
-benches/results/<dataset_name>/latest.txt
-benches/results/<dataset_name>/<timestamp>.txt
-```
-
-结果文件会包含：
-
-- build 时间
-- 每轮 query latency
-- 平均/最小/最大 latency
-- recall
-- 距离误差
-- top1 gap
-
-
-### 基本使用
-
-编译完成后，可以直接运行生成的可执行文件：
-
-```bash
-./algorithm
-```
-
-或者使用提供的运行脚本：
-
-```bash
-./run.sh
-```
-
-### 自定义配置
-
-当前 benchmark 的主要参数入口在 `main.cpp`：
-
-- `S`：局部搜索的大小
-- `R`：构建过程中的采样数量
-- `beam_size`：beam search 参数
-- `search_L`：搜索过程中的扩展参数
-- `K0`：初始搜索数量
-- `num_initialize`：搜索初始化项数量
-- `refine_max`：最终精排候选上限
-- `--neighbor-pool-gb <n>` 设置邻居池预算（GiB），包含邻边 ID 及其对齐开销。默认值 `0` 只分配邻边 ID 所需空间。传入正整数启用邻居向量缓存，例如 `--neighbor-pool-gb 4`。
-
-可以按随机测试维度或真实数据集预设不同参数组合。
-
-## 性能评估
-
-主程序会自动生成随机测试数据并进行性能评估，输出以下信息：
-
-1. 索引构建时间
-2. 搜索延迟（每查询平均毫秒数）
-3. 吞吐量（每秒查询数）
-4. 检索结果的距离信息
-
-随机模式默认覆盖多种维度；数据集模式可以直接评估 `siftsmall`、`sift`、`gist` 等标准数据。
-
-## 优化技术
-
-本实现采用了多种优化技术来提升性能：
-
-1. **多线程并行**：使用 OpenMP 实现构建和搜索过程的并行化
-2. **SIMD 优化**：使用 SIMD 指令加速距离计算
-3. **缓存图搜索**：对图搜索使用缓存后的向量布局和快速距离计算器
-4. **精排校正**：对候选结果使用原始向量精排，保证距离准确性
-5. **参数调优**：支持按数据集或测试场景优化算法参数
-
-## 注意事项
-
-1. 当前实现不支持动态插入数据，索引构建后无法添加新向量
-2. 算法参数针对特定硬件环境进行了优化，可能需要根据实际环境进行调整
-3. 编译时需确保正确链接 BLAS 或 OpenBLAS 库
-
-## 参考资料
-
-- RNNDescent 算法原始论文
-- Faiss 库文档
-- OpenMP 并行编程指南
+- `benchmark/` 提供命令行、数据读取、评估和报告。
+- `solution/solution.h` 提供 `Solution::build`、`search` 和 `reset`。底库向量供 FP32 精排引用，需在索引使用期间保持有效。结果按查询行连续存储，距离可通过 `distance_buffer()` 读取。更新底库需要重新构建。
+- `solution/rnndescent/discomputer/` 包含平台距离内核和邻居池，`tests/` 包含回归测试。
 
 ## 商用许可
 

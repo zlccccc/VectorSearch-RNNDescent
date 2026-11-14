@@ -43,6 +43,7 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             std::exit(0);
         } else if (arg == "--mode") {
             config.mode = require_value(arg);
+            config.mode_explicit = true;
         } else if (arg == "--dataset-name") {
             config.dataset_name = require_value(arg);
         } else if (arg == "--dataset-dir") {

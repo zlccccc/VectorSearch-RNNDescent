@@ -1,74 +1,69 @@
 cmake_minimum_required(VERSION 3.23)
-project(algorithm)
-add_definitions(-std=c++17)
-# lscpu查看指令集
+project(algorithm LANGUAGES CXX)
 
-# add_compile_options(-Wall -Wextra -O3)
-# add_compile_options(-O3)
-add_compile_options(-O3 -mcmodel=medium -march=native)
-# add_compile_options(-O3 -march=native)
-# add_compile_options(-O3 -mfpu=neon)
-# add_compile_options(-O3 -mfpu=vfpv3-fp16)
-# add_compile_options(-march=armv8.2-a+fp16fml)
-# add_compile_options(-march=armv8.4-a+fp16fml)
-# add_compile_options(-msse2 -msse -mavx512f -mavx512vl -mbmi2 -mavx512bw -mavx512vnni)
-add_compile_options(-msse2 -msse -mavx2 -mbmi2 -msse4.1 -msse4.2)
-
-add_compile_options(-g)
-add_compile_options(-DINTERNAL_CLOCK_TEST)
-
-FIND_PACKAGE(OpenMP REQUIRED)
-
-if(OPENMP_FOUND)
-message("OPENMP FOUND")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# FIND_PACKAGE(OpenBLAS REQUIRED)
-# if(OpenBLAS_FOUND)
-# message("OpenBLAS FOUND ${OpenBLAS_INCLUDE_DIRS} ${OpenBLAS_LIBRARIES}")
-# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenBLAS_C_FLAGS}")
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenBLAS_CXX_FLAGS}")
-# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenBLAS_EXE_LINKER_FLAGS}")
-# endif()
+set(RNNDESCENT_SIMD "native" CACHE STRING "SIMD target: native, avx2, avx512, or neon")
+set_property(CACHE RNNDESCENT_SIMD PROPERTY STRINGS native avx2 avx512 neon)
 
-# # 添加 Faiss 库的路径
+find_package(OpenMP REQUIRED COMPONENTS CXX)
+find_package(faiss CONFIG QUIET)
+if(NOT TARGET faiss)
+    find_path(FAISS_INCLUDE_DIR NAMES faiss/impl/NNDescent.h REQUIRED)
+    find_library(FAISS_LIBRARY NAMES faiss REQUIRED)
+    add_library(faiss UNKNOWN IMPORTED)
+    set_target_properties(faiss PROPERTIES
+        IMPORTED_LOCATION "${FAISS_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${FAISS_INCLUDE_DIR}")
+endif()
 
-include_directories(
-/usr/local/include/faiss,
-/usr/local/include,
-/usr/include/openblas,
-/usr/include/mkl,
-# /usr/local/include/eigen3
-)
+find_package(OpenBLAS CONFIG QUIET)
+if(NOT OpenBLAS_FOUND)
+    find_path(OpenBLAS_INCLUDE_DIRS NAMES cblas.h PATH_SUFFIXES openblas openblas-pthread REQUIRED)
+    find_library(OpenBLAS_LIBRARIES NAMES openblas REQUIRED)
+endif()
 
-# include_directories(${OpenBLAS_INCLUDE_DIRS})
+add_library(rnndescent_build_options INTERFACE)
+target_compile_features(rnndescent_build_options INTERFACE cxx_std_17)
+target_compile_definitions(rnndescent_build_options INTERFACE INTERNAL_CLOCK_TEST)
+target_include_directories(rnndescent_build_options INTERFACE
+    "${CMAKE_CURRENT_SOURCE_DIR}" ${OpenBLAS_INCLUDE_DIRS})
+target_link_libraries(rnndescent_build_options INTERFACE
+    faiss ${OpenBLAS_LIBRARIES} OpenMP::OpenMP_CXX)
 
-file(GLOB cpp_srcs ${CMAKE_SOURCE_DIR}/main.cpp ${CMAKE_SOURCE_DIR}/solution/*.cpp)
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" processor)
+if(processor MATCHES "^(x86_64|amd64)$")
+    if(RNNDESCENT_SIMD STREQUAL "native")
+        target_compile_options(rnndescent_build_options INTERFACE -march=native -mavx2 -mfma)
+    elseif(RNNDESCENT_SIMD STREQUAL "avx2")
+        target_compile_options(rnndescent_build_options INTERFACE -mavx2 -mfma)
+        target_compile_definitions(rnndescent_build_options INTERFACE RNNDESCENT_FORCE_AVX2)
+    elseif(RNNDESCENT_SIMD STREQUAL "avx512")
+        target_compile_options(rnndescent_build_options INTERFACE -mavx512f -mavx512bw -mavx512vl -mavx512vnni)
+        target_compile_definitions(rnndescent_build_options INTERFACE RNNDESCENT_FORCE_AVX512)
+    else()
+        message(FATAL_ERROR "Set RNNDESCENT_SIMD to native, avx2, or avx512 on x86-64")
+    endif()
+elseif(processor MATCHES "^(aarch64|arm64)$")
+    if(NOT RNNDESCENT_SIMD MATCHES "^(native|neon)$")
+        message(FATAL_ERROR "Set RNNDESCENT_SIMD to native or neon on AArch64")
+    endif()
+    target_compile_options(rnndescent_build_options INTERFACE -march=armv8.2-a+dotprod)
+    target_compile_definitions(rnndescent_build_options INTERFACE RNNDESCENT_FORCE_NEON)
+else()
+    message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
 
-link_directories(
-/usr/local/lib64
-/usr/lib64
-)
+add_library(rnndescent_solution STATIC solution/solution.cpp)
+target_link_libraries(rnndescent_solution PUBLIC rnndescent_build_options)
 
-set(APP_TARGET vector_search_app)
-add_executable(${APP_TARGET} ${cpp_srcs})
-set_target_properties(${APP_TARGET} PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
-target_include_directories(${APP_TARGET} PRIVATE /usr/include/openblas)
+add_executable(vector_search_app main.cpp)
+set_target_properties(vector_search_app PROPERTIES OUTPUT_NAME algorithm)
+target_link_libraries(vector_search_app PRIVATE rnndescent_solution)
 
-#target_link_libraries(${APP_TARGET} faiss blas pthread m jemalloc)
-target_link_libraries(${APP_TARGET} faiss ${OpenBLAS_LIBRARIES} pthread openblas m)
-
-#add_executable(bench_hnsw benches/bench_hnsw.cpp)
-#target_link_libraries(bench_hnsw faiss openblas)
-
-#add_executable(bench_nsg benches/bench_nsg.cpp)
-#target_link_libraries(bench_nsg faiss openblas)
-
-#add_executable(bench_nndescent benches/bench_nndescent.cpp)
-#target_link_libraries(bench_nndescent faiss openblas)
-
-#add_executable(bench_rnndescent benches/bench_rnndescent.cpp)
-#target_link_libraries(bench_rnndescent faiss openblas)
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

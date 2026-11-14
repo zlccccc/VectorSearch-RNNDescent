@@ -48,7 +48,7 @@ inline void run_random_benchmark(BenchmarkConfig config) {
         const auto after_test = chrono::high_resolution_clock::now();
         const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / config.test_iter;
         stats.latency_ms.push_back(t);
-        cout << "[" << i << "] average test time: " << t << " ms; " << 1000. / t << " offline score" << endl;
+        cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " QPS" << endl;
     }
 
     stats.accuracy = evaluate_accuracy_exact(dataset, query, result, solution.distance_buffer(), config.data_size, config.dim, config.topk,
@@ -102,7 +102,7 @@ inline void run_dataset_benchmark(BenchmarkConfig config) {
         const auto after_test = chrono::high_resolution_clock::now();
         const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / query.rows;
         stats.latency_ms.push_back(t);
-        cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " qps(k)" << endl;
+        cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " QPS" << endl;
     }
 
     if (gt.rows > 0) {
