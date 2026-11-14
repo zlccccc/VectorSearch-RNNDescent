@@ -86,22 +86,7 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 ./build/algorithm \
 
 下载脚本还支持 `siftsmall` 和 `gist`。数据目录可使用 [benches/README.md](benches/README.md) 中的文件别名，也可用 `--base`、`--query` 和可选的 `--gt` 指定文件。底库和查询支持 `fvecs`、`bvecs`，预计算近邻使用 `ivecs`。传入 `--pca-out <维度>` 可开启建图与查询的 PCA 投影，精排仍使用原始向量。
 
-要固定真实数据的近邻顺序，同时测试不同的向量宽度，可以[用 SIFT128 生成 256、512、1024 维测试数据](benches/README.md#从-sift128-生成高维测试数据)，直接复用 ground truth。
-
-### Recall 与 QPS
-
-当默认参数的 Recall@10 接近 100% 时，可用较小的搜索预算比较代码版本。以下命令使用同一份 SIFT 数据、固定 `K0` 和缓存预算，从较低的 `search_L` 开始扫描。`num-initialize` 至少等于 `search-L`，`refine-max` 至少等于 `topk`。比较版本时保持底库、ground truth、线程数和配置一致。
-
-```bash
-for budget in 16 32 64 128; do
-  if [ "$budget" -lt 32 ]; then init=32; else init="$budget"; fi
-  OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
-    RESULT_DIR="benches/results/sift-l$budget" ./build/algorithm \
-    --mode dataset --dataset-dir benches/datasets/sift --topk 10 --repeat 7 \
-    --K0 32 --num-initialize "$init" --search-L "$budget" --refine-max "$budget" \
-    --beam-size 8 --neighbor-pool-gb 4 --output-iter 0
-done
-```
+要固定近邻结构测试向量变宽的影响，或把 Recall@10 拉离饱和区再比较 QPS，可运行 [SIFT benchmark 脚本](benches/README.md#可复现的-sift-测试)。脚本支持 128、256、512、1024 维对比和低搜索预算扫描，每档汇总多次独立建图的结果。
 
 ### 读取结果
 

@@ -4,3 +4,5 @@ benches/results
 remove-*
 old
 build
+
+benches/__pycache__/
