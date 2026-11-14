@@ -48,11 +48,29 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         edges = reinterpret_cast<int *>(allocate_ptr(size * sizeof(int)));
         for (int i = 0; i < size; ++i)
             edges[i] = rollback_ids[neighbor[i]];
+    }
 
-        if (pool != nullptr) {
-#pragma omp parallel for
-            for (int i = 0; i < size; ++i)
-                dis->copy_index(edges[i], pool + i * dim, l2norms[i]);
+    // The pool slices have already been assigned. Each worker fills only its own neighborhood.
+    void populate_cache(uint8_t *reorder_scratch) {
+        if (pool == nullptr)
+            return;
+
+        for (int i = 0; i < size; ++i)
+            dis->copy_index(edges[i], pool + static_cast<size_t>(i) * dim, l2norms[i]);
+
+        // Interleave four neighbors by SIMD lane for sequential reads in the distance kernel.
+        constexpr size_t lane_width = Derived::cache_lane_width;
+        const size_t dimension = dim;
+        for (int base = 0; base < size; base += 4) {
+            auto *block = pool + static_cast<size_t>(base) * dimension;
+            for (size_t i = 0; i < dimension; i += lane_width) {
+                const size_t chunk = std::min(lane_width, dimension - i);
+                for (size_t lane = 0; lane < 4; ++lane) {
+                    std::memcpy(reorder_scratch + i * 4 + lane * chunk,
+                                block + lane * dimension + i, chunk);
+                }
+            }
+            std::memcpy(block, reorder_scratch, 4 * dimension);
         }
     }
 

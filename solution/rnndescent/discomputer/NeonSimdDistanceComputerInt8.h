@@ -10,10 +10,11 @@
 #include <cmath>
 #include <faiss/impl/NNDescent.h>
 #include <faiss/utils/prefetch.h>
-#include <string.h>
+#include <cstring>
 #include <vector>
 
 #include "MyDistanceComputer.h"
+#include "NeighborsStorageBase.h"
 
 namespace {
 
@@ -27,11 +28,24 @@ inline int8x16_t Load(const int8_t *p) {
 }
 
 // FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
+constexpr size_t neon_int8_block_bytes = 16;
+
+inline int8x16_t LoadInt8Tail(const int8_t *data, size_t count) {
+    int8_t tail[neon_int8_block_bytes]{};
+    std::memcpy(tail, data, count);
+    return vld1q_s8(tail);
+}
+
 inline int32_t CorrelationSum(const int8_t *a, const int8_t *b, size_t size) {
     int32x4_t sums = vdupq_n_s32(0);
     // FAISS_PRAGMA_IMPRECISE_LOOP
-    for (size_t i = 0; i < size; i += 16) {
+    const size_t full_size = size - size % neon_int8_block_bytes;
+    for (size_t i = 0; i < full_size; i += neon_int8_block_bytes) {
         sums = vdotq_s32(sums, Load(a + i), Load(b + i));
+    }
+    if (full_size < size) {
+        const size_t tail = size - full_size;
+        sums = vdotq_s32(sums, LoadInt8Tail(a + full_size, tail), LoadInt8Tail(b + full_size, tail));
     }
     return vaddvq_s32(sums);
 }
@@ -52,7 +66,10 @@ inline void CorrelationSum4(const int8_t *q, const int8_t *x0, const int8_t *x1,
     //     sums2 = vaddq_s32(sums2, Correlation(Load(x2 + i), loadq));
     //     sums3 = vaddq_s32(sums3, Correlation(Load(x3 + i), loadq));
     // }
-    for (size_t i = 0; i < size; i += 64) {
+    const size_t full_size = size - size % neon_int8_block_bytes;
+    const size_t unrolled_size = size - size % 64;
+    size_t i = 0;
+    for (; i < unrolled_size; i += 64) {
         __builtin_prefetch(q + i + 64, 0, 2);
         __builtin_prefetch(x0 + i + 64, 0, 2);
         __builtin_prefetch(x1 + i + 64, 0, 2);
@@ -78,6 +95,21 @@ inline void CorrelationSum4(const int8_t *q, const int8_t *x0, const int8_t *x1,
         sums1 = vdotq_s32(sums1, vld1q_s8(x1 + i + 48), loadq);
         sums2 = vdotq_s32(sums2, vld1q_s8(x2 + i + 48), loadq);
         sums3 = vdotq_s32(sums3, vld1q_s8(x3 + i + 48), loadq);
+    }
+    for (; i < full_size; i += neon_int8_block_bytes) {
+        loadq = vld1q_s8(q + i);
+        sums0 = vdotq_s32(sums0, vld1q_s8(x0 + i), loadq);
+        sums1 = vdotq_s32(sums1, vld1q_s8(x1 + i), loadq);
+        sums2 = vdotq_s32(sums2, vld1q_s8(x2 + i), loadq);
+        sums3 = vdotq_s32(sums3, vld1q_s8(x3 + i), loadq);
+    }
+    if (full_size < size) {
+        const size_t tail = size - full_size;
+        loadq = LoadInt8Tail(q + i, tail);
+        sums0 = vdotq_s32(sums0, LoadInt8Tail(x0 + i, tail), loadq);
+        sums1 = vdotq_s32(sums1, LoadInt8Tail(x1 + i, tail), loadq);
+        sums2 = vdotq_s32(sums2, LoadInt8Tail(x2 + i, tail), loadq);
+        sums3 = vdotq_s32(sums3, LoadInt8Tail(x3 + i, tail), loadq);
     }
     res0 = vaddvq_s32(sums0);
     res1 = vaddvq_s32(sums1);
@@ -137,7 +169,8 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
         (this->matrix).resize(n * d);
         // scale = std::max(scale, *std::max_element(matrix, matrix + n * d));
         mean.resize(d);
-#pragma omp parallel for
+        float max_range = 0.0f;
+#pragma omp parallel for reduction(max : max_range)
         for (int k = 0; k < d; k++) {
             float minvalue = INFINITY, maxvalue = -INFINITY;
             for (int i = 0; i < n; i++) {
@@ -145,12 +178,9 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
                 minvalue = std::min(minvalue, matrix[i * d + k]);
             }
             mean[k] = (maxvalue + minvalue) / 2;
-#pragma single
-            { scale = std::max(scale, (maxvalue - minvalue) / 2); }
+            max_range = std::max(max_range, (maxvalue - minvalue) / 2);
         }
-        // scale = (maxvalue - minvalue) / 2.0;
-        // mean = (maxvalue + minvalue) / 2.0;
-        scale /= maxscale;
+        scale = max_range > 0.0f ? max_range / maxscale : 1.0f;
         Logger::info("Int8 QT scale = %f; mean = %f; maxvalue = %f\n", scale, mean[0], scale * maxscale);
         scale2 = scale * scale;
 #pragma omp parallel for
@@ -214,7 +244,7 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
         dis3 = matrixl2norms[idx3] - dp3;
     }
 
-    void copy_index(int idx0, int8_t *y, float &l2norm) override final {
+    void copy_index(int idx0, void *y, float &l2norm) override final {
         memcpy(y, matrix.data() + idx0 * d, d);
         l2norm = matrixl2norms[idx0];
     }
@@ -233,27 +263,8 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // �
     using Base::pool;
     using Base::size;
 
-    Int8Neighbors() = default;
-    Int8Neighbors(int dim, const int *neighbor, int count, MyDistanceComputer *dis, const std::vector<int> &rollback_ids, bool save_neighbor)
-        : Base(dim, neighbor, count, dis, rollback_ids, save_neighbor) {
-        reorder_block(size, this->dim, pool);
-    }
-
-    static void reorder_block(int size, int dim, int8_t *pool) {
-        if (pool == nullptr)
-            return;
-#pragma omp parallel for
-        for (int base = 0; base < size; base += 4) {
-            int8_t *x = pool + base * dim;
-            std::vector<int8_t> reorder_value(4 * dim);
-            for (int i = 0; i < dim; i += 16) {
-                for (int id = 0; id < 4; id++) {
-                    memcpy(reorder_value.data() + i * 4 + id * 16, x + id * dim + i, 16);
-                }
-            }
-            memcpy(x, reorder_value.data(), 4 * dim);
-        }
-    }
+    static constexpr size_t cache_lane_width = neon_int8_block_bytes;
+    using Base::Base;
 
     void compute_distance(int idq, std::vector<float> &result) { // 计算所有距离
         result.resize(size);
@@ -272,46 +283,44 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // �
     // 这个地方已经加上了preload
     inline void distance_preloaded_all(const int8_t *__restrict q, const int size, const int8_t *__restrict xvalue, const float *__restrict l2norms,
                                        float *dis) {
-        // #pragma omp simd
-        // __builtin_prefetch(dis, 1, 2);
+        const size_t dimension = dim;
+        const size_t tail = dimension % cache_lane_width;
+        const size_t full_size = dimension - tail;
+        const size_t unrolled_size = dimension - dimension % (4 * cache_lane_width);
         for (int id = 0; id < size; id += 4) {
             const int8_t *__restrict x = xvalue + id * dim;
             // __builtin_prefetch(q, 0, 2);
             // __builtin_prefetch(x, 0, 2);
 
-            // int8x16_t loadq;
             int32x4_t sums0 = vdupq_n_s32(0);
             int32x4_t sums1 = vdupq_n_s32(0);
             int32x4_t sums2 = vdupq_n_s32(0);
             int32x4_t sums3 = vdupq_n_s32(0);
-            for (int i = 0; i < dim; i += 64) {
-                // __builtin_prefetch(q + i + 64, 0, 2);
-                // #pragma unroll
-                for (int k = 0; k < 64; k += 16) {
-                    // __builtin_prefetch(x + (i + k) * 4 + 64, 0, 2);
-                    int8x16_t loadq = vld1q_s8(q + i + k);
-
-                    sums0 = vdotq_s32(sums0, vld1q_s8(x + (i + k) * 4), loadq);
-                    sums1 = vdotq_s32(sums1, vld1q_s8(x + (i + k) * 4 + 16), loadq);
-                    sums2 = vdotq_s32(sums2, vld1q_s8(x + (i + k) * 4 + 32), loadq);
-                    sums3 = vdotq_s32(sums3, vld1q_s8(x + (i + k) * 4 + 48), loadq);
-
-                    // int8x16x4_t loadx = vld4q_s8(x + (i + k) * 4);  // 用这个的话reorder要修一下~~
-                    // sums0 = vdotq_s32(sums0, loadx.val[0], loadq);
-                    // sums1 = vdotq_s32(sums1, loadx.val[1], loadq);
-                    // sums2 = vdotq_s32(sums2, loadx.val[2], loadq);
-                    // sums3 = vdotq_s32(sums3, loadx.val[3], loadq);
-                }
+            const auto dot_chunk = [&](size_t k) {
+                const int8x16_t loadq = vld1q_s8(q + k);
+                const int8_t *chunk = x + 4 * k;
+                sums0 = vdotq_s32(sums0, vld1q_s8(chunk), loadq);
+                sums1 = vdotq_s32(sums1, vld1q_s8(chunk + cache_lane_width), loadq);
+                sums2 = vdotq_s32(sums2, vld1q_s8(chunk + 2 * cache_lane_width), loadq);
+                sums3 = vdotq_s32(sums3, vld1q_s8(chunk + 3 * cache_lane_width), loadq);
+            };
+            size_t k = 0;
+            for (; k < unrolled_size; k += 4 * cache_lane_width) {
+                dot_chunk(k);
+                dot_chunk(k + cache_lane_width);
+                dot_chunk(k + 2 * cache_lane_width);
+                dot_chunk(k + 3 * cache_lane_width);
             }
-            //             for (int i = 0, j = 0; i < d; i += 16, j += 64) {
-            //                 // __builtin_prefetch(q + i + 64, 0, 2);
-            // // #pragma unroll
-            //                 int8x16_t loadq = vld1q_s8(q + i);
-            //                 sums0 = vdotq_s32(sums0, vld1q_s8(x + j), loadq);
-            //                 sums1 = vdotq_s32(sums1, vld1q_s8(x + j + 16), loadq);
-            //                 sums2 = vdotq_s32(sums2, vld1q_s8(x + j + 32), loadq);
-            //                 sums3 = vdotq_s32(sums3, vld1q_s8(x + j + 48), loadq);
-            //             }
+            for (; k < full_size; k += cache_lane_width)
+                dot_chunk(k);
+            if (tail != 0) {
+                const int8x16_t loadq = LoadInt8Tail(q + full_size, tail);
+                const int8_t *chunk = x + 4 * full_size;
+                sums0 = vdotq_s32(sums0, LoadInt8Tail(chunk, tail), loadq);
+                sums1 = vdotq_s32(sums1, LoadInt8Tail(chunk + tail, tail), loadq);
+                sums2 = vdotq_s32(sums2, LoadInt8Tail(chunk + 2 * tail, tail), loadq);
+                sums3 = vdotq_s32(sums3, LoadInt8Tail(chunk + 3 * tail, tail), loadq);
+            }
             dis[id] = vaddvq_s32(sums0);
             dis[id + 1] = vaddvq_s32(sums1);
             dis[id + 2] = vaddvq_s32(sums2);

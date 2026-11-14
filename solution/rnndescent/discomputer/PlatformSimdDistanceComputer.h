@@ -7,7 +7,10 @@
 //   RNNDESCENT_FORCE_AVX2
 //   RNNDESCENT_FORCE_NEON
 
-#if defined(RNNDESCENT_FORCE_AVX512)
+#if defined(RNNDESCENT_FORCE_AVX512) || \
+    (!defined(RNNDESCENT_FORCE_AVX2) && !defined(RNNDESCENT_FORCE_NEON) && \
+     defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512VNNI__))
+#define RNNDESCENT_USE_AVX512
 #include "Avx512SimdDistanceComputerFP32.h"
 #include "Avx512SimdDistanceComputerUInt8.h"
 #elif defined(RNNDESCENT_FORCE_AVX2)
@@ -17,13 +20,8 @@
 #include "NeonSimdDistanceComputerFP32.h"
 #include "NeonSimdDistanceComputerInt8.h"
 #elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
-#if defined(__AVX512F__) && defined(__AVX512BW__)
-#include "Avx512SimdDistanceComputerFP32.h"
-#include "Avx512SimdDistanceComputerUInt8.h"
-#else
 #include "Avx2SimdDistanceComputerFP32.h"
 #include "Avx2SimdDistanceComputerInt8.h"
-#endif
 #elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM64)
 #include "NeonSimdDistanceComputerFP32.h"
 #include "NeonSimdDistanceComputerInt8.h"
@@ -32,8 +30,8 @@
 #endif
 
 namespace rnndescent {
-#if defined(RNNDESCENT_FORCE_AVX512) ||                                                                                                                        \
-    ((defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && defined(__AVX512F__) && defined(__AVX512BW__))
+#ifdef RNNDESCENT_USE_AVX512
+#undef RNNDESCENT_USE_AVX512
 using SelectedNeighborsContainerType = UInt8Neighbors;
 using SelectedSaveNeighborDiscomputer = SimdDistanceComputerUInt8L2;
 #else
@@ -43,7 +41,7 @@ using SelectedSaveNeighborDiscomputer = SimdDistanceComputerInt8L2;
 
 struct SelectedDistanceComputerFactory {
     static std::unique_ptr<MyDistanceComputer> create_build_graph(const float *data, int n, int d) {
-        return std::make_unique<SimdDistanceComputerInt8L2>(data, n, d);
+        return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d);
     }
 
     static std::unique_ptr<MyDistanceComputer> create_cached_graph(const float *data, int n, int d) {

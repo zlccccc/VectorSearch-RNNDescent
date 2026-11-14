@@ -30,11 +30,41 @@ inline int32_t ReduceAddEpi32(const __m256i &sums) {
 
 inline __m256i Correlation(const __m128i &a, const __m128i &b) { return _mm256_madd_epi16(_mm256_cvtepi8_epi16(a), _mm256_cvtepi8_epi16(b)); }
 
+constexpr size_t avx2_int8_block_bytes = sizeof(__m128i);
+constexpr size_t avx2_int8_unroll_bytes = 4 * avx2_int8_block_bytes;
+
+// AVX2 has no byte maskload. Use only loads that fit, then zero the unused bytes.
+inline __m128i LoadInt8Tail(const int8_t *data, size_t count) {
+    if (count >= 8) {
+        const auto first = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(data));
+        const auto last = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(data + count - 8));
+        const auto shift = _mm_cvtsi32_si128(static_cast<int>(16 - count) * 8);
+        return _mm_unpacklo_epi64(first, _mm_srl_epi64(last, shift));
+    }
+    if (count >= 4) {
+        const auto first = _mm_loadu_si32(data);
+        const auto last = _mm_loadu_si32(data + count - 4);
+        const auto shift = _mm_cvtsi32_si128(static_cast<int>(8 - count) * 8);
+        return _mm_unpacklo_epi32(first, _mm_srl_epi32(last, shift));
+    }
+    if (count >= 2) {
+        const auto first = _mm_loadu_si16(data);
+        const auto last = _mm_loadu_si16(data + count - 2);
+        const auto shift = _mm_cvtsi32_si128(static_cast<int>(4 - count) * 8);
+        return _mm_unpacklo_epi16(first, _mm_srl_epi16(last, shift));
+    }
+    return _mm_cvtsi32_si128(static_cast<uint8_t>(*data));
+}
+
 inline int32_t CorrelationSum(const int8_t *a, const int8_t *b, size_t size) {
     __m256i sums = _mm256_setzero_si256();
-    for (size_t i = 0; i < size; i += 16) { // length = 16
+    const size_t tail = size % avx2_int8_block_bytes;
+    const size_t full_size = size - tail;
+    for (size_t i = 0; i < full_size; i += avx2_int8_block_bytes) {
         sums = _mm256_add_epi32(sums, Correlation(_mm_loadu_si128((__m128i const *)(a + i)), _mm_loadu_si128((__m128i const *)(b + i))));
     }
+    if (tail != 0)
+        sums = _mm256_add_epi32(sums, Correlation(LoadInt8Tail(a + full_size, tail), LoadInt8Tail(b + full_size, tail)));
     return ReduceAddEpi32(sums);
 }
 
@@ -45,7 +75,11 @@ inline void CorrelationSum4(const int8_t *q, const int8_t *x0, const int8_t *x1,
     __m256i sums1 = _mm256_setzero_si256();
     __m256i sums2 = _mm256_setzero_si256();
     __m256i sums3 = _mm256_setzero_si256();
-    for (size_t i = 0; i < size; i += 64) { // 64 cacheline / sizeof(__m128i)
+    const size_t tail = size % avx2_int8_block_bytes;
+    const size_t full_size = size - tail;
+    const size_t unrolled_size = size - size % avx2_int8_unroll_bytes;
+    size_t i = 0;
+    for (; i < unrolled_size; i += avx2_int8_unroll_bytes) {
         __builtin_prefetch(q + i + 64, 0, 2);
         __builtin_prefetch(x0 + i + 64, 0, 2);
         __builtin_prefetch(x1 + i + 64, 0, 2);
@@ -71,6 +105,20 @@ inline void CorrelationSum4(const int8_t *q, const int8_t *x0, const int8_t *x1,
         sums1 = _mm256_add_epi32(sums1, Correlation(_mm_loadu_si128((__m128i const *)(x1 + i + 48)), loadq));
         sums2 = _mm256_add_epi32(sums2, Correlation(_mm_loadu_si128((__m128i const *)(x2 + i + 48)), loadq));
         sums3 = _mm256_add_epi32(sums3, Correlation(_mm_loadu_si128((__m128i const *)(x3 + i + 48)), loadq));
+    }
+    for (; i < full_size; i += avx2_int8_block_bytes) {
+        loadq = _mm_loadu_si128(reinterpret_cast<const __m128i *>(q + i));
+        sums0 = _mm256_add_epi32(sums0, Correlation(_mm_loadu_si128(reinterpret_cast<const __m128i *>(x0 + i)), loadq));
+        sums1 = _mm256_add_epi32(sums1, Correlation(_mm_loadu_si128(reinterpret_cast<const __m128i *>(x1 + i)), loadq));
+        sums2 = _mm256_add_epi32(sums2, Correlation(_mm_loadu_si128(reinterpret_cast<const __m128i *>(x2 + i)), loadq));
+        sums3 = _mm256_add_epi32(sums3, Correlation(_mm_loadu_si128(reinterpret_cast<const __m128i *>(x3 + i)), loadq));
+    }
+    if (tail != 0) {
+        loadq = LoadInt8Tail(q + full_size, tail);
+        sums0 = _mm256_add_epi32(sums0, Correlation(LoadInt8Tail(x0 + full_size, tail), loadq));
+        sums1 = _mm256_add_epi32(sums1, Correlation(LoadInt8Tail(x1 + full_size, tail), loadq));
+        sums2 = _mm256_add_epi32(sums2, Correlation(LoadInt8Tail(x2 + full_size, tail), loadq));
+        sums3 = _mm256_add_epi32(sums3, Correlation(LoadInt8Tail(x3 + full_size, tail), loadq));
     }
     res0 = ReduceAddEpi32(sums0);
     res1 = ReduceAddEpi32(sums1);
@@ -122,7 +170,8 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
     explicit SimdDistanceComputerInt8L2(const float *matrix, int n, int d) : n(n), d(d) {
         // scale = std::max(scale, *std::max_element(matrix, matrix + n * d));
         mean.resize(d);
-#pragma omp parallel for
+        float max_range = 0.0f;
+#pragma omp parallel for reduction(max : max_range)
         for (int k = 0; k < d; k++) {
             float minvalue = INFINITY, maxvalue = -INFINITY;
             for (int i = 0; i < n; i++) {
@@ -130,14 +179,9 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
                 minvalue = std::min(minvalue, matrix[i * d + k]);
             }
             mean[k] = (maxvalue + minvalue) / 2;
-#pragma single
-            {
-                scale = std::max(scale, (maxvalue - minvalue) / 2);
-            }
+            max_range = std::max(max_range, (maxvalue - minvalue) / 2);
         }
-        // scale = (maxvalue - minvalue) / 2.0;
-        // mean = (maxvalue + minvalue) / 2.0;
-        scale /= maxscale;
+        scale = max_range > 0.0f ? max_range / maxscale : 1.0f;
         Logger::info("Int8 QT scale = %f; mean = %f; maxvalue = %f\n", scale, mean[0], scale * maxscale);
         scale2 = scale * scale;
 
@@ -229,27 +273,8 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // Â
     using Base::pool;
     using Base::size;
 
-    Int8Neighbors() = default;
-    Int8Neighbors(int dim, const int *neighbor, int count, MyDistanceComputer *dis, const std::vector<int> &rollback_ids, bool save_neighbor)
-        : Base(dim, neighbor, count, dis, rollback_ids, save_neighbor) {
-        reorder_block(size, this->dim, pool);
-    }
-
-    static void reorder_block(int size, int dim, int8_t *pool) {
-        if (pool == nullptr)
-            return;
-#pragma omp parallel for
-        for (int base = 0; base < size; base += 4) {
-            int8_t *x = pool + base * dim;
-            std::vector<int8_t> reorder_value(4 * dim);
-            for (int i = 0; i < dim; i += 16) {
-                for (int id = 0; id < 4; id++) {
-                    memcpy(reorder_value.data() + i * 4 + id * 16, x + id * dim + i, 16);
-                }
-            }
-            memcpy(x, reorder_value.data(), 4 * dim);
-        }
-    }
+    static constexpr size_t cache_lane_width = avx2_int8_block_bytes;
+    using Base::Base;
 
     void compute_distance(int idq, std::vector<float> &result) { // ËÆ°ÁÆóÊâÄÊúâË∑ùÁ¶ª
         result.resize(size);
@@ -271,8 +296,12 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // Â
                                        float *dis) {
         // #pragma omp simd
         // __builtin_prefetch(dis, 1, 2);
+        const size_t dimension = dim;
+        const size_t tail = dimension % cache_lane_width;
+        const size_t full_size = dimension - tail;
+        const size_t unrolled_size = dimension - dimension % avx2_int8_unroll_bytes;
         for (int id = 0; id < size; id += 4) {
-            const int8_t *__restrict x = xvalue + id * dim;
+            const int8_t *__restrict x = xvalue + static_cast<size_t>(id) * dimension;
             // __builtin_prefetch(q, 0, 2);
             // __builtin_prefetch(x, 0, 2);
 
@@ -289,7 +318,8 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // Â
             //     sums2 = _mm256_add_epi32(sums2, Correlation(_mm_loadu_si128((__m128i const *)(x + i * 4 + 32)), loadq));
             //     sums3 = _mm256_add_epi32(sums3, Correlation(_mm_loadu_si128((__m128i const *)(x + i * 4 + 48)), loadq));
             // }
-            for (int i = 0; i < dim; i += 64) {
+            size_t i = 0;
+            for (; i < unrolled_size; i += avx2_int8_unroll_bytes) {
                 __builtin_prefetch(q + i + 64, 0, 2);
 #pragma unroll
                 for (int k = 0; k < 64; k += 16) {
@@ -300,6 +330,22 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // Â
                     sums2 = _mm256_add_epi32(sums2, Correlation(_mm_loadu_si128((__m128i const *)(x + (i + k) * 4 + 32)), loadq));
                     sums3 = _mm256_add_epi32(sums3, Correlation(_mm_loadu_si128((__m128i const *)(x + (i + k) * 4 + 48)), loadq));
                 }
+            }
+            for (; i < full_size; i += cache_lane_width) {
+                const auto loadq = _mm_loadu_si128(reinterpret_cast<const __m128i *>(q + i));
+                const auto *chunk = x + i * 4;
+                sums0 = _mm256_add_epi32(sums0, Correlation(_mm_loadu_si128(reinterpret_cast<const __m128i *>(chunk)), loadq));
+                sums1 = _mm256_add_epi32(sums1, Correlation(_mm_loadu_si128(reinterpret_cast<const __m128i *>(chunk + cache_lane_width)), loadq));
+                sums2 = _mm256_add_epi32(sums2, Correlation(_mm_loadu_si128(reinterpret_cast<const __m128i *>(chunk + 2 * cache_lane_width)), loadq));
+                sums3 = _mm256_add_epi32(sums3, Correlation(_mm_loadu_si128(reinterpret_cast<const __m128i *>(chunk + 3 * cache_lane_width)), loadq));
+            }
+            if (tail != 0) {
+                const auto loadq = LoadInt8Tail(q + full_size, tail);
+                const auto *chunk = x + full_size * 4;
+                sums0 = _mm256_add_epi32(sums0, Correlation(LoadInt8Tail(chunk, tail), loadq));
+                sums1 = _mm256_add_epi32(sums1, Correlation(LoadInt8Tail(chunk + tail, tail), loadq));
+                sums2 = _mm256_add_epi32(sums2, Correlation(LoadInt8Tail(chunk + 2 * tail, tail), loadq));
+                sums3 = _mm256_add_epi32(sums3, Correlation(LoadInt8Tail(chunk + 3 * tail, tail), loadq));
             }
             dis[id] = ReduceAddEpi32(sums0);
             dis[id + 1] = ReduceAddEpi32(sums1);

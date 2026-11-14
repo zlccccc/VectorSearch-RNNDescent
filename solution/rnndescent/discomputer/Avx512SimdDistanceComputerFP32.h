@@ -16,10 +16,20 @@ namespace {
 #pragma GCC target("avx512f", "avx512vl", "bmi2", "avx512bw", "avx512vnni")
 #pragma clang attribute push(__attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512vnni"))), apply_to = function)
 
-inline float CorrelationSum(const float * a, const float* b, size_t n) {
+constexpr size_t avx512_fp32_lanes = sizeof(__m512) / sizeof(float);
+
+inline float CorrelationSum(const float *a, const float *b, size_t n) {
     __m512 sums = _mm512_setzero_ps();
-    for (size_t i = 0; i < n; i += 16) {
-        sums = _mm512_fmadd_ps(_mm512_loadu_ps(&a[i]), _mm512_loadu_ps(&b[i]), sums);
+    const size_t tail = n % avx512_fp32_lanes;
+    const size_t full_size = n - tail;
+    for (size_t i = 0; i < full_size; i += avx512_fp32_lanes) {
+        sums = _mm512_fmadd_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i), sums);
+    }
+    if (tail != 0) {
+        const auto mask = static_cast<__mmask16>((1u << tail) - 1u);
+        const auto a_vec = _mm512_maskz_loadu_ps(mask, a + full_size);
+        const auto b_vec = _mm512_maskz_loadu_ps(mask, b + full_size);
+        sums = _mm512_fmadd_ps(a_vec, b_vec, sums);
     }
     return _mm512_reduce_add_ps(sums);
 }
@@ -30,7 +40,9 @@ inline void CorrelationSum4(const float *q, const float *x0, const float *x1, co
     __m512 sums1 = _mm512_setzero_ps();
     __m512 sums2 = _mm512_setzero_ps();
     __m512 sums3 = _mm512_setzero_ps();
-    for (size_t i = 0; i < size; i += 16) {
+    const size_t tail = size % avx512_fp32_lanes;
+    const size_t full_size = size - tail;
+    for (size_t i = 0; i < full_size; i += avx512_fp32_lanes) {
         __m512 q_vec = _mm512_loadu_ps(&q[i]);
         __m512 x0_vec = _mm512_loadu_ps(&x0[i]);
         __m512 x1_vec = _mm512_loadu_ps(&x1[i]);
@@ -40,6 +52,14 @@ inline void CorrelationSum4(const float *q, const float *x0, const float *x1, co
         sums1 = _mm512_fmadd_ps(q_vec, x1_vec, sums1);
         sums2 = _mm512_fmadd_ps(q_vec, x2_vec, sums2);
         sums3 = _mm512_fmadd_ps(q_vec, x3_vec, sums3);
+    }
+    if (tail != 0) {
+        const auto mask = static_cast<__mmask16>((1u << tail) - 1u);
+        const auto q_vec = _mm512_maskz_loadu_ps(mask, q + full_size);
+        sums0 = _mm512_fmadd_ps(q_vec, _mm512_maskz_loadu_ps(mask, x0 + full_size), sums0);
+        sums1 = _mm512_fmadd_ps(q_vec, _mm512_maskz_loadu_ps(mask, x1 + full_size), sums1);
+        sums2 = _mm512_fmadd_ps(q_vec, _mm512_maskz_loadu_ps(mask, x2 + full_size), sums2);
+        sums3 = _mm512_fmadd_ps(q_vec, _mm512_maskz_loadu_ps(mask, x3 + full_size), sums3);
     }
     res0 = _mm512_reduce_add_ps(sums0);
     res1 = _mm512_reduce_add_ps(sums1);
@@ -73,7 +93,7 @@ struct SimdDistanceComputerFP32L2 : MyDistanceComputer {
         // prefetch_L2(matrixl2norms.data() + i);
         // const float dp0 = faiss::fvec_inner_product(query, y, d);
         // const float dp0 = cblas_sdot(d, query, 1, y, 1);
-        const float dp0 = CorrelationSum(query, y, d);
+        const float dp0 = CorrelationSum(q, y, d);
         return queryl2norms[idq] + matrixl2norms[i] - 2 * dp0;
     }
 
@@ -91,13 +111,11 @@ struct SimdDistanceComputerFP32L2 : MyDistanceComputer {
 
     void set_query(const float *x, int n) override {
         query = x;
-        queryl2norms.resize(n); // fvec_norms_L2sqr
-        // faiss::fvec_norms_L2sqr(queryl2norms.data(), query, d, n);
+        queryl2norms.resize(n);
 #pragma omp parallel for
-        for (int i = 0; i < n; i++) {
-            queryl2norms[i]=0;
-            for (int k = 0; k < d; k++)
-                queryl2norms[i] += x[i * d + k] * x[i * d + k];
+        for (int i = 0; i < n; ++i) {
+            const float *row = x + static_cast<size_t>(i) * d;
+            queryl2norms[i] = CorrelationSum(row, row, d);
         }
     }
 
@@ -129,3 +147,6 @@ struct SimdDistanceComputerFP32L2 : MyDistanceComputer {
     }
 };
 } // namespace rnndescent
+
+#pragma clang attribute pop
+#pragma GCC pop_options

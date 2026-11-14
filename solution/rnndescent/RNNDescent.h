@@ -390,6 +390,15 @@ struct RNNDescent {
                 const int *neighbors = count > 0 ? edges.data() + begin : nullptr;
                 final_graph_neighbors.emplace_back(dim, neighbors, count, graph_distance_computer.get(), rollback_ids, safe_build_config.save_neighbor);
             }
+            if (safe_build_config.save_neighbor) {
+#pragma omp parallel num_threads(safe_build_config.num_threads)
+                {
+                    std::vector<uint8_t> reorder_scratch(4 * static_cast<size_t>(dim));
+#pragma omp for
+                    for (int i = 0; i < n; ++i)
+                        final_graph_neighbors[i].populate_cache(reorder_scratch.data());
+                }
+            }
         }
         threadVt.resize(safe_search_config.num_threads);
         threadRetset.resize(safe_search_config.num_threads);

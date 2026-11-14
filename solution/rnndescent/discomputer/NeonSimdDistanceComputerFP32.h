@@ -20,12 +20,16 @@ inline float32x4_t Load(const float32_t *p) {
 inline float32_t simde_dot_f32(float32_t const* a, float32_t const* b, size_t n) {
     float32x4_t ab_vec {0};
 // #pragma unroll simd
-    for (size_t i = 0; i < n; i += 4) {
+    const size_t full_size = n - n % 4;
+    for (size_t i = 0; i < full_size; i += 4) {
         float32x4_t a_vec = Load(a + i);
         float32x4_t b_vec = Load(b + i);
         ab_vec = vfmaq_f32(ab_vec, a_vec, b_vec);
     }
-    return vaddvq_f32(ab_vec);
+    float result = vaddvq_f32(ab_vec);
+    for (size_t i = full_size; i < n; ++i)
+        result += a[i] * b[i];
+    return result;
 }
 
 inline void simde_dot_f32_batch4(const float32_t *q, const float32_t *x0, const float32_t *x1, const float32_t *x2, const float32_t *x3, size_t size,
@@ -35,7 +39,8 @@ inline void simde_dot_f32_batch4(const float32_t *q, const float32_t *x0, const 
     float32x4_t sums2{0};
     float32x4_t sums3{0};
 // #pragma unroll simd
-    for (size_t i = 0; i < size; i += 4) {
+    const size_t full_size = size - size % 4;
+    for (size_t i = 0; i < full_size; i += 4) {
         float32x4_t q_vec = Load(q + i);
         float32x4_t x0_vec = Load(x0 + i);
         float32x4_t x1_vec = Load(x1 + i);
@@ -51,6 +56,12 @@ inline void simde_dot_f32_batch4(const float32_t *q, const float32_t *x0, const 
     res1 = vaddvq_f32(sums1);
     res2 = vaddvq_f32(sums2);
     res3 = vaddvq_f32(sums3);
+    for (size_t i = full_size; i < size; ++i) {
+        res0 += q[i] * x0[i];
+        res1 += q[i] * x1[i];
+        res2 += q[i] * x2[i];
+        res3 += q[i] * x3[i];
+    }
 }
 } // namespace
 

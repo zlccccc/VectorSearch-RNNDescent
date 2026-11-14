@@ -20,10 +20,23 @@ namespace {
 #pragma GCC target("avx512f", "avx512vl", "bmi2", "avx512bw", "avx512vnni")
 #pragma clang attribute push(__attribute__((target("avx512f,avx512vl,bmi2,avx512bw,avx512vnni"))), apply_to = function)
 
+constexpr size_t avx512_int8_block_bytes = sizeof(__m512i);
+
+inline __mmask64 low_byte_mask(size_t count) {
+    return (uint64_t{1} << count) - 1;
+}
+
 inline int32_t CorrelationSum(const uint8_t *a, const uint8_t *b, size_t size) {
     __m512i sums = _mm512_setzero_si512();
-    for (size_t i = 0; i < size; i += 64) {
+    const size_t tail = size % avx512_int8_block_bytes;
+    const size_t full_size = size - tail;
+    for (size_t i = 0; i < full_size; i += avx512_int8_block_bytes) {
         sums = _mm512_dpbusds_epi32(sums, _mm512_loadu_si512(a + i), _mm512_loadu_si512(b + i));
+    }
+    if (tail != 0) {
+        const auto mask = low_byte_mask(tail);
+        sums = _mm512_dpbusds_epi32(sums, _mm512_maskz_loadu_epi8(mask, a + full_size),
+                                   _mm512_maskz_loadu_epi8(mask, b + full_size));
     }
     return _mm512_reduce_add_epi32(sums);
 }
@@ -40,18 +53,27 @@ inline void CorrelationSum4(const uint8_t *q, const uint8_t *x0, const uint8_t *
     __m512i sums1 = _mm512_setzero_si512();
     __m512i sums2 = _mm512_setzero_si512();
     __m512i sums3 = _mm512_setzero_si512();
-    for (size_t i = 0; i < size; i += 64) { // 64 cacheline / sizeof(__m256i)
+    const size_t tail = size % avx512_int8_block_bytes;
+    const size_t full_size = size - tail;
+    for (size_t i = 0; i < full_size; i += avx512_int8_block_bytes) {
         __builtin_prefetch(q + i + 64, 0, 2);
         __builtin_prefetch(x0 + i + 64, 0, 2);
         __builtin_prefetch(x1 + i + 64, 0, 2);
         __builtin_prefetch(x2 + i + 64, 0, 2);
         __builtin_prefetch(x3 + i + 64, 0, 2);
-        // 有负数, 不能用_mm512_dpbusds_epi32
         loadq = _mm512_loadu_si512(q + i);
         sums0 = _mm512_dpbusds_epi32(sums0, _mm512_loadu_si512(x0 + i), loadq);
         sums1 = _mm512_dpbusds_epi32(sums1, _mm512_loadu_si512(x1 + i), loadq);
         sums2 = _mm512_dpbusds_epi32(sums2, _mm512_loadu_si512(x2 + i), loadq);
         sums3 = _mm512_dpbusds_epi32(sums3, _mm512_loadu_si512(x3 + i), loadq);
+    }
+    if (tail != 0) {
+        const auto mask = low_byte_mask(tail);
+        loadq = _mm512_maskz_loadu_epi8(mask, q + full_size);
+        sums0 = _mm512_dpbusds_epi32(sums0, _mm512_maskz_loadu_epi8(mask, x0 + full_size), loadq);
+        sums1 = _mm512_dpbusds_epi32(sums1, _mm512_maskz_loadu_epi8(mask, x1 + full_size), loadq);
+        sums2 = _mm512_dpbusds_epi32(sums2, _mm512_maskz_loadu_epi8(mask, x2 + full_size), loadq);
+        sums3 = _mm512_dpbusds_epi32(sums3, _mm512_maskz_loadu_epi8(mask, x3 + full_size), loadq);
     }
     res0 = _mm512_reduce_add_epi32(sums0);
     res1 = _mm512_reduce_add_epi32(sums1);
@@ -85,9 +107,9 @@ struct SimdDistanceComputerUInt8L2 : MyDistanceComputer {
     std::vector<float> mean; // 非对称量化; 平均值
 
     explicit SimdDistanceComputerUInt8L2(const float *matrix, int n, int d) : n(n), d(d) {
-        // scale = std::max(scale, *std::max_element(matrix, matrix + n * d));
         mean.resize(d);
-#pragma omp parallel for
+        float max_range = 0.0f;
+#pragma omp parallel for reduction(max : max_range)
         for (int k = 0; k < d; k++) {
             float minvalue = INFINITY, maxvalue = -INFINITY;
             for (int i = 0; i < n; i++) {
@@ -95,14 +117,9 @@ struct SimdDistanceComputerUInt8L2 : MyDistanceComputer {
                 minvalue = std::min(minvalue, matrix[i * d + k]);
             }
             mean[k] = (maxvalue + minvalue) / 2;
-#pragma single
-            {
-                scale = std::max(scale, (maxvalue - minvalue) / 2);
-            }
+            max_range = std::max(max_range, (maxvalue - minvalue) / 2);
         }
-        // scale = (maxvalue - minvalue) / 2.0;
-        // mean = (maxvalue + minvalue) / 2.0;
-        scale /= maxscale;
+        scale = max_range > 0 ? max_range / maxscale : 1.0f;
         Logger::info("Int8 QT scale = %f; mean = %f; maxvalue = %f\n", scale, mean[0], scale * maxscale);
 
         (this->matrix).resize(n * d);
@@ -190,27 +207,8 @@ struct UInt8Neighbors : NeighborsStorageBase<UInt8Neighbors, uint8_t, int> { // 
     using Base::pool;
     using Base::size;
 
-    UInt8Neighbors() = default;
-    UInt8Neighbors(int dim, const int *neighbor, int count, MyDistanceComputer *dis, const std::vector<int> &rollback_ids, bool save_neighbor)
-        : Base(dim, neighbor, count, dis, rollback_ids, save_neighbor) {
-        reorder_block(size, this->dim, pool);
-    }
-
-    static void reorder_block(int size, int dim, uint8_t *pool) {
-        if (pool == nullptr)
-            return;
-#pragma omp parallel for
-        for (int base = 0; base < size; base += 4) {
-            uint8_t *x = pool + base * dim;
-            std::vector<uint8_t> reorder_value(4 * dim);
-            for (int i = 0; i < dim; i += 64) {
-                for (int id = 0; id < 4; id++) {
-                    memcpy(reorder_value.data() + i * 4 + id * 64, x + id * dim + i, 64);
-                }
-            }
-            memcpy(x, reorder_value.data(), 4 * dim);
-        }
-    }
+    static constexpr size_t cache_lane_width = avx512_int8_block_bytes;
+    using Base::Base;
 
     void compute_distance(int idq, std::vector<float> &result) { // 计算所有距离
         result.resize(size);
@@ -232,8 +230,11 @@ struct UInt8Neighbors : NeighborsStorageBase<UInt8Neighbors, uint8_t, int> { // 
                                        float *dis) {
         // #pragma omp simd
         // __builtin_prefetch(dis, 1, 2);
+        const size_t dimension = dim;
+        const size_t tail = dimension % cache_lane_width;
+        const size_t full_size = dimension - tail;
         for (int id = 0; id < size; id += 4) {
-            const uint8_t *__restrict x = xvalue + id * dim;
+            const uint8_t *__restrict x = xvalue + static_cast<size_t>(id) * dimension;
             // __builtin_prefetch(q, 0, 2);
             // __builtin_prefetch(x, 0, 2);
 
@@ -241,17 +242,22 @@ struct UInt8Neighbors : NeighborsStorageBase<UInt8Neighbors, uint8_t, int> { // 
             __m512i sums1 = _mm512_setzero_si512();
             __m512i sums2 = _mm512_setzero_si512();
             __m512i sums3 = _mm512_setzero_si512();
-            for (int i = 0; i < dim; i += 64) {
-                // __builtin_prefetch(q + i + 64, 0, 2);
-                __m512i loadq = _mm512_loadu_si512(q + i + 00);
-                // __builtin_prefetch(x + i * 4 + 64, 0, 2);
-                sums0 = _mm512_dpbusds_epi32(sums0, _mm512_loadu_si512(x + i * 4 + 00), loadq);
-                // __builtin_prefetch(x + i * 4 + 128, 0, 2);
-                sums1 = _mm512_dpbusds_epi32(sums1, _mm512_loadu_si512(x + i * 4 + 64), loadq);
-                // __builtin_prefetch(x + i * 4 + 192, 0, 2);
-                sums2 = _mm512_dpbusds_epi32(sums2, _mm512_loadu_si512(x + i * 4 + 128), loadq);
-                // __builtin_prefetch(x + i * 4 + 256, 0, 2);
-                sums3 = _mm512_dpbusds_epi32(sums3, _mm512_loadu_si512(x + i * 4 + 192), loadq);
+            for (size_t i = 0; i < full_size; i += cache_lane_width) {
+                const auto loadq = _mm512_loadu_si512(q + i);
+                const auto *chunk = x + i * 4;
+                sums0 = _mm512_dpbusds_epi32(sums0, _mm512_loadu_si512(chunk), loadq);
+                sums1 = _mm512_dpbusds_epi32(sums1, _mm512_loadu_si512(chunk + cache_lane_width), loadq);
+                sums2 = _mm512_dpbusds_epi32(sums2, _mm512_loadu_si512(chunk + 2 * cache_lane_width), loadq);
+                sums3 = _mm512_dpbusds_epi32(sums3, _mm512_loadu_si512(chunk + 3 * cache_lane_width), loadq);
+            }
+            if (tail != 0) {
+                const auto mask = low_byte_mask(tail);
+                const auto loadq = _mm512_maskz_loadu_epi8(mask, q + full_size);
+                const auto *chunk = x + full_size * 4;
+                sums0 = _mm512_dpbusds_epi32(sums0, _mm512_maskz_loadu_epi8(mask, chunk), loadq);
+                sums1 = _mm512_dpbusds_epi32(sums1, _mm512_maskz_loadu_epi8(mask, chunk + tail), loadq);
+                sums2 = _mm512_dpbusds_epi32(sums2, _mm512_maskz_loadu_epi8(mask, chunk + 2 * tail), loadq);
+                sums3 = _mm512_dpbusds_epi32(sums3, _mm512_maskz_loadu_epi8(mask, chunk + 3 * tail), loadq);
             }
             dis[id] = _mm512_reduce_add_epi32(sums0);
             dis[id + 1] = _mm512_reduce_add_epi32(sums1);
@@ -269,3 +275,6 @@ struct UInt8Neighbors : NeighborsStorageBase<UInt8Neighbors, uint8_t, int> { // 
 };
 
 } // namespace rnndescent
+
+#pragma clang attribute pop
+#pragma GCC pop_options
