@@ -35,11 +35,12 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         this->dis = dis;
         RNNDESCENT_ASSERT_MSG(size % 4 == 0, "neighbor cache size must be a multiple of 4");
 
-        alignment_ptr();
-        if (save_neighbor && 1ll * size * dim * (long long)sizeof(CodeType) <= preserve_limit) {
-            pool = reinterpret_cast<CodeType *>(allocate_ptr(size * dim * sizeof(CodeType)));
-            l2norms = reinterpret_cast<NormType *>(allocate_ptr(size * sizeof(NormType)));
-            preserve_limit -= 1ll * size * dim * (long long)sizeof(CodeType);
+        pool_start_ptr = aligned_size(pool_start_ptr);
+        const long long cache_cost = additional_cache_bytes(size, dim);
+        if (save_neighbor && size > 0 && cache_cost <= preserve_limit) {
+            pool = reinterpret_cast<CodeType *>(allocate_ptr(static_cast<size_t>(size) * dim * sizeof(CodeType)));
+            l2norms = reinterpret_cast<NormType *>(allocate_ptr(static_cast<size_t>(size) * sizeof(NormType)));
+            preserve_limit -= cache_cost;
         }
 
         edges = reinterpret_cast<int *>(allocate_ptr(size * sizeof(int)));
@@ -58,26 +59,23 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         pool_start_ptr = 0;
     }
 
-    static void init_neighbors_pool(int dim, std::vector<std::vector<int>> &edges, long long max_pool_size = 16ll * 1024 * 1024 * 1024,
+    static void init_neighbors_pool(int dim, std::vector<std::vector<int>> &edges, long long max_pool_size = 0,
                                     bool save_neighbor = true) {
-        constexpr long long kDefaultPoolCap = 2ll * 1024 * 1024 * 1024;
         pool_start_ptr = 0;
+        const bool cache_enabled = save_neighbor && max_pool_size > 0;
 
         long long total_edges = 0;
         long long required_size = 0;
         long long cached_bytes = 0;
-        for (auto &nhood : edges) {
-            total_edges += nhood.size();
-            required_size += nhood.size() * (long long)sizeof(int);
-            required_size = (required_size + alignSize - 1) / alignSize * alignSize;
-            if (save_neighbor) {
-                cached_bytes += nhood.size() * (long long)dim * sizeof(CodeType);
-                cached_bytes += nhood.size() * (long long)sizeof(NormType);
-            }
+        for (const auto &nhood : edges) {
+            const auto count = static_cast<long long>(nhood.size());
+            total_edges += count;
+            required_size += aligned_size(count * sizeof(int));
+            if (cache_enabled)
+                cached_bytes += additional_cache_bytes(count, dim);
         }
 
-        const long long configured_pool_cap = max_pool_size > 0 ? max_pool_size : kDefaultPoolCap;
-        const long long requested_size = std::min(required_size + cached_bytes, configured_pool_cap);
+        const long long requested_size = std::min(required_size + cached_bytes, max_pool_size);
         long long target_size = std::max(required_size, requested_size);
 
         const long long available_bytes = read_mem_available_bytes();
@@ -107,12 +105,9 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
             }
         }
 
-        if (save_neighbor)
-            preserve_limit = std::max(0ll, target_size - required_size);
-        else
-            preserve_limit = 0;
+        preserve_limit = target_size - required_size;
 
-        const double cache_ratio = (save_neighbor && cached_bytes > 0) ? (100.0 * preserve_limit / cached_bytes) : 0.0;
+        const double cache_ratio = cached_bytes > 0 ? (100.0 * preserve_limit / cached_bytes) : 0.0;
         Logger::info("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, cache_ratio,
                      (double)target_size / 1024 / 1024 / 1024);
     }
@@ -133,11 +128,18 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         return -1;
     }
 
-    static void alignment_ptr() { pool_start_ptr = (pool_start_ptr + alignSize - 1) / alignSize * alignSize; }
+    static long long aligned_size(long long bytes) { return (bytes + alignSize - 1) / alignSize * alignSize; }
+
+    // Reserve the incremental space used by a cached neighborhood, including padding before the next one.
+    static long long additional_cache_bytes(long long count, int dim) {
+        const long long edge_bytes = count * sizeof(int);
+        const long long cache_bytes = count * (static_cast<long long>(dim) * sizeof(CodeType) + sizeof(NormType));
+        return aligned_size(edge_bytes + cache_bytes) - aligned_size(edge_bytes);
+    }
 
     static void *allocate_ptr(size_t size) {
         RNNDESCENT_ASSERT_MSG(pool_start_ptr + (long long)size <= (long long)global_pool.size(), "neighbor pool allocation overflow");
-        void *ptr = &global_pool[(size_t)pool_start_ptr];
+        void *ptr = global_pool.data() + pool_start_ptr;
         pool_start_ptr += (long long)size;
         return ptr;
     }

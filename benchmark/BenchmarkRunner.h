@@ -109,6 +109,7 @@ inline void run_dataset_benchmark(BenchmarkConfig config) {
         stats.accuracy = evaluate_accuracy_with_gt(dataset.values, query.values, gt, result, solution.distance_buffer(), dataset.dim, config.topk);
     }
     print_sample_results(dataset.values, query.values, result, solution.distance_buffer(), dataset.dim, config.topk, config.output_iter);
+    config.dim = dataset.dim;
     write_benchmark_report(config, stats);
     solution.reset();
 }

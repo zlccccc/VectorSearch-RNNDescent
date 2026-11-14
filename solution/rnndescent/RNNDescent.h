@@ -83,7 +83,7 @@ struct RNNDescent {
         int K0 = 48;
         int random_seed = 2021;
         int num_threads = 16;
-        long long neighbor_pool_size_limit_bytes = 16ll * 1024 * 1024 * 1024;
+        long long neighbor_pool_size_limit_bytes = 0;
         bool save_neighbor = true;
         bool random_init = true;
     };
@@ -104,6 +104,7 @@ struct RNNDescent {
         config.K0 = std::max(config.K0, 1);
         config.num_threads = std::max(config.num_threads, 1);
         config.neighbor_pool_size_limit_bytes = std::max(config.neighbor_pool_size_limit_bytes, 0ll);
+        config.save_neighbor = config.save_neighbor && config.neighbor_pool_size_limit_bytes > 0;
         return config;
     }
 

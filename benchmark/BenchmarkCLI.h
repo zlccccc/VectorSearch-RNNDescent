@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -23,7 +24,7 @@ inline void print_usage(const char *prog) {
     cout << "  --data-size <n> --dim <d> --test-iter <n> --topk <k> --repeat <n>\n";
     cout << "  --output-iter <n> --exact-check-queries <n> --warmup-topk <k>\n";
     cout << "  --K0 <n> --num-initialize <n> --search-L <n> --refine-max <n> [--beam-size <n>]\n";
-    cout << "  --neighbor-pool-gb <n>\n";
+    cout << "  --neighbor-pool-gb <n>  Neighbor pool budget in GiB (default 0 disables vector caching)\n";
     cout << "  --enable-pca --disable-pca --pca-out <n>\n";
 }
 
@@ -84,7 +85,13 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
         } else if (arg == "--beam-size") {
             config.override_beam_size = stoi(require_value(arg));
         } else if (arg == "--neighbor-pool-gb") {
-            config.override_neighbor_pool_gb = stoll(require_value(arg));
+            const string input = require_value(arg);
+            size_t parsed = 0;
+            const long long budget_gib = stoll(input, &parsed);
+            constexpr long long bytes_per_gib = 1024ll * 1024 * 1024;
+            if (parsed != input.size() || budget_gib < 0 || budget_gib > std::numeric_limits<long long>::max() / bytes_per_gib)
+                throw std::runtime_error("--neighbor-pool-gb requires a non-negative integer budget that fits in bytes");
+            config.override_neighbor_pool_gb = budget_gib;
         } else if (arg == "--enable-pca") {
             config.override_pca_enabled = true;
             config.pca_enabled = true;
