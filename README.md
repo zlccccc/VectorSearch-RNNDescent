@@ -55,7 +55,7 @@ ctest --test-dir build -R RecallTest --output-on-failure
 | `SimdDistanceTest`、`SimdQuantizationTest` | 对照标量结果校验 FP32、INT8/UINT8 距离，覆盖单条、四条一组、建图距离、非对齐维度和常量向量 |
 | `NeighborCacheLayoutTest`、`NeighborCacheTest` | 校验四邻居 SIMD 数据布局、ID 重映射、预算用尽时回退以及缓存开关下的距离一致性 |
 | `BenchmarkCliTest`、`BenchmarkDataTest` | 校验 CLI、显式随机模式、邻居池预算，以及 fvecs/bvecs/ivecs 的读取和坏文件处理 |
-| `SolutionTest` | 小数据集建图、查询、重建和重置，用穷举校验 Top K ID 和精排距离，覆盖 PCA 与缓存开关 |
+| `SolutionTest` | 小数据集建图、查询、重建和重置，用穷举校验 Top K ID 和精排距离，覆盖 PCA、缓存开关和两个索引交替查询 |
 | `RecallTest` | 固定随机种子，限制搜索预算，校验 Recall`10、缓存开关下的结果一致性和精排距离 |
 
 只构建 benchmark 程序时，可在配置阶段传入 `-DBUILD_TESTING=OFF` 跳过测试依赖。
@@ -64,7 +64,7 @@ ctest --test-dir build -R RecallTest --output-on-failure
 
 ### 随机向量
 
-随机模式内置 256、512、1024、1536 维预设。下面在 10 万条归一化随机向量上，分别对 256、512、1024 维跑 1 万条查询。固定建图和搜索参数，方便对比维度或 SIMD 路径。将 `OMP_NUM_THREADS` 设为测量使用的线程数，benchmark 的建图和查图线程数最多为 16。
+下面在 10 万条归一化随机向量上，分别对 256、512、1024 维跑 1 万条查询。固定建图和搜索参数，方便对比维度或 SIMD 路径。将 `OMP_NUM_THREADS` 设为测量使用的线程数，benchmark 的建图和查图线程数最多为 16。
 
 ```bash
 for dim in 256 512 1024; do
@@ -87,6 +87,8 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 ./build/algorithm \
 ```
 
 下载脚本还支持 `siftsmall` 和 `gist`。数据目录可使用 [benches/README.md](benches/README.md) 中的文件别名，也可用 `--base`、`--query` 和可选的 `--gt` 指定文件。底库和查询支持 `fvecs`、`bvecs`，预计算近邻使用 `ivecs`。传入 `--pca-out <维度>` 可开启建图与查询的 PCA 投影，精排仍使用原始向量。
+
+自定义数据集和随机向量采用通用参数。搜索预算可通过 `--search-L`、`--num-initialize` 和 `--refine-max` 等参数显式指定。SIFT、SIFT Small 和 GIST 在 benchmark 中有各自的数据集预设，命令行参数优先。可用 `./run.sh` 增量构建并运行 benchmark，默认使用 `benches/datasets/sift`。也可以在脚本后传入完整的 benchmark 参数，并通过 `BUILD_DIR` 使用已有的 CMake 构建目录。
 
 要固定近邻结构测试向量变宽的影响，或把 Recall@10 拉离饱和区再比较 QPS，可运行 [SIFT benchmark 脚本](benches/README.md#可复现的-sift-测试)。脚本支持 128、256、512、1024 维对比和低搜索预算扫描，每档汇总多次独立建图的结果。
 

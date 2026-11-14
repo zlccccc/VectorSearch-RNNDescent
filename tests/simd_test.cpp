@@ -45,11 +45,7 @@ std::array<float, 4> batch(rnndescent::MyDistanceComputer &computer, int q, cons
 
 class SimdDistanceTest : public ::testing::TestWithParam<int> {};
 
-class NeighborCacheTest : public ::testing::Test {
-    void TearDown() override { SelectedNeighborsContainerType::clear_memory(); }
-};
-
-class NeighborCacheLayoutTest : public NeighborCacheTest, public ::testing::WithParamInterface<int> {};
+class NeighborCacheLayoutTest : public ::testing::TestWithParam<int> {};
 
 TEST_P(SimdDistanceTest, MatchesScalarReference) {
     const int d = GetParam();
@@ -117,10 +113,11 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
     const auto query = make_vectors(queries, d, 17);
     auto computer = SelectedDistanceComputerFactory::create_cached_graph(base.data(), rows, d);
     computer->set_query(query.data(), queries);
-    Neighbors::init_neighbors_pool(d, {0, rows, 2 * rows, 2 * rows}, 1 << 20);
-    Neighbors cached(d, edges, rows, computer.get(), remap, true);
-    Neighbors uncached(d, edges, rows, computer.get(), remap, false);
-    Neighbors empty(d, nullptr, 0, computer.get(), remap, true);
+    Neighbors::Pool storage;
+    storage.initialize(d, {0, rows, 2 * rows, 2 * rows}, 1 << 20);
+    Neighbors cached(storage, d, edges, rows, computer.get(), remap, true);
+    Neighbors uncached(storage, d, edges, rows, computer.get(), remap, false);
+    Neighbors empty(storage, d, nullptr, 0, computer.get(), remap, true);
     ASSERT_NE(cached.pool, nullptr);
     ASSERT_NE(cached.l2norms, nullptr);
     EXPECT_EQ(uncached.pool, nullptr);
@@ -158,17 +155,19 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
     EXPECT_TRUE(from_cache.empty());
 }
 
-TEST_F(NeighborCacheTest, FallsBackWhenBudgetIsExhausted) {
-    Neighbors::init_neighbors_pool(65, {0, rows});
-    Neighbors disabled(65, edges, rows, nullptr, remap, true);
+TEST(NeighborCacheTest, FallsBackWhenBudgetIsExhausted) {
+    Neighbors::Pool disabled_storage;
+    disabled_storage.initialize(65, {0, rows});
+    Neighbors disabled(disabled_storage, 65, edges, rows, nullptr, remap, true);
     EXPECT_NE(disabled.edges, nullptr);
     EXPECT_EQ(disabled.pool, nullptr);
     EXPECT_EQ(disabled.l2norms, nullptr);
 
-    Neighbors::init_neighbors_pool(65, {0, rows, 2 * rows}, 704);
+    Neighbors::Pool storage;
+    storage.initialize(65, {0, rows, 2 * rows}, 704);
     // Two 8-neighbor ID slices occupy 128 bytes. One cached slice adds 576 aligned bytes.
-    Neighbors first(65, edges, rows, nullptr, remap, true);
-    Neighbors second(65, edges, rows, nullptr, remap, true);
+    Neighbors first(storage, 65, edges, rows, nullptr, remap, true);
+    Neighbors second(storage, 65, edges, rows, nullptr, remap, true);
     EXPECT_NE(first.pool, nullptr);
     EXPECT_NE(second.edges, nullptr);
     EXPECT_EQ(second.pool, nullptr);

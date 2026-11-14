@@ -82,6 +82,64 @@ TEST(SolutionTest, BuildsSearchesAndResetsWithPcaAndCache) {
     }
 }
 
+TEST(SolutionTest, SeparatelyBuiltIndexesKeepTheirOwnNeighbors) {
+    constexpr int first_dim = 65;
+    constexpr int second_dim = 33;
+    constexpr int rows = 128;
+    constexpr int topk = 5;
+    std::mt19937 rng(19);
+    auto make_base = [&](int dim) {
+        std::vector<float> base(rows * dim);
+        for (float &coordinate : base)
+            coordinate = static_cast<float>(rng() % 4096) / 2048.0f - 1.0f;
+        return base;
+    };
+    const auto first_base = make_base(first_dim);
+    const auto second_base = make_base(second_dim);
+    const std::vector<float> first_queries(first_base.begin(), first_base.begin() + 16 * first_dim);
+    const std::vector<float> second_queries(second_base.end() - 16 * second_dim, second_base.end());
+
+    Solution::WarmupConfig warmup;
+    warmup.topk = 0;
+    rnndescent::RNNDescent::BuildConfig build;
+    build.T1 = 2;
+    build.T2 = 2;
+    build.S = 16;
+    build.R = 32;
+    build.K0 = 12;
+    build.num_threads = 1;
+    rnndescent::RNNDescent::SearchConfig search;
+    search.num_initialize = 16;
+    search.search_L = 12;
+    search.refine_max = 8;
+    search.beam_size = 2;
+    search.num_threads = 2;
+
+    for (const bool first_cached : {false, true}) {
+        SCOPED_TRACE(first_cached);
+        Solution first, second;
+        build.neighbor_pool_size_limit_bytes = first_cached ? 1 << 20 : 0;
+        first.build(first_dim, first_base, warmup, build, search);
+        std::vector<int> first_ids, second_ids, ids;
+        first.search(first_queries, first_ids, topk);
+        const auto first_distances = first.distance_buffer();
+
+        build.neighbor_pool_size_limit_bytes = first_cached ? 0 : 1 << 20;
+        second.build(second_dim, second_base, warmup, build, search);
+        second.search(second_queries, second_ids, topk);
+        const auto second_distances = second.distance_buffer();
+
+        first.search(first_queries, ids, topk);
+        EXPECT_EQ(ids, first_ids);
+        EXPECT_EQ(first.distance_buffer(), first_distances);
+
+        first.reset();
+        second.search(second_queries, ids, topk);
+        EXPECT_EQ(ids, second_ids);
+        EXPECT_EQ(second.distance_buffer(), second_distances);
+    }
+}
+
 TEST(RecallTest, ImprovesWithSearchBudgetAndMatchesWithCache) {
     constexpr int dim = 65;
     constexpr int rows = 768;

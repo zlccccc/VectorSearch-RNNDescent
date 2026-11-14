@@ -14,6 +14,7 @@
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -23,20 +24,10 @@
 
 #include <omp.h>
 
-// #include "discomputer/CblasDistComputerIP.h"
-#include "discomputer/CblasDistComputerFP32.h"
-// #include "discomputer/FaissDistComputerIP.h"
-// #include "discomputer/FaissDistComputerL2.h"
-
-#include "discomputer/PlatformSimdDistanceComputer.h"
 #include "Assertions.h"
 #include "Logger.h"
 #include "Views.h"
-// #include "discomputer/Avx512SimdDistanceComputerFP32.h"
-// #define INTERNAL_CLOCK_TEST
-
-// #include "discomputer/Avx512SimdDistanceComputerUInt8.h"
-// #include "discomputer/NeonSimdDistanceComputerInt8.h"
+#include "discomputer/PlatformSimdDistanceComputer.h"
 
 namespace rnndescent {
 
@@ -245,7 +236,6 @@ struct RNNDescent {
         if (verbose)
             Logger::info(verbose, "Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n", safe_build_config.S, safe_build_config.R,
                          safe_build_config.T1, safe_build_config.T2, n, safe_search_config.num_threads);
-        SelectedNeighborsContainerType::clear_memory();
 
         std::vector<int> edges;
         std::vector<size_t> edge_offsets(static_cast<size_t>(n) + 1);
@@ -380,7 +370,7 @@ struct RNNDescent {
             graph_distance_computer = SelectedDistanceComputerFactory::create_cached_graph(fastsearch_pool.data(), n, dim);
         }
         { // 空间局部性优化
-            SelectedNeighborsContainerType::init_neighbors_pool(
+            neighbor_pool_.initialize(
                 dim, edge_offsets, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
             final_graph_neighbors.reserve(n);
             for (int i = 0; i < n; i++) {
@@ -388,7 +378,8 @@ struct RNNDescent {
                 const size_t begin = edge_offsets[u];
                 const int count = static_cast<int>(edge_offsets[u + 1] - begin);
                 const int *neighbors = count > 0 ? edges.data() + begin : nullptr;
-                final_graph_neighbors.emplace_back(dim, neighbors, count, graph_distance_computer.get(), rollback_ids, safe_build_config.save_neighbor);
+                final_graph_neighbors.emplace_back(neighbor_pool_, dim, neighbors, count, graph_distance_computer.get(), rollback_ids,
+                                                   safe_build_config.save_neighbor);
             }
             if (safe_build_config.save_neighbor) {
 #pragma omp parallel num_threads(safe_build_config.num_threads)
@@ -692,8 +683,7 @@ struct RNNDescent {
     void reset() {
         Logger::line(true, "Resetting RNNDescent index.");
         std::vector<SelectedNeighborsContainerType>().swap(final_graph_neighbors);
-        // final_graph_neighbors.resize(0);
-        // final_graph.resize(0);
+        neighbor_pool_.reset();
         search_from_ids.resize(0);
         // std::vector<MyVisitedTable>().swap(threadVt); // 这个比较大
         graph_distance_computer.reset();
@@ -873,6 +863,7 @@ struct RNNDescent {
     std::unique_ptr<MyDistanceComputer> graph_distance_computer;
 
   private:
+    SelectedNeighborsContainerType::Pool neighbor_pool_;
     std::vector<MutexWarpper> node_locks_;
 };
 

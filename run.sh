@@ -1,13 +1,14 @@
-rm -rf build
-mkdir -p build
-cd build
-cmake .. && make -j20
+#!/bin/sh
+set -eu
 
-# export OMP_NUM_THREADS=24
-export OMP_NUM_THREADS=16
-export DATASET="sift"
-# export DATASET="siftsmall"
-export RESULT_DIR="../benches/results/$DATASET"
-mkdir -p $RESULT_DIR
-# ./algorithm
-./algorithm --mode dataset --dataset-dir "../benches/datasets/$DATASET"
+cd "$(dirname "$0")"
+build_dir="${BUILD_DIR:-build}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-16}"
+
+cmake -S . -B "$build_dir"
+cmake --build "$build_dir" --target vector_search_app --parallel
+
+if [ "$#" -eq 0 ]; then
+    set -- --mode dataset --dataset-dir "benches/datasets/${DATASET:-sift}"
+fi
+exec "$build_dir/algorithm" "$@"

@@ -20,6 +20,9 @@ using std::exception;
 using std::vector;
 
 inline void run_random_benchmark(BenchmarkConfig config) {
+    if (config.dim <= 0 || config.data_size <= 0 || config.test_iter <= 0)
+        throw std::runtime_error("random dimension, data size and query count must be positive");
+
     Solution solution;
     BenchmarkStats stats;
     rnndescent::Logger::line("start random benchmark");
@@ -88,6 +91,7 @@ inline void run_dataset_benchmark(BenchmarkConfig config) {
 
     Solution solution;
     vector<int> result((size_t)config.topk * query.rows);
+    config.dim = dataset.dim;
     apply_solution_preset(config);
     print_solution_config(config);
     const auto before_build = chrono::high_resolution_clock::now();
@@ -109,7 +113,6 @@ inline void run_dataset_benchmark(BenchmarkConfig config) {
         stats.accuracy = evaluate_accuracy_with_gt(dataset.values, query.values, gt, result, solution.distance_buffer(), dataset.dim, config.topk);
     }
     print_sample_results(dataset.values, query.values, result, solution.distance_buffer(), dataset.dim, config.topk, config.output_iter);
-    config.dim = dataset.dim;
     write_benchmark_report(config, stats);
     solution.reset();
 }

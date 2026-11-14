@@ -23,29 +23,129 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
     int dim = 0, size = 0;
     MyDistanceComputer *dis = nullptr;
 
-    inline static std::vector<uint8_t, AlignedAllocator<uint8_t>> global_pool;
-    inline static long long pool_start_ptr = 0;
-    inline static long long preserve_limit = 0;
+    // One pool per index. Neighborhoods refer to fixed slices of this buffer.
+    class Pool {
+      public:
+        Pool() = default;
+        Pool(const Pool &) = delete;
+        Pool &operator=(const Pool &) = delete;
+
+        void reset() {
+            decltype(bytes_)().swap(bytes_);
+            pool_start_ptr = 0;
+            preserve_limit = 0;
+        }
+
+        void initialize(int dim, const std::vector<size_t> &offsets, long long max_pool_size = 0,
+                        bool save_neighbor = true) {
+            RNNDESCENT_ASSERT_MSG(bytes_.empty(), "neighbor pool must be reset before initialization");
+            const bool cache_enabled = save_neighbor && max_pool_size > 0;
+
+            long long total_edges = 0;
+            long long required_size = 0;
+            long long cached_bytes = 0;
+            for (size_t i = 1; i < offsets.size(); ++i) {
+                const auto count = static_cast<long long>(offsets[i] - offsets[i - 1]);
+                total_edges += count;
+                required_size += aligned_size(count * sizeof(int));
+                if (cache_enabled)
+                    cached_bytes += additional_cache_bytes(count, dim);
+            }
+
+            const long long requested_size = std::min(required_size + cached_bytes, max_pool_size);
+            long long target_size = std::max(required_size, requested_size);
+
+            const long long available_bytes = read_mem_available_bytes();
+            if (available_bytes > 0) {
+                constexpr long long kSystemReserveBytes = 2ll * 1024 * 1024 * 1024;
+                const long long usable_bytes = std::max(0ll, available_bytes - kSystemReserveBytes);
+                const long long checked_cap = std::max(required_size, usable_bytes);
+                if (target_size > checked_cap) {
+                    Logger::info("neighbor cache pool capped by free memory: requested %.2fG -> %.2fG (available %.2fG)\n",
+                                 (double)target_size / 1024 / 1024 / 1024, (double)checked_cap / 1024 / 1024 / 1024,
+                                 (double)available_bytes / 1024 / 1024 / 1024);
+                    target_size = checked_cap;
+                }
+            }
+
+            while (true) {
+                try {
+                    bytes_.resize(target_size);
+                    break;
+                } catch (const std::bad_alloc &) {
+                    if (target_size <= required_size)
+                        throw;
+                    const long long reduced_cache = std::max(0ll, (target_size - required_size) / 2);
+                    target_size = required_size + reduced_cache;
+                    target_size = (target_size / alignSize) * alignSize;
+                }
+            }
+
+            preserve_limit = target_size - required_size;
+
+            const double cache_ratio = cached_bytes > 0 ? (100.0 * preserve_limit / cached_bytes) : 0.0;
+            Logger::info("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, cache_ratio,
+                         (double)target_size / 1024 / 1024 / 1024);
+        }
+
+      private:
+        friend NeighborsStorageBase;
+
+        std::vector<uint8_t, AlignedAllocator<uint8_t>> bytes_;
+        long long pool_start_ptr = 0;
+        long long preserve_limit = 0;
+
+        static long long read_mem_available_bytes() {
+            std::ifstream meminfo("/proc/meminfo");
+            if (!meminfo.is_open())
+                return -1;
+
+            std::string key;
+            long long value = 0;
+            std::string unit;
+            while (meminfo >> key >> value >> unit) {
+                if (key == "MemAvailable:")
+                    return value * 1024;
+            }
+            return -1;
+        }
+
+        static long long aligned_size(long long bytes) { return (bytes + alignSize - 1) / alignSize * alignSize; }
+
+        // Reserve the incremental space used by a cached neighborhood, including padding before the next one.
+        static long long additional_cache_bytes(long long count, int dim) {
+            const long long edge_bytes = count * sizeof(int);
+            const long long cache_bytes = count * (static_cast<long long>(dim) * sizeof(CodeType) + sizeof(NormType));
+            return aligned_size(edge_bytes + cache_bytes) - aligned_size(edge_bytes);
+        }
+
+        void *allocate_ptr(size_t size) {
+            RNNDESCENT_ASSERT_MSG(pool_start_ptr + (long long)size <= (long long)bytes_.size(), "neighbor pool allocation overflow");
+            void *ptr = bytes_.data() + pool_start_ptr;
+            pool_start_ptr += (long long)size;
+            return ptr;
+        }
+    };
 
     NeighborsStorageBase() = default;
 
-    NeighborsStorageBase(int dim, const int *neighbor, int count, MyDistanceComputer *dis,
+    NeighborsStorageBase(Pool &storage, int dim, const int *neighbor, int count, MyDistanceComputer *dis,
                          const std::vector<int> &rollback_ids, bool save_neighbor)
         : dim(dim), size(count), dis(dis) {
         if (size == 0)
             return;
-        RNNDESCENT_ASSERT_MSG(!global_pool.empty(), "neighbors pool has not been initialized");
+        RNNDESCENT_ASSERT_MSG(!storage.bytes_.empty(), "neighbors pool has not been initialized");
         RNNDESCENT_ASSERT_MSG(size % 4 == 0, "neighbor cache size must be a multiple of 4");
 
-        pool_start_ptr = aligned_size(pool_start_ptr);
-        const long long cache_cost = additional_cache_bytes(size, dim);
-        if (save_neighbor && cache_cost <= preserve_limit) {
-            pool = reinterpret_cast<CodeType *>(allocate_ptr(static_cast<size_t>(size) * dim * sizeof(CodeType)));
-            l2norms = reinterpret_cast<NormType *>(allocate_ptr(static_cast<size_t>(size) * sizeof(NormType)));
-            preserve_limit -= cache_cost;
+        storage.pool_start_ptr = Pool::aligned_size(storage.pool_start_ptr);
+        const long long cache_cost = Pool::additional_cache_bytes(size, dim);
+        if (save_neighbor && cache_cost <= storage.preserve_limit) {
+            pool = reinterpret_cast<CodeType *>(storage.allocate_ptr(static_cast<size_t>(size) * dim * sizeof(CodeType)));
+            l2norms = reinterpret_cast<NormType *>(storage.allocate_ptr(static_cast<size_t>(size) * sizeof(NormType)));
+            storage.preserve_limit -= cache_cost;
         }
 
-        edges = reinterpret_cast<int *>(allocate_ptr(size * sizeof(int)));
+        edges = reinterpret_cast<int *>(storage.allocate_ptr(size * sizeof(int)));
         for (int i = 0; i < size; ++i)
             edges[i] = rollback_ids[neighbor[i]];
     }
@@ -72,96 +172,6 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
             }
             std::memcpy(block, reorder_scratch, 4 * dimension);
         }
-    }
-
-    static void clear_memory() {
-        std::vector<uint8_t, AlignedAllocator<uint8_t>>().swap(global_pool);
-        pool_start_ptr = 0;
-    }
-
-    static void init_neighbors_pool(int dim, const std::vector<size_t> &offsets, long long max_pool_size = 0,
-                                    bool save_neighbor = true) {
-        pool_start_ptr = 0;
-        const bool cache_enabled = save_neighbor && max_pool_size > 0;
-
-        long long total_edges = 0;
-        long long required_size = 0;
-        long long cached_bytes = 0;
-        for (size_t i = 1; i < offsets.size(); ++i) {
-            const auto count = static_cast<long long>(offsets[i] - offsets[i - 1]);
-            total_edges += count;
-            required_size += aligned_size(count * sizeof(int));
-            if (cache_enabled)
-                cached_bytes += additional_cache_bytes(count, dim);
-        }
-
-        const long long requested_size = std::min(required_size + cached_bytes, max_pool_size);
-        long long target_size = std::max(required_size, requested_size);
-
-        const long long available_bytes = read_mem_available_bytes();
-        if (available_bytes > 0) {
-            constexpr long long kSystemReserveBytes = 2ll * 1024 * 1024 * 1024;
-            const long long usable_bytes = std::max(0ll, available_bytes - kSystemReserveBytes);
-            const long long checked_cap = std::max(required_size, usable_bytes);
-            if (target_size > checked_cap) {
-                Logger::info("neighbor cache pool capped by free memory: requested %.2fG -> %.2fG (available %.2fG)\n",
-                             (double)target_size / 1024 / 1024 / 1024, (double)checked_cap / 1024 / 1024 / 1024,
-                             (double)available_bytes / 1024 / 1024 / 1024);
-                target_size = checked_cap;
-            }
-        }
-
-        while (true) {
-            try {
-                global_pool.clear();
-                global_pool.resize(target_size);
-                break;
-            } catch (const std::bad_alloc &) {
-                if (target_size <= required_size)
-                    throw;
-                const long long reduced_cache = std::max(0ll, (target_size - required_size) / 2);
-                target_size = required_size + reduced_cache;
-                target_size = (target_size / alignSize) * alignSize;
-            }
-        }
-
-        preserve_limit = target_size - required_size;
-
-        const double cache_ratio = cached_bytes > 0 ? (100.0 * preserve_limit / cached_bytes) : 0.0;
-        Logger::info("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, cache_ratio,
-                     (double)target_size / 1024 / 1024 / 1024);
-    }
-
-  protected:
-    static long long read_mem_available_bytes() {
-        std::ifstream meminfo("/proc/meminfo");
-        if (!meminfo.is_open())
-            return -1;
-
-        std::string key;
-        long long value = 0;
-        std::string unit;
-        while (meminfo >> key >> value >> unit) {
-            if (key == "MemAvailable:")
-                return value * 1024;
-        }
-        return -1;
-    }
-
-    static long long aligned_size(long long bytes) { return (bytes + alignSize - 1) / alignSize * alignSize; }
-
-    // Reserve the incremental space used by a cached neighborhood, including padding before the next one.
-    static long long additional_cache_bytes(long long count, int dim) {
-        const long long edge_bytes = count * sizeof(int);
-        const long long cache_bytes = count * (static_cast<long long>(dim) * sizeof(CodeType) + sizeof(NormType));
-        return aligned_size(edge_bytes + cache_bytes) - aligned_size(edge_bytes);
-    }
-
-    static void *allocate_ptr(size_t size) {
-        RNNDESCENT_ASSERT_MSG(pool_start_ptr + (long long)size <= (long long)global_pool.size(), "neighbor pool allocation overflow");
-        void *ptr = global_pool.data() + pool_start_ptr;
-        pool_start_ptr += (long long)size;
-        return ptr;
     }
 };
 

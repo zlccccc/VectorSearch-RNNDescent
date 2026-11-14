@@ -118,49 +118,19 @@ inline void apply_common_config(BenchmarkConfig &config) {
     config.pca_config.out_dim = 0;
 }
 
-inline void apply_dimension_default_preset(BenchmarkConfig &config) {
-    if (config.dim == 256) {
-        config.search_config.num_initialize = 1024;
-        config.search_config.search_L = 512;
-        config.search_config.refine_max = 128;
-        config.build_config.K0 = 64;
-    } else if (config.dim == 512) {
-        config.search_config.num_initialize = 1024;
-        config.search_config.search_L = 512;
-        config.search_config.refine_max = 128;
-        config.build_config.K0 = 64;
-    } else if (config.dim == 1024) {
-        config.search_config.num_initialize = 160;
-        config.search_config.search_L = 160;
-        config.search_config.refine_max = 128;
-        config.build_config.K0 = 32;
-    } else if (config.dim == 1536) {
-        config.search_config.num_initialize = 512;
-        config.search_config.search_L = 224;
-        config.search_config.refine_max = 128;
-        config.build_config.K0 = 48;
-    } else {
-        throw runtime_error("Unsupported dimension");
-    }
-}
-
-inline bool apply_dataset_preset(BenchmarkConfig &config) {
+inline void apply_dataset_preset(BenchmarkConfig &config) {
     const string key = normalize_dataset_name(config.dataset_name);
     if (key == "siftsmall" || key == "sift") {
         config.search_config.num_initialize = 192;
         config.search_config.search_L = 128;
         config.search_config.refine_max = 64;
         config.build_config.K0 = 32;
-        return true;
-    }
-    if (key == "gist") {
+    } else if (key == "gist") {
         config.search_config.num_initialize = 768;
         config.search_config.search_L = 320;
         config.search_config.refine_max = 256;
         config.build_config.K0 = 80;
-        return true;
     }
-    return false;
 }
 
 inline void apply_config_overrides(BenchmarkConfig &config) {
@@ -184,11 +154,8 @@ inline void apply_config_overrides(BenchmarkConfig &config) {
 
 inline void apply_solution_preset(BenchmarkConfig &config) {
     apply_common_config(config);
-    if (config.mode == "random" || normalize_dataset_name(config.dataset_name) == "random") {
-        apply_dimension_default_preset(config);
-    } else if (!apply_dataset_preset(config)) {
-        apply_dimension_default_preset(config);
-    }
+    if (config.mode == "dataset")
+        apply_dataset_preset(config);
     apply_config_overrides(config);
 }
 

@@ -1,13 +1,16 @@
 #include "benchmark/BenchmarkCLI.h"
 #include "benchmark/BenchmarkDataIO.h"
+#include "benchmark/BenchmarkRunner.h"
 
 #include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <gmock/gmock.h>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -30,6 +33,25 @@ struct TempDirectory {
         std::error_code error;
         std::filesystem::remove_all(path, error);
     }
+};
+
+struct ScopedEnvVar {
+    ScopedEnvVar(const char *name, const char *value) : name(name) {
+        if (const char *previous = std::getenv(name))
+            previous_value = previous;
+        if (setenv(name, value, 1) != 0)
+            throw std::runtime_error("could not set test environment variable");
+    }
+
+    ~ScopedEnvVar() {
+        if (previous_value)
+            setenv(name, previous_value->c_str(), 1);
+        else
+            unsetenv(name);
+    }
+
+    const char *name;
+    std::optional<std::string> previous_value;
 };
 
 template <class Value, size_t Size>
@@ -75,25 +97,16 @@ TEST(BenchmarkCliTest, RejectsInvalidBudgetsAndMissingValues) {
 
 TEST(BenchmarkCliTest, ExplicitRandomModeOverridesDatasetDetection) {
     const TempDirectory tmp;
-    struct RestoreEnvironment {
+    struct RestorePath {
         std::filesystem::path cwd = std::filesystem::current_path();
-        std::optional<std::string> dataset;
-        RestoreEnvironment() {
-            if (const char *value = std::getenv("DATASET"))
-                dataset = value;
-        }
-        ~RestoreEnvironment() {
+        ~RestorePath() {
             std::error_code error;
             std::filesystem::current_path(cwd, error);
-            if (dataset)
-                setenv("DATASET", dataset->c_str(), 1);
-            else
-                unsetenv("DATASET");
         }
     } restore;
+    const ScopedEnvVar dataset_env("DATASET", "sift");
     std::filesystem::current_path(tmp.path);
     std::filesystem::create_directories("benches/datasets/sift");
-    ASSERT_EQ(setenv("DATASET", "sift", 1), 0);
     auto auto_dataset = parse({});
     benchmark::apply_default_dataset_mode(auto_dataset);
     EXPECT_EQ(auto_dataset.mode, "dataset");
@@ -159,6 +172,47 @@ TEST(BenchmarkDataTest, RejectsInconsistentDimensionsAndTruncatedGroundTruth) {
     }
     EXPECT_THAT([&] { benchmark::load_ground_truth(gt); },
                 ThrowsMessage<std::runtime_error>(HasSubstr("file size is not aligned")));
+}
+
+TEST(BenchmarkDataTest, UsesCommonSearchSettingsForCustomDatasets) {
+    const TempDirectory tmp;
+    const auto base = (tmp.path / "base.fvecs").string();
+    const auto query = (tmp.path / "query.fvecs").string();
+    const auto results = (tmp.path / "results").string();
+    const ScopedEnvVar result_env("RESULT_DIR", results.c_str());
+
+    for (const int32_t dim : {1024, 65}) {
+        SCOPED_TRACE(dim);
+        std::mt19937 rng(71);
+        std::vector<float> row(dim);
+        {
+            std::ofstream base_file(base, std::ios::binary);
+            std::ofstream query_file(query, std::ios::binary);
+            for (int i = 0; i < 200; ++i) {
+                for (float &coordinate : row)
+                    coordinate = static_cast<float>(rng() % 1000) / 100.0f;
+                base_file.write(reinterpret_cast<const char *>(&dim), sizeof(dim));
+                base_file.write(reinterpret_cast<const char *>(row.data()), dim * sizeof(float));
+            }
+            query_file.write(reinterpret_cast<const char *>(&dim), sizeof(dim));
+            query_file.write(reinterpret_cast<const char *>(row.data()), dim * sizeof(float));
+            ASSERT_TRUE(base_file && query_file);
+        }
+
+        auto config = parse({"--base", base, "--query", query, "--topk", "5", "--repeat", "1",
+                             "--warmup-topk", "0", "--output-iter", "0", "--refine-max", "20"});
+        ASSERT_NO_THROW(benchmark::run_dataset_benchmark(config));
+        std::ifstream report(tmp.path / "results" / "latest.txt");
+        ASSERT_TRUE(report);
+        const std::string text((std::istreambuf_iterator<char>(report)), std::istreambuf_iterator<char>());
+        const rnndescent::RNNDescent::BuildConfig build_defaults;
+        const rnndescent::RNNDescent::SearchConfig search_defaults;
+        EXPECT_THAT(text, HasSubstr("dim=" + std::to_string(dim) + "\n"));
+        EXPECT_THAT(text, HasSubstr("search_config.search_L=" + std::to_string(search_defaults.search_L) + "\n"));
+        EXPECT_THAT(text, HasSubstr("build_config.K0=" + std::to_string(build_defaults.K0) + "\n"));
+        EXPECT_THAT(text, HasSubstr("search_config.num_initialize=" + std::to_string(search_defaults.num_initialize) + "\n"));
+        EXPECT_THAT(text, HasSubstr("search_config.refine_max=20\n"));
+    }
 }
 
 } // namespace
