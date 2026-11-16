@@ -101,6 +101,26 @@ TEST(SimdQuantizationTest, ConstantVectorsHaveFiniteScores) {
     EXPECT_EQ(score, (*quantized)(1, rows - 1));
 }
 
+TEST(SimdQuantizationTest, RowOrderMatchesQuantizingACopy) {
+    constexpr int dim = 65;
+    const auto base = make_vectors(rows, dim, 5);
+    const std::array<int, rows> order{7, 1, 3, 4, 2, 5, 0, 6};
+    std::vector<float> reordered(base.size());
+    for (int i = 0; i < rows; ++i)
+        std::copy_n(base.data() + order[i] * dim, dim, reordered.data() + i * dim);
+
+    auto expected = SelectedDistanceComputerFactory::create_cached_graph(reordered.data(), rows, dim);
+    auto actual = SelectedDistanceComputerFactory::create_cached_graph(base.data(), rows, dim, order.data());
+    for (int i = 0; i < rows; ++i) {
+        std::array<Code, dim> expected_code{}, actual_code{};
+        Norm expected_norm = 0, actual_norm = 0;
+        expected->copy_index(i, expected_code.data(), expected_norm);
+        actual->copy_index(i, actual_code.data(), actual_norm);
+        EXPECT_EQ(actual_code, expected_code);
+        EXPECT_EQ(actual_norm, expected_norm);
+    }
+}
+
 using Neighbors = SelectedNeighborsContainerType;
 constexpr int lane_width = std::is_unsigned_v<Code> ? 64 : 16;
 static_assert(Neighbors::cache_lane_width == lane_width);

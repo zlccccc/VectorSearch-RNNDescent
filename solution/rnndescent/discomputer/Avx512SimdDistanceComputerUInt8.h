@@ -106,7 +106,7 @@ struct SimdDistanceComputerUInt8L2 : MyDistanceComputer {
     // std::vector<int> queryl2norms;
     std::vector<float> mean; // 非对称量化; 平均值
 
-    explicit SimdDistanceComputerUInt8L2(const float *matrix, int n, int d) : n(n), d(d) {
+    explicit SimdDistanceComputerUInt8L2(const float *matrix, int n, int d, const int *row_order = nullptr) : n(n), d(d) {
         mean.resize(d);
         float max_range = 0.0f;
 #pragma omp parallel for reduction(max : max_range)
@@ -126,9 +126,10 @@ struct SimdDistanceComputerUInt8L2 : MyDistanceComputer {
         matrixl2norms.resize(n);
 #pragma omp parallel for
         for (int i = 0; i < n; i++) {
+            const auto *source = matrix + static_cast<size_t>(row_order ? row_order[i] : i) * d;
             matrixl2norms[i] = 0;
             for (int k = 0; k < d; k++) {
-                int normval = std::round((matrix[i * d + k] - mean[k]) / scale);
+                int normval = std::round((source[k] - mean[k]) / scale);
                 this->matrix[i * d + k] = std::max(0, std::min(maxscale * 2, normval + maxscale));
                 matrixl2norms[i] += this->matrix[i * d + k] * this->matrix[i * d + k];
             }

@@ -44,8 +44,9 @@ struct SelectedDistanceComputerFactory {
         return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d);
     }
 
-    static std::unique_ptr<MyDistanceComputer> create_cached_graph(const float *data, int n, int d) {
-        return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d);
+    static std::unique_ptr<MyDistanceComputer> create_cached_graph(const float *data, int n, int d, const int *row_order = nullptr) {
+        // row_order maps graph node IDs to rows in the original matrix.
+        return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d, row_order);
     }
 
     static std::unique_ptr<MyDistanceComputer> create_refine_search(const float *data, int n, int d) {

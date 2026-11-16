@@ -359,15 +359,8 @@ struct RNNDescent {
             for (int i = 0; i < n; i++) // 连graph的时候边id需更新
                 rollback_ids[search_from_ids[i]] = i;
 
-            std::vector<float> fastsearch_pool;
-            fastsearch_pool.resize(n * dim);
-#pragma omp parallel for num_threads(safe_build_config.num_threads)
-            for (int i = 0; i < n; i++) {
-                int u = search_from_ids[i];
-                // printf("u = %d; matrix.size() = %d\n",u, matrix.size());
-                memcpy(fastsearch_pool.data() + i * dim, data_view.row_ptr(u), dim * sizeof(float));
-            }
-            graph_distance_computer = SelectedDistanceComputerFactory::create_cached_graph(fastsearch_pool.data(), n, dim);
+            graph_distance_computer =
+                SelectedDistanceComputerFactory::create_cached_graph(data_view.data_ptr(), n, dim, search_from_ids.data());
         }
         { // 空间局部性优化
             neighbor_pool_.initialize(

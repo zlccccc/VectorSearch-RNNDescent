@@ -167,7 +167,7 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
         }
     }
 
-    explicit SimdDistanceComputerInt8L2(const float *matrix, int n, int d) : n(n), d(d) {
+    explicit SimdDistanceComputerInt8L2(const float *matrix, int n, int d, const int *row_order = nullptr) : n(n), d(d) {
         // scale = std::max(scale, *std::max_element(matrix, matrix + n * d));
         mean.resize(d);
         float max_range = 0.0f;
@@ -189,10 +189,11 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
         matrixl2norms.resize(n);
 #pragma omp parallel for
         for (int i = 0; i < n; i++) {
-            cvt_fp32_to_int8(matrix + i * d, this->matrix.data() + i * d);
+            const auto *source = matrix + static_cast<size_t>(row_order ? row_order[i] : i) * d;
+            cvt_fp32_to_int8(source, this->matrix.data() + i * d);
             matrixl2norms[i] = 0;
             for (int k = 0; k < d; k++)
-                matrixl2norms[i] += (matrix[i * d + k] - mean[k]) * (matrix[i * d + k] - mean[k]);
+                matrixl2norms[i] += (source[k] - mean[k]) * (source[k] - mean[k]);
             matrixl2norms[i] /= scale2 * 2;
         }
 
