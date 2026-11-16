@@ -20,7 +20,8 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
     int *edges = nullptr;
     NormType *l2norms = nullptr;
     CodeType *pool = nullptr;
-    int dim = 0, size = 0;
+    uint32_t code_stride = 0;
+    int size = 0;
     MyDistanceComputer *dis = nullptr;
 
     // One pool per index. Neighborhoods refer to fixed slices of this buffer.
@@ -32,13 +33,16 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
 
         void reset() {
             decltype(bytes_)().swap(bytes_);
+            code_stride_ = 0;
             pool_start_ptr = 0;
             preserve_limit = 0;
         }
 
-        void initialize(int dim, const std::vector<size_t> &offsets, long long max_pool_size = 0,
+        void initialize(uint32_t code_stride, const std::vector<size_t> &offsets, long long max_pool_size = 0,
                         bool save_neighbor = true) {
             RNNDESCENT_ASSERT_MSG(bytes_.empty(), "neighbor pool must be reset before initialization");
+            RNNDESCENT_ASSERT_MSG(code_stride % Derived::cache_lane_width == 0, "neighbor codes must occupy whole SIMD blocks");
+            code_stride_ = code_stride;
             const bool cache_enabled = save_neighbor && max_pool_size > 0;
 
             long long total_edges = 0;
@@ -49,7 +53,7 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
                 total_edges += count;
                 required_size += aligned_size(count * sizeof(int));
                 if (cache_enabled)
-                    cached_bytes += additional_cache_bytes(count, dim);
+                    cached_bytes += additional_cache_bytes(count, code_stride_);
             }
 
             const long long requested_size = std::min(required_size + cached_bytes, max_pool_size);
@@ -92,6 +96,7 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         friend NeighborsStorageBase;
 
         std::vector<uint8_t, AlignedAllocator<uint8_t>> bytes_;
+        uint32_t code_stride_ = 0;
         long long pool_start_ptr = 0;
         long long preserve_limit = 0;
 
@@ -113,9 +118,9 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         static long long aligned_size(long long bytes) { return (bytes + alignSize - 1) / alignSize * alignSize; }
 
         // Reserve the incremental space used by a cached neighborhood, including padding before the next one.
-        static long long additional_cache_bytes(long long count, int dim) {
+        static long long additional_cache_bytes(long long count, uint32_t code_stride) {
             const long long edge_bytes = count * sizeof(int);
-            const long long cache_bytes = count * (static_cast<long long>(dim) * sizeof(CodeType) + sizeof(NormType));
+            const long long cache_bytes = count * (static_cast<long long>(code_stride) * sizeof(CodeType) + sizeof(NormType));
             return aligned_size(edge_bytes + cache_bytes) - aligned_size(edge_bytes);
         }
 
@@ -129,18 +134,18 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
 
     NeighborsStorageBase() = default;
 
-    NeighborsStorageBase(Pool &storage, int dim, const int *neighbor, int count, MyDistanceComputer *dis,
+    NeighborsStorageBase(Pool &storage, const int *neighbor, int count, MyDistanceComputer *dis,
                          const std::vector<int> &rollback_ids, bool save_neighbor)
-        : dim(dim), size(count), dis(dis) {
+        : code_stride(storage.code_stride_), size(count), dis(dis) {
         if (size == 0)
             return;
         RNNDESCENT_ASSERT_MSG(!storage.bytes_.empty(), "neighbors pool has not been initialized");
         RNNDESCENT_ASSERT_MSG(size % 4 == 0, "neighbor cache size must be a multiple of 4");
 
         storage.pool_start_ptr = Pool::aligned_size(storage.pool_start_ptr);
-        const long long cache_cost = Pool::additional_cache_bytes(size, dim);
+        const long long cache_cost = Pool::additional_cache_bytes(size, code_stride);
         if (save_neighbor && cache_cost <= storage.preserve_limit) {
-            pool = reinterpret_cast<CodeType *>(storage.allocate_ptr(static_cast<size_t>(size) * dim * sizeof(CodeType)));
+            pool = reinterpret_cast<CodeType *>(storage.allocate_ptr(static_cast<size_t>(size) * code_stride * sizeof(CodeType)));
             l2norms = reinterpret_cast<NormType *>(storage.allocate_ptr(static_cast<size_t>(size) * sizeof(NormType)));
             storage.preserve_limit -= cache_cost;
         }
@@ -156,21 +161,19 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
             return;
 
         for (int i = 0; i < size; ++i)
-            dis->copy_index(edges[i], pool + static_cast<size_t>(i) * dim, l2norms[i]);
+            dis->copy_index(edges[i], pool + static_cast<size_t>(i) * code_stride, l2norms[i], true);
 
         // Interleave four neighbors by SIMD lane for sequential reads in the distance kernel.
         constexpr size_t lane_width = Derived::cache_lane_width;
-        const size_t dimension = dim;
         for (int base = 0; base < size; base += 4) {
-            auto *block = pool + static_cast<size_t>(base) * dimension;
-            for (size_t i = 0; i < dimension; i += lane_width) {
-                const size_t chunk = std::min(lane_width, dimension - i);
+            auto *block = pool + static_cast<size_t>(base) * code_stride;
+            for (size_t i = 0; i < code_stride; i += lane_width) {
                 for (size_t lane = 0; lane < 4; ++lane) {
-                    std::memcpy(reorder_scratch + i * 4 + lane * chunk,
-                                block + lane * dimension + i, chunk);
+                    std::memcpy(reorder_scratch + i * 4 + lane * lane_width,
+                                block + lane * code_stride + i, lane_width);
                 }
             }
-            std::memcpy(block, reorder_scratch, 4 * dimension);
+            std::memcpy(block, reorder_scratch, 4 * static_cast<size_t>(code_stride));
         }
     }
 };

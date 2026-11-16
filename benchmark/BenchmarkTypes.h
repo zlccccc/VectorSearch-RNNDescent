@@ -50,6 +50,8 @@ struct BenchmarkConfig {
     int topk = 10;
     int repeat = 10;
     int warmup_topk = 10;
+    int override_s = -1;
+    int override_r = -1;
     int override_k0 = -1;
     int override_num_initialize = -1;
     int override_search_l = -1;
@@ -120,20 +122,34 @@ inline void apply_common_config(BenchmarkConfig &config) {
 
 inline void apply_dataset_preset(BenchmarkConfig &config) {
     const string key = normalize_dataset_name(config.dataset_name);
-    if (key == "siftsmall" || key == "sift") {
+    if (key == "sift100k") {
+        config.build_config.S = 64;
+        config.build_config.R = 96;
+        config.build_config.K0 = 24;
+        config.search_config.num_initialize = 80;
+        config.search_config.search_L = 72;
+        config.search_config.refine_max = 24;
+        config.search_config.beam_size = 4;
+    } else if (key == "siftsmall" || key == "sift") {
         config.search_config.num_initialize = 192;
         config.search_config.search_L = 128;
         config.search_config.refine_max = 64;
         config.build_config.K0 = 32;
     } else if (key == "gist") {
-        config.search_config.num_initialize = 768;
-        config.search_config.search_L = 320;
-        config.search_config.refine_max = 256;
-        config.build_config.K0 = 80;
+        config.build_config.S = 320;
+        config.build_config.R = 256;
+        config.build_config.K0 = 64;
+        config.search_config.num_initialize = 3072;
+        config.search_config.search_L = 1152;
+        config.search_config.refine_max = 1024;
     }
 }
 
 inline void apply_config_overrides(BenchmarkConfig &config) {
+    if (config.override_s > 0)
+        config.build_config.S = config.override_s;
+    if (config.override_r > 0)
+        config.build_config.R = config.override_r;
     if (config.override_k0 > 0)
         config.build_config.K0 = config.override_k0;
     if (config.override_num_initialize > 0)

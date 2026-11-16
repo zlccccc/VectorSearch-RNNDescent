@@ -34,10 +34,32 @@ cmake --build build --parallel 4
 |---|---|
 | `native`（默认） | x86-64 按构建机选择 AVX2 或 AVX-512 VNNI，AArch64 使用 NEON Dot Product |
 | `avx2` | x86-64，要求 AVX2 和 FMA |
+| `avx2-uint8` | x86-64，要求 AVX2 和 FMA，使用 0～126 的量化码和字节乘加 |
+| `avx-vnni` | x86-64，要求 AVX2、FMA 和 AVX-VNNI，使用相同量化码和 256 位 VNNI 点积 |
 | `avx512` | x86-64，要求 AVX-512F、BW、VL 和 VNNI |
 | `neon` | AArch64，要求 NEON Dot Product（Linux 的 `asimddp`） |
 
 指令集在编译时选定。运行测试的机器也需要支持所选指令集。
+
+### 量化算距
+
+[QuantizedDistanceComputer.h](solution/rnndescent/discomputer/QuantizedDistanceComputer.h) 中的 `QuantizedDistanceComputer<Kernel>` 负责训练量化参数、按 BFS 顺序写入底库码、量化查询，并把点积转成距离分数。`QuantizedNeighbors<Kernel>` 用同一个 `Kernel` 解释邻居缓存，未缓存的邻居通过四路算距接口读取底库码。
+
+| 构建目标 | 量化码 | 每块读取字节数 | 点积内核 |
+|---|---|---:|---|
+| `avx2` | INT8 `[-127, 127]` | 16 | 符号扩位后 `VPMADDWD` |
+| `avx2-uint8` | UINT8 `[0, 126]` | 32 | `VPMADDUBSW` 和 `VPMADDWD` |
+| `avx-vnni` | 同一套 UINT8 量化 | 32 | 256 位 `VPDPBUSD` |
+| `avx512` | 同一套 UINT8 量化 | 64 | 512 位 `VPDPBUSD` |
+| `neon` | INT8 `[-127, 127]` | 16 | `SDOT` |
+
+`Kernel` 提供 `Quantization`、`block_bytes`、`dot`、`dot4` 和 `cached_distances`。建图、查图和邻居缓存用 32 位整数计算量化码的平方 L2，再转成 `float` 用于排序。底库和查询在编码时各计算一次平方范数。测试可将量化分数乘 `scale²`，换回量化输入的距离单位并校验公式。启用 PCA 时，这是投影空间的距离。最终返回原始向量的 FP32 精排距离。
+
+量化索引支持最多 33,286 维，由 INT8 每维最大平方差 `254²` 和有符号 32 位整数上限算出。超过上限会在初始化时直接报错。
+
+`dimension()` 返回逻辑维度，`code_stride()` 返回补零后的行宽。邻居缓存把四条向量的第一个 SIMD 块放在一起，再放四条向量的下一块。新增内核时，让连续读和缓存读都使用 `block_bytes`，然后在平台选择中给算距和邻居缓存绑定同一个 `Kernel`。模板在编译期绑定内核，查询入口仍使用 `MyDistanceComputer` 的接口。
+
+AVX2、AVX512、NEON、CBLAS 的 FP32 算距，以及 NEON 的 FP16 和 INT16，都由 [FlatDistanceComputer.h](solution/rnndescent/discomputer/FlatDistanceComputer.h) 管理查询、平方范数和平方 L2 计算。FP32 直接读取原始行，作为默认精排。FP16 存半精度并用 FP32 累加。INT16 用 64 位整数累加，再乘量化步长的平方换回输入单位。三种 NEON 实现共用向量点积循环和逐元素尾部处理。邻居缓存由前面的 8 位量化实现管理。
 
 ## 测试
 
@@ -88,7 +110,11 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 ./build/algorithm \
 
 下载脚本还支持 `siftsmall` 和 `gist`。数据目录可使用 [benches/README.md](benches/README.md) 中的文件别名，也可用 `--base`、`--query` 和可选的 `--gt` 指定文件。底库和查询支持 `fvecs`、`bvecs`，预计算近邻使用 `ivecs`。传入 `--pca-out <维度>` 可开启建图与查询的 PCA 投影，精排仍使用原始向量。
 
-自定义数据集和随机向量采用通用参数。搜索预算可通过 `--search-L`、`--num-initialize` 和 `--refine-max` 等参数显式指定。SIFT、SIFT Small 和 GIST 在 benchmark 中有各自的数据集预设，命令行参数优先。可用 `./run.sh` 增量构建并运行 benchmark，默认使用 `benches/datasets/sift`。也可以在脚本后传入完整的 benchmark 参数，并通过 `BUILD_DIR` 使用已有的 CMake 构建目录。
+自定义数据集和随机向量采用通用参数。搜索预算可通过 `--search-L`、`--num-initialize` 和 `--refine-max` 等参数显式指定。SIFT、SIFT100K、SIFT Small 和 GIST 在 benchmark 中有数据集预设，命令行参数优先。可用 `./run.sh` 增量构建并运行 benchmark，默认使用 `benches/datasets/sift`。也可以在脚本后传入完整的 benchmark 参数，并通过 `BUILD_DIR` 使用已有的 CMake 构建目录。
+
+将 SIFT100K 的底库、查询及对应的 ground truth 放入 `benches/datasets/sift100k`，用 `DATASET=sift100k ./run.sh` 运行以 99% Recall@10 为目标的预设。
+
+用 `--S`、`--R` 和 `--K0` 调整建图。它们分别控制每个节点的初始随机邻居数、反向边处理时的候选上限和最终邻接表的边数上限。
 
 要固定近邻结构测试向量变宽的影响，或把 Recall@10 拉离饱和区再比较 QPS，可运行 [SIFT benchmark 脚本](benches/README.md#可复现的-sift-测试)。脚本支持 128、256、512、1024 维对比和低搜索预算扫描，每档汇总多次独立建图的结果。
 

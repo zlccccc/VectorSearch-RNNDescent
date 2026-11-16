@@ -23,7 +23,8 @@ inline void print_usage(const char *prog) {
     cout << "Optional args:\n";
     cout << "  --data-size <n> --dim <d> --test-iter <n> --topk <k> --repeat <n>\n";
     cout << "  --output-iter <n> --exact-check-queries <n> --warmup-topk <k>\n";
-    cout << "  --K0 <n> --num-initialize <n> --search-L <n> --refine-max <n> [--beam-size <n>]\n";
+    cout << "  --S <n> --R <n> --K0 <n>\n";
+    cout << "  --num-initialize <n> --search-L <n> --refine-max <n> [--beam-size <n>]\n";
     cout << "  --neighbor-pool-gb <n>  Neighbor pool budget in GiB (default 0 disables vector caching)\n";
     cout << "  --enable-pca --disable-pca --pca-out <n>\n";
 }
@@ -36,6 +37,14 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             if (i + 1 >= argc)
                 throw std::runtime_error("missing value for argument: " + name);
             return argv[++i];
+        };
+        auto require_positive_int = [&](const string &name) -> int {
+            const string input = require_value(name);
+            size_t parsed = 0;
+            const int value = stoi(input, &parsed);
+            if (parsed != input.size() || value <= 0)
+                throw std::runtime_error(name + " requires a positive integer");
+            return value;
         };
 
         if (arg == "--help" || arg == "-h") {
@@ -75,6 +84,10 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             config.exact_check_queries = stoi(require_value(arg));
         } else if (arg == "--warmup-topk") {
             config.warmup_topk = stoi(require_value(arg));
+        } else if (arg == "--S") {
+            config.override_s = require_positive_int(arg);
+        } else if (arg == "--R") {
+            config.override_r = require_positive_int(arg);
         } else if (arg == "--K0") {
             config.override_k0 = stoi(require_value(arg));
         } else if (arg == "--num-initialize") {

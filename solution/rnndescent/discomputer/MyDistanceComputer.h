@@ -7,6 +7,11 @@
 
 namespace rnndescent {
 
+struct QuantizedQuery {
+    const void *code;
+    int squared_norm;
+};
+
 struct MyDistanceComputer {
 
     virtual float operator()(int idq, int i) = 0;
@@ -26,6 +31,11 @@ struct MyDistanceComputer {
         throw std::runtime_error("dimension is not implemented for this distance computer");
     }
 
+    // Number of bytes in a quantized row, including zero padding for SIMD loads.
+    virtual uint32_t code_stride() const {
+        throw std::runtime_error("code_stride is not implemented for this distance computer");
+    }
+
     virtual void *get_query_ptr(int idx0) {
         (void)idx0;
         throw std::runtime_error("get_query_ptr is not implemented for this distance computer");
@@ -35,14 +45,19 @@ struct MyDistanceComputer {
         return static_cast<int8_t *>(get_query_ptr(idx0));
     }
 
-    virtual void copy_index(int idx0, void *y, int &l2norm) {
+    virtual QuantizedQuery get_quantized_query(int) const {
+        throw std::runtime_error("get_quantized_query is not implemented for this distance computer");
+    }
+
+    // Copy the logical code bytes by default, or the full stride for the neighbor cache.
+    virtual void copy_index(int idx0, void *y, int &l2norm, bool = false) {
         (void)idx0;
         (void)y;
         (void)l2norm;
         throw std::runtime_error("copy_index<int> is not implemented for this distance computer");
     }
 
-    virtual void copy_index(int idx0, void *y, float &l2norm) {
+    virtual void copy_index(int idx0, void *y, float &l2norm, bool = false) {
         (void)idx0;
         (void)y;
         (void)l2norm;
