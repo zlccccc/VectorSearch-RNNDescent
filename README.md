@@ -98,6 +98,8 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 ./build/algorithm \
 
 `latency_ms[i]` 是第 `i` 轮每条查询的平均毫秒数，对应 `QPS = 1000 / latency_ms[i]`。建图时间包含配置的预热。随机测试用 `--exact-check-queries` 指定穷举校验的查询条数，数据集模式提供 ground truth 后可用其计算 Recall@K。
 
+图搜索的细粒度计时和计数默认关闭。定位热点时，可在 CMake 配置阶段传入 `-DRNNDESCENT_PROFILE_SEARCH=ON`。benchmark 始终记录整批查询耗时。
+
 ## 代码入口
 
 - `benchmark/` 提供命令行、数据读取、评估和报告。

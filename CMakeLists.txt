@@ -7,6 +7,7 @@ endif()
 
 set(RNNDESCENT_SIMD "native" CACHE STRING "SIMD target: native, avx2, avx512, or neon")
 set_property(CACHE RNNDESCENT_SIMD PROPERTY STRINGS native avx2 avx512 neon)
+option(RNNDESCENT_PROFILE_SEARCH "Enable detailed graph search timing and counters" OFF)
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
 find_package(faiss CONFIG QUIET)
@@ -27,7 +28,9 @@ endif()
 
 add_library(rnndescent_build_options INTERFACE)
 target_compile_features(rnndescent_build_options INTERFACE cxx_std_17)
-target_compile_definitions(rnndescent_build_options INTERFACE INTERNAL_CLOCK_TEST)
+if(RNNDESCENT_PROFILE_SEARCH)
+    target_compile_definitions(rnndescent_build_options INTERFACE INTERNAL_CLOCK_TEST)
+endif()
 target_include_directories(rnndescent_build_options INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}" ${OpenBLAS_INCLUDE_DIRS})
 target_link_libraries(rnndescent_build_options INTERFACE
