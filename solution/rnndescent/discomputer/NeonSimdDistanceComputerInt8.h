@@ -167,7 +167,6 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
 
     explicit SimdDistanceComputerInt8L2(const float *matrix, int n, int d, const int *row_order = nullptr) : n(n), d(d) {
         (this->matrix).resize(n * d);
-        // scale = std::max(scale, *std::max_element(matrix, matrix + n * d));
         mean.resize(d);
         float max_range = 0.0f;
 #pragma omp parallel for reduction(max : max_range)
@@ -263,7 +262,7 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // �
     static constexpr size_t cache_lane_width = neon_int8_block_bytes;
     using Base::Base;
 
-    void compute_distance(int idq, std::vector<float> &result) { // 计算所有距离
+    void compute_distance(int idq, std::vector<float> &result) {
         result.resize(size);
         if (pool != nullptr) {
             const int8_t *__restrict q = dis->get_query_ptr_int8(idq);
@@ -272,9 +271,6 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // �
             for (int i = 0; i < size; i += 4)
                 dis->distances_batch_4(idq, edges[i], edges[i + 1], edges[i + 2], edges[i + 3], result[i], result[i + 1], result[i + 2], result[i + 3]);
         }
-        // for (int id = 0; id < size; id++)
-        //     printf("%f ", result[id]);
-        // puts("<- dis");
     }
 
     // 这个地方已经加上了preload

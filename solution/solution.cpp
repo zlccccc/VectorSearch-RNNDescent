@@ -35,8 +35,7 @@ void Solution::warmup(const std::vector<float> &base, int d, const WarmupConfig 
     if (base.empty())
         return;
 
-    // warmup貌似有bug, 而且好像没啥用(好像还是有点点用? 本地测下来100分); 待修复
-    // (代码里面那个usefulset不如直接heap里面用一用得了; 根本不需要额外开空间)
+    // Warm up the search path with a reproducible sample of base vectors.
     auto prevtime = std::chrono::system_clock::now();
     const int size = base.size() / d;
     const int warmup_count = std::min(size, warmup_config.sample_count);
@@ -70,10 +69,6 @@ void Solution::search(const std::vector<float> &query, std::vector<int> &res, in
         return;
     if (query.size() % index_->dimension() != 0)
         throw std::runtime_error("query size must be divisible by index dimension");
-    // #pragma omp parallel for
-    // for (int k = 0; k < query.size() / index->dimension(); k++) {
-    //     index->searchSingle(&query[k * index->dimension()], topk, distances, res + k * topk);
-    // }
     int n = query.size() / index_->dimension();
     if ((int)res.size() != n * topk)
         res.resize(n * topk);
@@ -81,7 +76,7 @@ void Solution::search(const std::vector<float> &query, std::vector<int> &res, in
         distances_.resize(n * topk);
     const auto query_view = rnndescent::FloatMatrixView::from_vector(query, index_->dimension());
     const auto result_view = rnndescent::SearchResultView::from_vectors(res, distances_, topk);
-    index_->search(query_view, result_view); // 调低一下分数
+    index_->search(query_view, result_view);
 }
 
 void Solution::reset() {

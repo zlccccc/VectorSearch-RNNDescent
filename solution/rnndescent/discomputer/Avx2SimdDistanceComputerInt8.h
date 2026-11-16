@@ -132,7 +132,7 @@ inline void CorrelationSum4(const int8_t *q, const int8_t *x0, const int8_t *x1,
     //     s2 += (int)q[i] * x2[i];
     //     s3 += (int)q[i] * x3[i];
     // }
-    // printf("%d %d %d %d == %d %d %d %d\n", s0, s1, s2, s3, res0, res1, res2, res3);
+
 }
 
 } // namespace
@@ -168,7 +168,6 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
     }
 
     explicit SimdDistanceComputerInt8L2(const float *matrix, int n, int d, const int *row_order = nullptr) : n(n), d(d) {
-        // scale = std::max(scale, *std::max_element(matrix, matrix + n * d));
         mean.resize(d);
         float max_range = 0.0f;
 #pragma omp parallel for reduction(max : max_range)
@@ -197,15 +196,6 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
             matrixl2norms[i] /= scale2 * 2;
         }
 
-        // for (int i = 0; i < 10; i++) {
-        //     for (int j = 0; j < 10; j++) {
-        //         float real = 0;
-        //         for (int k = 0; k < d; k++) real += (matrix[i * d + k] - matrix[j * d + k]) * (matrix[i * d + k] - matrix[j * d + k]);
-        //         printf("[%f - %f] ",this->symmetric_dis(i, j), real);
-        //     }
-        // }
-        // puts("");
-        // assert(0);
     }
 
     int row_count() const override { return static_cast<int>(n); }
@@ -251,7 +241,7 @@ struct SimdDistanceComputerInt8L2 : MyDistanceComputer {
         dis1 = matrixl2norms[idx1] - dp1;
         dis2 = matrixl2norms[idx2] - dp2;
         dis3 = matrixl2norms[idx3] - dp3;
-        // printf("%f %f - %f * 2\n", queryl2norms[idq], matrixl2norms[idx0], dp0);
+
     }
 
     void copy_index(int idx0, void *y, float &l2norm) override final {
@@ -277,9 +267,8 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // �
     static constexpr size_t cache_lane_width = avx2_int8_block_bytes;
     using Base::Base;
 
-    void compute_distance(int idq, std::vector<float> &result) { // 计算所有距离
+    void compute_distance(int idq, std::vector<float> &result) {
         result.resize(size);
-        // if (false && pool != nullptr) {
         if (pool != nullptr) {
             const int8_t *__restrict q = (int8_t *)dis->get_query_ptr(idq);
             distance_preloaded_all(q, size, pool, l2norms, result.data());
@@ -287,9 +276,6 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // �
             for (int i = 0; i < size; i += 4)
                 dis->distances_batch_4(idq, edges[i], edges[i + 1], edges[i + 2], edges[i + 3], result[i], result[i + 1], result[i + 2], result[i + 3]);
         }
-        // for (int id = 0; id < size; id++)
-        //     printf("%f ", result[id]);
-        // puts("<- dis");
     }
 
     // 这个地方已经加上了preload
@@ -352,7 +338,7 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // �
             dis[id + 1] = ReduceAddEpi32(sums1);
             dis[id + 2] = ReduceAddEpi32(sums2);
             dis[id + 3] = ReduceAddEpi32(sums3);
-            // printf("%f %f %f %f; %f %f\n", dis[id], dis[id + 1], dis[id + 2], dis[id + 3], l2norms[id], l2normq);
+
         }
         // float32x4_t vres;
         // for (int i = 0; i < size; i += 4) {
@@ -361,9 +347,6 @@ struct Int8Neighbors : NeighborsStorageBase<Int8Neighbors, int8_t, float> { // �
         // }
         for (int i = 0; i < size; i++)
             dis[i] = l2norms[i] - dis[i];
-        // for (int id = 0; id < size; id++)
-        //     printf("%f ", dis[id]);
-        // puts("<- dis");
         // dis = temp;
     }
 };

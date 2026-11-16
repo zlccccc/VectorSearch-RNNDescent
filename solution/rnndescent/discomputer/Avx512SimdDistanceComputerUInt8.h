@@ -87,7 +87,7 @@ inline void CorrelationSum4(const uint8_t *q, const uint8_t *x0, const uint8_t *
     //     s2 += (int)q[i] * x2[i];
     //     s3 += (int)q[i] * x3[i];
     // }
-    // printf("%d %d %d %d == %d %d %d %d\n", s0, s1, s2, s3, res0, res1, res2, res3);
+
 }
 
 } // namespace
@@ -185,7 +185,7 @@ struct SimdDistanceComputerUInt8L2 : MyDistanceComputer {
         dis1 = (matrixl2norms[idx1] - dp1 * 2);
         dis2 = (matrixl2norms[idx2] - dp2 * 2);
         dis3 = (matrixl2norms[idx3] - dp3 * 2);
-        // printf("%d + %d - %d * 2\n", matrixl2norms[idx0], queryl2norms[idq], dp0);
+
     }
 
     void copy_index(int idx0, void *y, int32_t &l2norm) override final {
@@ -211,9 +211,8 @@ struct UInt8Neighbors : NeighborsStorageBase<UInt8Neighbors, uint8_t, int> { // 
     static constexpr size_t cache_lane_width = avx512_int8_block_bytes;
     using Base::Base;
 
-    void compute_distance(int idq, std::vector<float> &result) { // 计算所有距离
+    void compute_distance(int idq, std::vector<float> &result) {
         result.resize(size);
-        // if (false && pool != nullptr) {
         if (pool != nullptr) {
             const uint8_t *__restrict q = (uint8_t *)dis->get_query_ptr(idq);
             distance_preloaded_all(q, size, pool, l2norms, result.data());
@@ -221,9 +220,6 @@ struct UInt8Neighbors : NeighborsStorageBase<UInt8Neighbors, uint8_t, int> { // 
             for (int i = 0; i < size; i += 4)
                 dis->distances_batch_4(idq, edges[i], edges[i + 1], edges[i + 2], edges[i + 3], result[i], result[i + 1], result[i + 2], result[i + 3]);
         }
-        // for (int id = 0; id < size; id++)
-        //     printf("%f ", result[id]);
-        // puts("<- dis");
     }
 
     // 这个地方已经加上了preload
@@ -264,13 +260,10 @@ struct UInt8Neighbors : NeighborsStorageBase<UInt8Neighbors, uint8_t, int> { // 
             dis[id + 1] = _mm512_reduce_add_epi32(sums1);
             dis[id + 2] = _mm512_reduce_add_epi32(sums2);
             dis[id + 3] = _mm512_reduce_add_epi32(sums3);
-            // printf("%f %f %f %f; %f %f\n", dis[id], dis[id + 1], dis[id + 2], dis[id + 3], l2norms[id], l2normq);
+
         }
         for (int i = 0; i < size; i++)
             dis[i] = l2norms[i] - dis[i] * 2;
-        // for (int id = 0; id < size; id++)
-        //     printf("%f ", dis[id]);
-        // puts("<- dis");
         // dis = temp;
     }
 };

@@ -153,7 +153,6 @@ struct IndexRNNDescent {
         refine_distance_computer->set_query(x, n);
         if (pca && pca->is_trained) {
             pca_query_buffer.resize(n * pca->d_out);
-            // pca->apply_noalloc(n, x, pca_query_buffer.data());  // 这句话太慢了
             pca_apply_noalloc(FloatMatrixView::from_buffer(x, static_cast<int>(n), dimension()),
                               MutableFloatMatrixView::from_vector(pca_query_buffer, pca->d_out));
             rnndescent->graph_distance_computer->set_query(pca_query_buffer.data(), n);
