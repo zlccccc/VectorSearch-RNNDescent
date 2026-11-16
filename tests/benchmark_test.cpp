@@ -95,6 +95,32 @@ TEST(BenchmarkCliTest, RejectsInvalidBudgetsAndMissingValues) {
     EXPECT_THAT([] { parse({"--dim"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("missing value")));
 }
 
+TEST(BenchmarkCliTest, GraphBuildOptionsOverrideDatasetPreset) {
+    auto config = parse({"--mode", "dataset", "--dataset-name", "gist", "--S", "192", "--R", "512", "--K0", "96"});
+    benchmark::apply_solution_preset(config);
+    EXPECT_EQ(config.build_config.S, 192);
+    EXPECT_EQ(config.build_config.R, 512);
+    EXPECT_EQ(config.build_config.K0, 96);
+    EXPECT_THAT([] { parse({"--R", "0"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("positive integer")));
+    EXPECT_THAT([] { parse({"--S", "32.5"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("positive integer")));
+}
+
+TEST(BenchmarkCliTest, AppliesSift100kPresetByDatasetName) {
+    auto small = parse({"--mode", "dataset", "--dataset-name", "SIFT100K"});
+    benchmark::apply_solution_preset(small);
+    EXPECT_EQ(small.build_config.S, 64);
+    EXPECT_EQ(small.build_config.R, 96);
+    EXPECT_EQ(small.build_config.K0, 24);
+    EXPECT_EQ(small.search_config.num_initialize, 80);
+    EXPECT_EQ(small.search_config.search_L, 72);
+    EXPECT_EQ(small.search_config.refine_max, 24);
+    EXPECT_EQ(small.search_config.beam_size, 4);
+
+    auto full = parse({"--mode", "dataset", "--dataset-name", "sift"});
+    benchmark::apply_solution_preset(full);
+    EXPECT_EQ(full.search_config.search_L, 128);
+}
+
 TEST(BenchmarkCliTest, ExplicitRandomModeOverridesDatasetDetection) {
     const TempDirectory tmp;
     struct RestorePath {

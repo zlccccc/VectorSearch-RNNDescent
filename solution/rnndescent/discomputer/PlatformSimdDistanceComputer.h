@@ -5,9 +5,17 @@
 // Optional manual overrides for benchmarking / deployment:
 //   RNNDESCENT_FORCE_AVX512
 //   RNNDESCENT_FORCE_AVX2
+//   RNNDESCENT_FORCE_AVX2_UINT8
+//   RNNDESCENT_FORCE_AVX_VNNI
 //   RNNDESCENT_FORCE_NEON
 
-#if defined(RNNDESCENT_FORCE_AVX512) || \
+#if defined(RNNDESCENT_FORCE_AVX_VNNI)
+#include "Avx2SimdDistanceComputerFP32.h"
+#include "AvxVnniSimdDistanceComputerUInt8.h"
+#elif defined(RNNDESCENT_FORCE_AVX2_UINT8)
+#include "Avx2SimdDistanceComputerFP32.h"
+#include "Avx2SimdDistanceComputerUInt8.h"
+#elif defined(RNNDESCENT_FORCE_AVX512) || \
     (!defined(RNNDESCENT_FORCE_AVX2) && !defined(RNNDESCENT_FORCE_NEON) && \
      defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512VNNI__))
 #define RNNDESCENT_USE_AVX512
@@ -30,7 +38,13 @@
 #endif
 
 namespace rnndescent {
-#ifdef RNNDESCENT_USE_AVX512
+#if defined(RNNDESCENT_FORCE_AVX_VNNI)
+using SelectedNeighborsContainerType = QuantizedNeighbors<AvxVnniUInt8DotProduct>;
+using SelectedSaveNeighborDiscomputer = AvxVnniSimdDistanceComputerUInt8L2;
+#elif defined(RNNDESCENT_FORCE_AVX2_UINT8)
+using SelectedNeighborsContainerType = QuantizedNeighbors<Avx2UInt8DotProduct>;
+using SelectedSaveNeighborDiscomputer = Avx2SimdDistanceComputerUInt8L2;
+#elif defined(RNNDESCENT_USE_AVX512)
 #undef RNNDESCENT_USE_AVX512
 using SelectedNeighborsContainerType = UInt8Neighbors;
 using SelectedSaveNeighborDiscomputer = SimdDistanceComputerUInt8L2;

@@ -1,11 +1,18 @@
 #include "ReferenceDistance.h"
 #include "solution/rnndescent/discomputer/PlatformSimdDistanceComputer.h"
+#include "solution/rnndescent/discomputer/CblasDistComputerFP32.h"
+
+#ifdef RNNDESCENT_FORCE_NEON
+#include "solution/rnndescent/discomputer/NeonSimdDistanceComputerFP16.h"
+#include "solution/rnndescent/discomputer/NeonSimdDistanceComputerInt16.h"
+#endif
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <stdexcept>
 #include <type_traits>
 #include <vector>
 
@@ -14,13 +21,19 @@ namespace {
 
 using rnndescent::SelectedDistanceComputerFactory;
 using rnndescent::SelectedNeighborsContainerType;
+using Neighbors = SelectedNeighborsContainerType;
 using Code = std::remove_pointer_t<decltype(SelectedNeighborsContainerType::pool)>;
 using Norm = std::remove_pointer_t<decltype(SelectedNeighborsContainerType::l2norms)>;
 
 constexpr int rows = 8;
 constexpr int queries = 2;
-constexpr int dot_factor = std::is_unsigned_v<Code> ? 2 : 1;
-constexpr int dimensions[] = {1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 125, 128, 129, 256, 512, 1024};
+#if defined(RNNDESCENT_FORCE_AVX2_UINT8) || defined(RNNDESCENT_FORCE_AVX_VNNI)
+constexpr int lane_width = 32;
+#else
+constexpr int lane_width = std::is_unsigned_v<Code> ? 64 : 16;
+#endif
+static_assert(Neighbors::cache_lane_width == lane_width);
+constexpr int dimensions[] = {1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 125, 128, 129, 256, 512, 960, 961, 1024};
 
 std::vector<float> make_vectors(int count, int dim, int seed) {
     std::vector<float> vectors(count * dim);
@@ -30,11 +43,13 @@ std::vector<float> make_vectors(int count, int dim, int seed) {
     return vectors;
 }
 
-int dot(const Code *a, const Code *b, int dim) {
-    int sum = 0;
-    for (int k = 0; k < dim; ++k)
-        sum += int(a[k]) * int(b[k]);
-    return sum;
+float quantized_l2(const Code *a, const Code *b, int dim) {
+    int64_t sum = 0;
+    for (int k = 0; k < dim; ++k) {
+        const int difference = int(a[k]) - int(b[k]);
+        sum += difference * difference;
+    }
+    return static_cast<float>(sum);
 }
 
 std::array<float, 4> batch(rnndescent::MyDistanceComputer &computer, int q, const int *ids) {
@@ -53,6 +68,9 @@ TEST_P(SimdDistanceTest, MatchesScalarReference) {
     const auto query = make_vectors(queries, d, 31);
     auto quantized = SelectedDistanceComputerFactory::create_build_graph(base.data(), rows, d);
     auto exact = SelectedDistanceComputerFactory::create_refine_search(base.data(), rows, d);
+    const int stride = (d + lane_width - 1) / lane_width * lane_width;
+    EXPECT_EQ(quantized->dimension(), d);
+    ASSERT_EQ(quantized->code_stride(), stride);
     quantized->set_query(query.data(), queries);
     exact->set_query(query.data(), queries);
 
@@ -65,12 +83,13 @@ TEST_P(SimdDistanceTest, MatchesScalarReference) {
     for (int q = 0; q < queries; ++q) {
         const Code *query_code = reinterpret_cast<const Code *>(quantized->get_query_ptr_int8(q));
         SCOPED_TRACE(q);
+        EXPECT_TRUE(std::all_of(query_code + d, query_code + stride, [](Code value) { return value == 0; }));
         for (int i = 0; i < rows; i += 4) {
             const auto quantized_batch = batch(*quantized, q, ids + i);
             const auto exact_batch = batch(*exact, q, ids + i);
             for (int k = 0; k < 4; ++k) {
                 const int id = ids[i + k];
-                const float expected_score = norms[id] - dot_factor * dot(codes.data() + id * d, query_code, d);
+                const float expected_score = quantized_l2(codes.data() + id * d, query_code, d);
                 const double expected_l2 = scalar_l2(base.data() + id * d, query.data() + q * d, d);
                 SCOPED_TRACE(id);
                 EXPECT_EQ((*quantized)(q, id), expected_score) << "8-bit single query";
@@ -82,7 +101,7 @@ TEST_P(SimdDistanceTest, MatchesScalarReference) {
     }
 
     for (int i = 1; i < rows; ++i) {
-        const float expected_score = norms[i] + norms[0] - dot_factor * dot(codes.data() + i * d, codes.data(), d);
+        const float expected_score = quantized_l2(codes.data() + i * d, codes.data(), d);
         const double expected_l2 = scalar_l2(base.data() + i * d, base.data(), d);
         SCOPED_TRACE(i);
         EXPECT_EQ(quantized->symmetric_dis(i, 0), expected_score) << "8-bit build distance";
@@ -90,16 +109,108 @@ TEST_P(SimdDistanceTest, MatchesScalarReference) {
     }
 }
 
-TEST(SimdQuantizationTest, ConstantVectorsHaveFiniteScores) {
+TEST(CblasDistanceTest, UsesRequestedQueryForSingleAndBatchDistances) {
+    constexpr int dim = 65;
+    constexpr int ids[] = {0, 3, 7, 1};
+    const auto base = make_vectors(rows, dim, 0);
+    const auto query = make_vectors(queries, dim, 31);
+    rnndescent::CblasDistanceComputerFP32L2 computer(base.data(), rows, dim);
+    computer.set_query(query.data(), queries);
+
+    const auto distances = batch(computer, 1, ids);
+    for (int k = 0; k < 4; ++k) {
+        const double expected = scalar_l2(query.data() + dim, base.data() + ids[k] * dim, dim);
+        EXPECT_NEAR(computer(1, ids[k]), expected, 1e-5 * expected + 1e-6);
+        EXPECT_FLOAT_EQ(distances[k], computer(1, ids[k]));
+    }
+}
+
+TEST(SimdQuantizationTest, IdenticalVectorsHaveZeroDistance) {
     constexpr int dim = 17;
     const std::vector<float> constant(rows * dim, 3.25f);
     auto quantized = SelectedDistanceComputerFactory::create_build_graph(constant.data(), rows, dim);
     quantized->set_query(constant.data(), rows);
     EXPECT_EQ(quantized->symmetric_dis(0, rows - 1), 0.0f);
-    const float score = (*quantized)(0, 0);
-    EXPECT_TRUE(std::isfinite(score));
-    EXPECT_EQ(score, (*quantized)(1, rows - 1));
+    EXPECT_EQ((*quantized)(0, 0), 0.0f);
+    EXPECT_EQ((*quantized)(1, rows - 1), 0.0f);
 }
+
+TEST(SimdQuantizationTest, ExtremeCodesPreserveSquaredDistances) {
+    constexpr int difference = std::is_unsigned_v<Code> ? 126 : 254;
+    constexpr float scale = 2.0f / difference;
+    for (const int dim : {65, 1024, 33286}) {
+        SCOPED_TRACE(dim);
+        std::vector<float> base(2 * dim, -1.0f);
+        std::fill(base.begin() + dim, base.end(), 1.0f);
+        auto quantized = SelectedDistanceComputerFactory::create_build_graph(base.data(), 2, dim);
+        quantized->set_query(base.data(), 2);
+
+        const float distance = static_cast<float>(dim * difference * difference);
+        EXPECT_EQ(quantized->symmetric_dis(0, 1), distance);
+        EXPECT_EQ(quantized->symmetric_dis(1, 1), 0.0f);
+        EXPECT_FLOAT_EQ((*quantized)(1, 0) * (scale * scale), 4.0f * dim);
+        EXPECT_EQ((*quantized)(1, 1), 0.0f);
+        const int ids[] = {0, 1, 1, 0};
+        const std::array<float, 4> expected{distance, 0.0f, 0.0f, distance};
+        EXPECT_EQ(batch(*quantized, 1, ids), expected);
+
+        Neighbors::Pool storage;
+        const size_t stride = quantized->code_stride();
+        storage.initialize(stride, {0, 4}, 1 << 20);
+        Neighbors cached(storage, ids, 4, quantized.get(), {0, 1}, true);
+        ASSERT_NE(cached.pool, nullptr);
+        std::vector<uint8_t> scratch(4 * stride);
+        cached.populate_cache(scratch.data());
+        std::vector<float> distances;
+        cached.compute_distance(1, distances);
+        EXPECT_EQ(distances, (std::vector<float>{distance, 0.0f, 0.0f, distance}));
+    }
+}
+
+TEST(SimdQuantizationTest, RejectsDimensionsBeyondSquaredDistanceLimit) {
+    constexpr int dim = 33287;
+    const std::vector<float> data(dim, 0.0f);
+    EXPECT_THROW(SelectedDistanceComputerFactory::create_build_graph(data.data(), 1, dim), std::invalid_argument);
+    EXPECT_THROW(SelectedDistanceComputerFactory::create_cached_graph(data.data(), 1, dim), std::invalid_argument);
+}
+
+#ifdef RNNDESCENT_FORCE_NEON
+TEST(NeonDistanceTest, FP16AndInt16MatchScalarOnOddDimensions) {
+    constexpr int ids[] = {0, 3, 7, 1};
+    for (int dim : {1, 3, 4, 7, 8, 9, 17, 125, 128, 960, 961}) {
+        SCOPED_TRACE(dim);
+        auto base = make_vectors(rows, dim, 9);
+        auto query = make_vectors(queries, dim, 21);
+        for (auto &value : base)
+            value *= 0.83f;
+        for (auto &value : query)
+            value *= 0.83f;
+        std::copy_n(base.data(), dim, query.data());
+
+        rnndescent::SimdDistanceComputerFP16L2 fp16(base.data(), rows, dim);
+        rnndescent::SimdDistanceComputerInt16L2 int16(base.data(), rows, dim);
+        const auto check = [&](rnndescent::MyDistanceComputer &computer, double tolerance) {
+            EXPECT_EQ(computer.row_count(), rows);
+            EXPECT_EQ(computer.dimension(), dim);
+            computer.set_query(query.data(), queries);
+            EXPECT_FLOAT_EQ(computer(0, 0), 0.0f);
+            EXPECT_FLOAT_EQ(computer.symmetric_dis(0, 0), 0.0f);
+            for (int q = 0; q < queries; ++q) {
+                const auto distances = batch(computer, q, ids);
+                for (int k = 0; k < 4; ++k) {
+                    const double expected = scalar_l2(query.data() + q * dim, base.data() + ids[k] * dim, dim);
+                    EXPECT_NEAR(computer(q, ids[k]), expected, tolerance * std::max(1.0, expected));
+                    EXPECT_FLOAT_EQ(distances[k], computer(q, ids[k]));
+                }
+            }
+            const double expected = scalar_l2(base.data(), base.data() + 7 * dim, dim);
+            EXPECT_NEAR(computer.symmetric_dis(0, 7), expected, tolerance * std::max(1.0, expected));
+        };
+        check(fp16, 2e-3);
+        check(int16, 2e-4);
+    }
+}
+#endif
 
 TEST(SimdQuantizationTest, RowOrderMatchesQuantizingACopy) {
     constexpr int dim = 65;
@@ -121,9 +232,6 @@ TEST(SimdQuantizationTest, RowOrderMatchesQuantizingACopy) {
     }
 }
 
-using Neighbors = SelectedNeighborsContainerType;
-constexpr int lane_width = std::is_unsigned_v<Code> ? 64 : 16;
-static_assert(Neighbors::cache_lane_width == lane_width);
 const std::vector<int> remap{3, 6, 2, 7, 0, 4, 1, 5};
 const int edges[rows] = {5, 2, 7, 0, 6, 3, 1, 4};
 
@@ -133,21 +241,22 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
     const auto query = make_vectors(queries, d, 17);
     auto computer = SelectedDistanceComputerFactory::create_cached_graph(base.data(), rows, d);
     computer->set_query(query.data(), queries);
+    const size_t stride = computer->code_stride();
     Neighbors::Pool storage;
-    storage.initialize(d, {0, rows, 2 * rows, 2 * rows}, 1 << 20);
-    Neighbors cached(storage, d, edges, rows, computer.get(), remap, true);
-    Neighbors uncached(storage, d, edges, rows, computer.get(), remap, false);
-    Neighbors empty(storage, d, nullptr, 0, computer.get(), remap, true);
+    storage.initialize(stride, {0, rows, 2 * rows, 2 * rows}, 1 << 20);
+    Neighbors cached(storage, edges, rows, computer.get(), remap, true);
+    Neighbors uncached(storage, edges, rows, computer.get(), remap, false);
+    Neighbors empty(storage, nullptr, 0, computer.get(), remap, true);
     ASSERT_NE(cached.pool, nullptr);
     ASSERT_NE(cached.l2norms, nullptr);
     EXPECT_EQ(uncached.pool, nullptr);
     EXPECT_EQ(uncached.l2norms, nullptr);
-    std::vector<uint8_t> scratch(4 * d);
+    std::vector<uint8_t> scratch(4 * stride);
     cached.populate_cache(scratch.data());
     uncached.populate_cache(scratch.data());
     empty.populate_cache(scratch.data());
 
-    std::vector<std::vector<Code>> codes(rows, std::vector<Code>(d));
+    std::vector<std::vector<Code>> codes(rows, std::vector<Code>(stride));
     for (int i = 0; i < rows; ++i) {
         const int expected_id = remap[edges[i]];
         EXPECT_EQ(cached.edges[i], expected_id);
@@ -157,10 +266,10 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
         EXPECT_EQ(cached.l2norms[i], norm);
     }
     for (int i = 0; i < rows; i += 4) {
-        int offset = i * d;
-        for (int col = 0; col < d; col += lane_width)
+        size_t offset = i * stride;
+        for (size_t col = 0; col < stride; col += lane_width)
             for (int row = 0; row < 4; ++row)
-                for (int k = col; k < std::min(d, col + lane_width); ++k)
+                for (size_t k = col; k < col + lane_width; ++k)
                     EXPECT_EQ(cached.pool[offset++], codes[i + row][k]);
     }
 
@@ -176,18 +285,21 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
 }
 
 TEST(NeighborCacheTest, FallsBackWhenBudgetIsExhausted) {
+    constexpr size_t stride = (65 + lane_width - 1) / lane_width * lane_width;
     Neighbors::Pool disabled_storage;
-    disabled_storage.initialize(65, {0, rows});
-    Neighbors disabled(disabled_storage, 65, edges, rows, nullptr, remap, true);
+    disabled_storage.initialize(stride, {0, rows});
+    Neighbors disabled(disabled_storage, edges, rows, nullptr, remap, true);
     EXPECT_NE(disabled.edges, nullptr);
     EXPECT_EQ(disabled.pool, nullptr);
     EXPECT_EQ(disabled.l2norms, nullptr);
 
     Neighbors::Pool storage;
-    storage.initialize(65, {0, rows, 2 * rows}, 704);
-    // Two 8-neighbor ID slices occupy 128 bytes. One cached slice adds 576 aligned bytes.
-    Neighbors first(storage, 65, edges, rows, nullptr, remap, true);
-    Neighbors second(storage, 65, edges, rows, nullptr, remap, true);
+    constexpr long long cache_bytes = rows * (stride + sizeof(Norm) + sizeof(int));
+    // A cached slice rounded up to pool alignment, plus one aligned ID-only slice.
+    constexpr long long budget = (cache_bytes + 63) / 64 * 64 + 64;
+    storage.initialize(stride, {0, rows, 2 * rows}, budget);
+    Neighbors first(storage, edges, rows, nullptr, remap, true);
+    Neighbors second(storage, edges, rows, nullptr, remap, true);
     EXPECT_NE(first.pool, nullptr);
     EXPECT_NE(second.edges, nullptr);
     EXPECT_EQ(second.pool, nullptr);
