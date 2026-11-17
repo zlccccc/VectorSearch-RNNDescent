@@ -2,31 +2,17 @@
 
 #include <omp.h>
 
-#include <cinttypes>
-#include <cstdio>
-#include <cstdlib>
+#include <chrono>
 #include <memory>
-#include <queue>
-#include <unordered_set>
+#include <vector>
 
-#include "Logger.h"
 #include "Assertions.h"
+#include "Logger.h"
+#include "PCAProjection.h"
 #include "RNNDescent.h"
 #include "Views.h"
-#include <cblas.h>
-#include <faiss/VectorTransform.h>
 
 namespace rnndescent {
-
-using FINTEGER = int;
-
-extern "C" {
-
-/* declare BLAS functions, see http://www.netlib.org/clapack/cblas/ */
-
-int sgemm_(const char *transa, const char *transb, FINTEGER *m, FINTEGER *n, FINTEGER *k, const float *alpha, const float *a, FINTEGER *lda, const float *b,
-           FINTEGER *ldb, float *beta, float *c, FINTEGER *ldc);
-} // namespace
 
 struct IndexRNNDescent {
     // Current implementation only supports L2 distance.
@@ -52,39 +38,10 @@ struct IndexRNNDescent {
     RNNDescent::BuildConfig build_config;
     RNNDescent::SearchConfig search_config;
     PCAConfig pca_config;
-    std::unique_ptr<faiss::PCAMatrix> pca;
+    std::unique_ptr<PCAProjection> pca;
     std::vector<float> pca_query_buffer;
     void rebuild_graph_index(const FloatMatrixView &base_view) {
         rnndescent = std::make_unique<RNNDescent>(base_view, verbose, build_config, search_config);
-    }
-
-    void pca_apply_noalloc(const FloatMatrixView &input, const MutableFloatMatrixView &output) {
-        RNNDESCENT_ASSERT_MSG(pca != nullptr && pca->is_trained, "Transformation not trained yet");
-        input.validate("pca input");
-        output.validate("pca output");
-        RNNDESCENT_ASSERT_MSG(input.row_count() == output.row_count(), "pca input/output row count mismatch");
-        RNNDESCENT_ASSERT_MSG(input.dimension() == pca->d_in, "pca input dimension mismatch");
-        RNNDESCENT_ASSERT_MSG(output.dimension() == pca->d_out, "pca output dimension mismatch");
-        const int n = input.row_count();
-        const float *x = input.data_ptr();
-        float *xt = output.data_ptr();
-
-        float c_factor;
-        if (pca->have_bias) {
-            RNNDESCENT_ASSERT_MSG(pca->b.size() == pca->d_out, "Bias not initialized");
-#pragma omp parallel for
-            for (int i = 0; i < n; i++)
-                memcpy(xt + i * pca->d_out, pca->b.data(), pca->d_out * sizeof(float));
-            c_factor = 1.0;
-        } else {
-            c_factor = 0.0;
-        }
-
-        RNNDESCENT_ASSERT_MSG(pca->A.size() == pca->d_out * pca->d_in, "Transformation matrix not initialized");
-
-        float one = 1;
-        FINTEGER nbiti = pca->d_out, ni = n, di = pca->d_in;
-        sgemm_("Transposed", "Not transposed", &nbiti, &ni, &di, &one, pca->A.data(), &di, x, &di, &c_factor, xt, &nbiti);
     }
 
   public:
@@ -104,23 +61,19 @@ struct IndexRNNDescent {
         const bool use_pca = pca_config.enabled && pca_config.out_dim > 0 && pca_config.out_dim < dimension();
         if (use_pca) {
             Logger::line(verbose, "Train PCA Matrix");
-            pca = std::make_unique<faiss::PCAMatrix>();
-            pca->d_in = dimension();
-            pca->d_out = pca_config.out_dim;
-            pca->train(n, x);
-            std::vector<float> pcaMatrix;
-            pcaMatrix.resize(n * pca->d_out);
-            pca->apply_noalloc(n, x, pcaMatrix.data());
+            const int projected_dim = pca_config.out_dim;
+            pca = std::make_unique<PCAProjection>(base, projected_dim);
+            std::vector<float> projected(static_cast<size_t>(n) * projected_dim);
+            pca->apply(base, MutableFloatMatrixView::from_vector(projected, projected_dim));
             Logger::line(verbose, "End Calc PCA Matrix");
             nowtime = std::chrono::high_resolution_clock::now();
             process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
             prevtime = nowtime;
             Logger::info(verbose, "PCA Process done in %f ms\n", process_time);
-            const int projected_dim = pca->d_out;
-            rebuild_graph_index(FloatMatrixView::from_vector(pcaMatrix, projected_dim));
+            rebuild_graph_index(FloatMatrixView::from_vector(projected, projected_dim));
 
-            const int maxquery = 10000;
-            pca_query_buffer.reserve(pca->d_out * maxquery);
+            constexpr int maxquery = 10000;
+            pca_query_buffer.reserve(static_cast<size_t>(projected_dim) * maxquery);
         } else {
             pca.reset();
             rebuild_graph_index(FloatMatrixView::from_buffer(x, n, input_dimension_));
@@ -151,10 +104,10 @@ struct IndexRNNDescent {
 #endif
 
         refine_distance_computer->set_query(x, n);
-        if (pca && pca->is_trained) {
-            pca_query_buffer.resize(n * pca->d_out);
-            pca_apply_noalloc(FloatMatrixView::from_buffer(x, static_cast<int>(n), dimension()),
-                              MutableFloatMatrixView::from_vector(pca_query_buffer, pca->d_out));
+        if (pca) {
+            const int projected_dim = pca->output_dimension();
+            pca_query_buffer.resize(static_cast<size_t>(n) * projected_dim);
+            pca->apply(queries, MutableFloatMatrixView::from_vector(pca_query_buffer, projected_dim));
             rnndescent->graph_distance_computer->set_query(pca_query_buffer.data(), n);
         } else {
             rnndescent->graph_distance_computer->set_query(x, n);

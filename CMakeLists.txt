@@ -10,16 +10,6 @@ set_property(CACHE RNNDESCENT_SIMD PROPERTY STRINGS native avx2 avx2-uint8 avx-v
 option(RNNDESCENT_PROFILE_SEARCH "Enable detailed graph search timing and counters" OFF)
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
-find_package(faiss CONFIG QUIET)
-if(NOT TARGET faiss)
-    find_path(FAISS_INCLUDE_DIR NAMES faiss/impl/NNDescent.h REQUIRED)
-    find_library(FAISS_LIBRARY NAMES faiss REQUIRED)
-    add_library(faiss UNKNOWN IMPORTED)
-    set_target_properties(faiss PROPERTIES
-        IMPORTED_LOCATION "${FAISS_LIBRARY}"
-        INTERFACE_INCLUDE_DIRECTORIES "${FAISS_INCLUDE_DIR}")
-endif()
-
 find_package(OpenBLAS CONFIG QUIET)
 if(NOT OpenBLAS_FOUND)
     find_path(OpenBLAS_INCLUDE_DIRS NAMES cblas.h PATH_SUFFIXES openblas openblas-pthread REQUIRED)
@@ -34,7 +24,7 @@ endif()
 target_include_directories(rnndescent_build_options INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}" ${OpenBLAS_INCLUDE_DIRS})
 target_link_libraries(rnndescent_build_options INTERFACE
-    faiss ${OpenBLAS_LIBRARIES} OpenMP::OpenMP_CXX)
+    ${OpenBLAS_LIBRARIES} OpenMP::OpenMP_CXX)
 
 string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" processor)
 if(processor MATCHES "^(x86_64|amd64)$")
@@ -65,7 +55,7 @@ else()
     message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
-add_library(rnndescent_solution STATIC solution/solution.cpp)
+add_library(rnndescent_solution STATIC solution/solution.cpp solution/rnndescent/PCAProjection.cpp)
 target_link_libraries(rnndescent_solution PUBLIC rnndescent_build_options)
 
 add_executable(vector_search_app main.cpp)

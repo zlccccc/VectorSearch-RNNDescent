@@ -2,8 +2,6 @@
 #include <cassert>
 #include <cstdint>
 #include <stdexcept>
-#include <faiss/impl/DistanceComputer.h>
-#include <faiss/impl/NNDescent.h>
 
 namespace rnndescent {
 

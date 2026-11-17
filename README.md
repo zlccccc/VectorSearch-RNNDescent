@@ -8,23 +8,11 @@
 
 ## 构建
 
-在 Linux 或 WSL 2 中使用支持 C++17 和 OpenMP 的编译器、CMake 3.23 或更新版本、Faiss 和 OpenBLAS。以下是 Ubuntu 24.04 的构建示例。已有 Faiss 安装时，把 `CMAKE_PREFIX_PATH` 指向其安装前缀即可。
+在 Linux 或 WSL 2 中使用支持 C++17 和 OpenMP 的编译器、CMake 3.23 或更新版本，以及包含 LAPACK 的 OpenBLAS。以下是 Ubuntu 24.04 的构建示例。程序位于 `build/algorithm`。
 
 ```bash
-sudo apt install build-essential cmake git libopenblas-dev
-git clone --depth 1 --branch v1.8.0 https://github.com/facebookresearch/faiss.git /tmp/rnndescent-faiss
-cmake -S /tmp/rnndescent-faiss -B /tmp/rnndescent-faiss/build \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local/faiss" \
-  -DFAISS_ENABLE_GPU=OFF -DFAISS_ENABLE_PYTHON=OFF -DBUILD_TESTING=OFF \
-  -DBUILD_SHARED_LIBS=ON -DBLA_VENDOR=OpenBLAS
-cmake --build /tmp/rnndescent-faiss/build --parallel 4
-cmake --install /tmp/rnndescent-faiss/build
-```
-
-回到本项目根目录构建，程序位于 `build/algorithm`。
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$HOME/.local/faiss"
+sudo apt install build-essential cmake libopenblas-dev libgtest-dev libgmock-dev
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4
 ```
 
@@ -76,6 +64,7 @@ ctest --test-dir build -R RecallTest --output-on-failure
 |---|---|
 | `SimdDistanceTest`、`SimdQuantizationTest` | 对照标量结果校验 FP32、INT8/UINT8 距离，覆盖单条、四条一组、建图距离、非对齐维度和常量向量 |
 | `NeighborCacheLayoutTest`、`NeighborCacheTest` | 校验四邻居 SIMD 数据布局、ID 重映射、预算用尽时回退以及缓存开关下的距离一致性 |
+| `PCAProjectionTest` | 校验协方差和 Gram 矩阵两条训练路径的主方向与中心化 |
 | `BenchmarkCliTest`、`BenchmarkDataTest` | 校验 CLI、显式随机模式、邻居池预算，以及 fvecs/bvecs/ivecs 的读取和坏文件处理 |
 | `SolutionTest` | 小数据集建图、查询、重建和重置，用穷举校验 Top K ID 和精排距离，覆盖 PCA、缓存开关和两个索引交替查询 |
 | `RecallTest` | 固定随机种子，限制搜索预算，校验 Recall`10、缓存开关下的结果一致性和精排距离 |

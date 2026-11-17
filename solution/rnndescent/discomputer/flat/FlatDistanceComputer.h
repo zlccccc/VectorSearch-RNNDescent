@@ -3,8 +3,7 @@
 #include "../MyDistanceComputer.h"
 
 #include <cstddef>
-#include <faiss/MetricType.h>
-#include <faiss/utils/distances.h>
+#include <cstdint>
 #include <type_traits>
 #include <vector>
 
@@ -30,11 +29,15 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
     using Rows = std::conditional_t<uses_fp32_rows, const float *, std::vector<Code>>;
 
   public:
-    FlatDistanceComputer(const float *input, faiss::idx_t count, int dim) : n(count), d(dim) {
+    FlatDistanceComputer(const float *input, int64_t count, int dim) : n(count), d(dim) {
         if constexpr (uses_fp32_rows) {
             matrix = input;
             matrix_norms.resize(n);
-            faiss::fvec_norms_L2sqr(matrix_norms.data(), input, d, n);
+#pragma omp parallel for if (n > 10000)
+            for (size_t i = 0; i < n; ++i) {
+                const auto *row = input + i * d;
+                matrix_norms[i] = Kernel::dot(row, row, d);
+            }
         } else {
             if constexpr (std::is_integral_v<Code>)
                 kernel.train(input, n * d);
