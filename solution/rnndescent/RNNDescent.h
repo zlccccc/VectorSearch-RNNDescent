@@ -385,13 +385,11 @@ struct RNNDescent {
         threadRetset.resize(safe_search_config.num_threads);
         neighborDistance.resize(safe_search_config.num_threads);
         threadUsefulset.resize(safe_search_config.num_threads);
-        threadFinalset.resize(safe_search_config.num_threads);
         for (int i = 0; i < safe_search_config.num_threads; i++) {
             threadVt[i].init(n);
             threadRetset[i].reserve(std::max(safe_search_config.num_initialize, safe_search_config.search_L));
             neighborDistance[i].reserve(safe_search_config.search_L);
-            threadFinalset[i].reserve(safe_search_config.search_L);
-            threadUsefulset[i].reserve(safe_build_config.K0 * safe_search_config.beam_size + 1);
+            threadUsefulset[i].reserve(safe_build_config.K0 * safe_search_config.beam_size);
         }
     }
 
@@ -400,7 +398,6 @@ struct RNNDescent {
     std::vector<MyVisitedTable> threadVt;                  // threadRetset和之前的retset起到的价值差不多
     std::vector<std::vector<SingleNeighbor>> threadRetset; // threadRetset和之前的retset起到的价值差不多
     std::vector<std::vector<SingleNeighbor>> threadUsefulset;
-    std::vector<std::vector<SingleNeighbor>> threadFinalset;
     std::vector<std::vector<float>> neighborDistance;
 
     void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree,
@@ -436,14 +433,12 @@ struct RNNDescent {
 
         auto &retset = threadRetset[threadid];
         auto &usefulset = threadUsefulset[threadid];
-        auto &finalset = threadFinalset[threadid];
         auto &vt = threadVt[threadid];
         // Score the entry points in batches of four.
         if (num_initialize % 4 != 0)
             throw std::runtime_error("num_initialize must be a multiple of 4");
         retset.resize(num_initialize);
-        usefulset.resize(max_degree * beam_size + 1);
-        finalset.resize(search_L);
+        usefulset.resize(max_degree * beam_size);
         for (int i = 0; i < num_initialize; i += 4) {
             vt.set(i + 0);
             vt.set(i + 1);
@@ -470,11 +465,43 @@ struct RNNDescent {
         int for_count = 0, calculate_distance_count = 0, useful_count = 0;
 #endif
 
+        const auto merge_candidates_from_end = [](SingleNeighbor *pool, int length, const SingleNeighbor *incoming,
+                                                  const SingleNeighbor *incoming_end) {
+            int kept = 0;
+            int upper = std::min(length, static_cast<int>(incoming_end - incoming));
+            // The caller skips empty batches. Try the largest possible count first.
+            // The last retained new candidate must beat the first evicted old candidate.
+            if (incoming[upper - 1] < pool[length - upper])
+                kept = upper;
+            else
+                --upper;
+
+            while (kept < upper) {
+                const int middle = kept + (upper - kept + 1) / 2;
+                if (incoming[middle - 1] < pool[length - middle])
+                    kept = middle;
+                else
+                    upper = middle - 1;
+            }
+
+            auto *current = pool + length - kept;
+            auto *out = pool + length;
+            const auto *next = incoming + kept;
+            // Read and write from the tail. On ties, place the new candidate after the old one.
+            while (next != incoming) {
+                if (current != pool && next[-1] < current[-1])
+                    *--out = *--current;
+                else
+                    *--out = *--next;
+            }
+            // The prefix before out stayed in place.
+            return static_cast<int>(out - pool);
+        };
+
         int smallest_pos = 0;
-        SingleNeighbor *usefulsetStart = usefulset.data();
         // Continue until every candidate in the active pool has been expanded.
         while (smallest_pos < search_L) {
-            SingleNeighbor *usefulsetEnd = usefulsetStart;
+            SingleNeighbor *usefulsetEnd = usefulset.data();
             for (int beam = 0; smallest_pos < search_L && beam < beam_size; smallest_pos++) {
                 if (retset[smallest_pos].id & 0x80000000)
                     continue;
@@ -514,9 +541,7 @@ struct RNNDescent {
                         if (vt.get(neighbors.edges[k]))
                             continue;
                         vt.set(neighbors.edges[k]);
-                        usefulsetEnd->id = neighbors.edges[k];
-                        usefulsetEnd->distance = neighborDistance[threadid][k];
-                        usefulsetEnd++;
+                        *usefulsetEnd++ = {neighbors.edges[k], neighborDistance[threadid][k]};
                     }
                 }
 #ifdef INTERNAL_CLOCK_TEST
@@ -527,13 +552,11 @@ struct RNNDescent {
             }
 #ifdef INTERNAL_CLOCK_TEST
             bfs_length++;
-            useful_count += usefulsetEnd - usefulsetStart;
+            useful_count += usefulsetEnd - usefulset.data();
 #endif
-            if (usefulsetEnd == usefulsetStart)
+            if (usefulsetEnd == usefulset.data())
                 continue;
-            {
-                std::sort(usefulsetStart, usefulsetEnd);
-            }
+            std::sort(usefulset.data(), usefulsetEnd);
 
 #ifdef INTERNAL_CLOCK_TEST
             nowtime = std::chrono::high_resolution_clock::now();
@@ -541,22 +564,8 @@ struct RNNDescent {
             prevtime = nowtime;
 #endif
 
-            // Merge new candidates into the top L, keeping existing candidates first on ties.
-            auto it_new = usefulsetStart, it_initial = retset.data(), it_finalset = finalset.data();
-            usefulsetEnd->id = 0x3f3f3f3f;
-            usefulsetEnd->distance = INFINITY;
-            while (it_finalset != finalset.data() + search_L) {
-                if (it_new->distance < it_initial->distance) {
-                    int size = it_finalset - finalset.data();
-                    if (size < smallest_pos)
-                        smallest_pos = size;
-                    *it_finalset++ = *it_new++;
-                } else
-                    *it_finalset++ = *it_initial++;
-            }
-
-            memcpy(&retset[0], &finalset[0], sizeof(SingleNeighbor) * search_L);
-
+            const int first_changed = merge_candidates_from_end(retset.data(), search_L, usefulset.data(), usefulsetEnd);
+            smallest_pos = std::min(smallest_pos, first_changed);
         }
 
         int refinemax = std::min(refine_max, (int)retset.size());
