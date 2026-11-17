@@ -8,7 +8,6 @@ namespace rnndescent {
 template <class Kernel> struct NeonDotProduct : Kernel {
     using Code = typename Kernel::Code;
     using Dot = typename Kernel::Dot;
-    static constexpr bool prefetch_norms = false;
 
     static Dot dot(const Code *a, const Code *b, size_t d) {
         auto sum = Kernel::zero();

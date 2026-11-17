@@ -5,15 +5,6 @@
 #include <arm_neon.h>
 #include <array>
 
-namespace {
-
-inline int8x16_t Load(const int8_t *p) {
-    __builtin_prefetch(p + 64, 0, 2);
-    return vld1q_s8(p);
-}
-
-} // namespace
-
 namespace rnndescent {
 
 struct NeonInt8DotProduct {
@@ -23,7 +14,7 @@ struct NeonInt8DotProduct {
     static int32_t dot(const int8_t *a, const int8_t *b, size_t stride) {
         int32x4_t sums = vdupq_n_s32(0);
         for (size_t i = 0; i < stride; i += block_bytes) {
-            sums = vdotq_s32(sums, Load(a + i), Load(b + i));
+            sums = vdotq_s32(sums, vld1q_s8(a + i), vld1q_s8(b + i));
         }
         return vaddvq_s32(sums);
     }
@@ -38,11 +29,6 @@ struct NeonInt8DotProduct {
         const size_t unrolled_size = stride - stride % 64;
         size_t i = 0;
         for (; i < unrolled_size; i += 64) {
-            __builtin_prefetch(q + i + 64, 0, 2);
-            __builtin_prefetch(x0 + i + 64, 0, 2);
-            __builtin_prefetch(x1 + i + 64, 0, 2);
-            __builtin_prefetch(x2 + i + 64, 0, 2);
-            __builtin_prefetch(x3 + i + 64, 0, 2);
             loadq = vld1q_s8(q + i);
             sums0 = vdotq_s32(sums0, vld1q_s8(x0 + i + 00), loadq);
             sums1 = vdotq_s32(sums1, vld1q_s8(x1 + i + 00), loadq);

@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <faiss/MetricType.h>
 #include <faiss/utils/distances.h>
-#include <faiss/utils/prefetch.h>
 #include <type_traits>
 #include <vector>
 
@@ -14,7 +13,6 @@ namespace rnndescent {
 struct FP32DistanceKernel {
     using Code = float;
     using Dot = float;
-    static constexpr bool prefetch_norms = true;
 
     static float query_norm(const float *row, size_t dim) {
         float norm = 0.0f;
@@ -71,12 +69,6 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
 
     void distances_batch_4(int idq, int i0, int i1, int i2, int i3, float &dis0, float &dis1, float &dis2, float &dis3) override {
         const auto *base = data(matrix);
-        if constexpr (Kernel::prefetch_norms) {
-            prefetch_L2(matrix_norms.data() + i0);
-            prefetch_L2(matrix_norms.data() + i1);
-            prefetch_L2(matrix_norms.data() + i2);
-            prefetch_L2(matrix_norms.data() + i3);
-        }
         const auto dots = Kernel::dot4(data(query) + idq * d, base + i0 * d, base + i1 * d, base + i2 * d, base + i3 * d, d);
         const auto norm = query_norms[idq];
         dis0 = squared_distance(norm + matrix_norms[i0], dots[0]);

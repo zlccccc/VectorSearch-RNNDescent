@@ -43,11 +43,6 @@ struct Avx2Int8DotProduct {
         const size_t unrolled_size = stride - stride % unroll_bytes;
         size_t i = 0;
         for (; i < unrolled_size; i += unroll_bytes) {
-            __builtin_prefetch(q + i + 64, 0, 2);
-            __builtin_prefetch(x0 + i + 64, 0, 2);
-            __builtin_prefetch(x1 + i + 64, 0, 2);
-            __builtin_prefetch(x2 + i + 64, 0, 2);
-            __builtin_prefetch(x3 + i + 64, 0, 2);
             loadq = _mm_loadu_si128((__m128i const *)(q + i));
             sums0 = _mm256_add_epi32(sums0, Correlation(_mm_loadu_si128((__m128i const *)(x0 + i)), loadq));
             sums1 = _mm256_add_epi32(sums1, Correlation(_mm_loadu_si128((__m128i const *)(x1 + i)), loadq));
@@ -93,10 +88,8 @@ struct Avx2Int8DotProduct {
             __m256i sums3 = _mm256_setzero_si256();
             size_t i = 0;
             for (; i < unrolled_size; i += unroll_bytes) {
-                __builtin_prefetch(q + i + 64, 0, 2);
 #pragma unroll
                 for (int k = 0; k < 64; k += 16) {
-                    __builtin_prefetch(x + (i + k) * 4 + 64, 0, 2);
                     __m128i loadq = _mm_loadu_si128((__m128i const *)(q + i + k));
                     sums0 = _mm256_add_epi32(sums0, Correlation(_mm_loadu_si128((__m128i const *)(x + (i + k) * 4 + 0)), loadq));
                     sums1 = _mm256_add_epi32(sums1, Correlation(_mm_loadu_si128((__m128i const *)(x + (i + k) * 4 + 16)), loadq));
