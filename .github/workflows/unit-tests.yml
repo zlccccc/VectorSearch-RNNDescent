@@ -1,0 +1,44 @@
+name: Unit tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopenblas-dev libgtest-dev libgmock-dev
+
+      - name: Build Faiss 1.8.0
+        run: |
+          git clone --depth 1 --branch v1.8.0 https://github.com/facebookresearch/faiss.git "$RUNNER_TEMP/faiss-src"
+          cmake -S "$RUNNER_TEMP/faiss-src" -B "$RUNNER_TEMP/faiss-build" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/faiss" \
+            -DFAISS_ENABLE_GPU=OFF -DFAISS_ENABLE_PYTHON=OFF -DBUILD_TESTING=OFF \
+            -DBUILD_SHARED_LIBS=ON -DBLA_VENDOR=OpenBLAS
+          cmake --build "$RUNNER_TEMP/faiss-build" --target faiss --parallel 4
+          cmake --install "$RUNNER_TEMP/faiss-build"
+
+      - name: Build the AVX2 unit tests
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRNNDESCENT_SIMD=avx2 \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/faiss" -DBUILD_TESTING=ON
+          cmake --build build --target rnndescent_unit_tests --parallel 4
+
+      - name: Run unit tests
+        run: ctest --test-dir build -L '^unit$' --output-on-failure --no-tests=error
