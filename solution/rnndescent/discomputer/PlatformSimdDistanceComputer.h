@@ -10,29 +10,29 @@
 //   RNNDESCENT_FORCE_NEON
 
 #if defined(RNNDESCENT_FORCE_AVX_VNNI)
-#include "Avx2SimdDistanceComputerFP32.h"
-#include "AvxVnniSimdDistanceComputerUInt8.h"
+#include "flat/Avx2SimdDistanceComputerFP32.h"
+#include "quantized/AvxVnniSimdDistanceComputerUInt8.h"
 #elif defined(RNNDESCENT_FORCE_AVX2_UINT8)
-#include "Avx2SimdDistanceComputerFP32.h"
-#include "Avx2SimdDistanceComputerUInt8.h"
+#include "flat/Avx2SimdDistanceComputerFP32.h"
+#include "quantized/Avx2SimdDistanceComputerUInt8.h"
 #elif defined(RNNDESCENT_FORCE_AVX512) || \
     (!defined(RNNDESCENT_FORCE_AVX2) && !defined(RNNDESCENT_FORCE_NEON) && \
      defined(__AVX512F__) && defined(__AVX512BW__) && defined(__AVX512VL__) && defined(__AVX512VNNI__))
 #define RNNDESCENT_USE_AVX512
-#include "Avx512SimdDistanceComputerFP32.h"
-#include "Avx512SimdDistanceComputerUInt8.h"
+#include "flat/Avx512SimdDistanceComputerFP32.h"
+#include "quantized/Avx512SimdDistanceComputerUInt8.h"
 #elif defined(RNNDESCENT_FORCE_AVX2)
-#include "Avx2SimdDistanceComputerFP32.h"
-#include "Avx2SimdDistanceComputerInt8.h"
+#include "flat/Avx2SimdDistanceComputerFP32.h"
+#include "quantized/Avx2SimdDistanceComputerInt8.h"
 #elif defined(RNNDESCENT_FORCE_NEON)
-#include "NeonSimdDistanceComputerFP32.h"
-#include "NeonSimdDistanceComputerInt8.h"
+#include "flat/NeonSimdDistanceComputerFP32.h"
+#include "quantized/NeonSimdDistanceComputerInt8.h"
 #elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
-#include "Avx2SimdDistanceComputerFP32.h"
-#include "Avx2SimdDistanceComputerInt8.h"
+#include "flat/Avx2SimdDistanceComputerFP32.h"
+#include "quantized/Avx2SimdDistanceComputerInt8.h"
 #elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM64)
-#include "NeonSimdDistanceComputerFP32.h"
-#include "NeonSimdDistanceComputerInt8.h"
+#include "flat/NeonSimdDistanceComputerFP32.h"
+#include "quantized/NeonSimdDistanceComputerInt8.h"
 #else
 #error "Unsupported platform for SIMD distance computer. Please add a fallback implementation."
 #endif

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../Logger.h"
-#include "MyDistanceComputer.h"
+#include "../../Logger.h"
+#include "../MyDistanceComputer.h"
+#include "../utils.h"
 #include "NeighborsStorageBase.h"
-#include "utils.h"
 
 #include <algorithm>
 #include <cmath>

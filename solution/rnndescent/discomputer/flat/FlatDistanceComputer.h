@@ -1,6 +1,6 @@
 #pragma once
 
-#include "MyDistanceComputer.h"
+#include "../MyDistanceComputer.h"
 
 #include <cstddef>
 #include <faiss/MetricType.h>

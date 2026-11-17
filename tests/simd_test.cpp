@@ -1,10 +1,10 @@
 #include "ReferenceDistance.h"
 #include "solution/rnndescent/discomputer/PlatformSimdDistanceComputer.h"
-#include "solution/rnndescent/discomputer/CblasDistComputerFP32.h"
+#include "solution/rnndescent/discomputer/flat/CblasDistComputerFP32.h"
 
 #ifdef RNNDESCENT_FORCE_NEON
-#include "solution/rnndescent/discomputer/NeonSimdDistanceComputerFP16.h"
-#include "solution/rnndescent/discomputer/NeonSimdDistanceComputerInt16.h"
+#include "solution/rnndescent/discomputer/flat/NeonSimdDistanceComputerFP16.h"
+#include "solution/rnndescent/discomputer/flat/NeonSimdDistanceComputerInt16.h"
 #endif
 
 #include <algorithm>

@@ -43,7 +43,7 @@ cmake --build build --parallel 4
 
 ### 量化算距
 
-[QuantizedDistanceComputer.h](solution/rnndescent/discomputer/QuantizedDistanceComputer.h) 中的 `QuantizedDistanceComputer<Kernel>` 负责训练量化参数、按 BFS 顺序写入底库码、量化查询，并把点积转成距离分数。`QuantizedNeighbors<Kernel>` 用同一个 `Kernel` 解释邻居缓存，未缓存的邻居通过四路算距接口读取底库码。
+[QuantizedDistanceComputer.h](solution/rnndescent/discomputer/quantized/QuantizedDistanceComputer.h) 中的 `QuantizedDistanceComputer<Kernel>` 负责训练量化参数、按 BFS 顺序写入底库码、量化查询，并把点积转成距离分数。`QuantizedNeighbors<Kernel>` 用同一个 `Kernel` 解释邻居缓存，未缓存的邻居通过四路算距接口读取底库码。
 
 | 构建目标 | 量化码 | 每块读取字节数 | 点积内核 |
 |---|---|---:|---|
@@ -59,7 +59,7 @@ cmake --build build --parallel 4
 
 `dimension()` 返回逻辑维度，`code_stride()` 返回补零后的行宽。邻居缓存把四条向量的第一个 SIMD 块放在一起，再放四条向量的下一块。新增内核时，让连续读和缓存读都使用 `block_bytes`，然后在平台选择中给算距和邻居缓存绑定同一个 `Kernel`。模板在编译期绑定内核，查询入口仍使用 `MyDistanceComputer` 的接口。
 
-AVX2、AVX512、NEON、CBLAS 的 FP32 算距，以及 NEON 的 FP16 和 INT16，都由 [FlatDistanceComputer.h](solution/rnndescent/discomputer/FlatDistanceComputer.h) 管理查询、平方范数和平方 L2 计算。FP32 直接读取原始行，作为默认精排。FP16 存半精度并用 FP32 累加。INT16 用 64 位整数累加，再乘量化步长的平方换回输入单位。三种 NEON 实现共用向量点积循环和逐元素尾部处理。邻居缓存由前面的 8 位量化实现管理。
+AVX2、AVX512、NEON、CBLAS 的 FP32 算距，以及 NEON 的 FP16 和 INT16，都由 [FlatDistanceComputer.h](solution/rnndescent/discomputer/flat/FlatDistanceComputer.h) 管理查询、平方范数和平方 L2 计算。FP32 直接读取原始行，作为默认精排。FP16 存半精度并用 FP32 累加。INT16 用 64 位整数累加，再乘量化步长的平方换回输入单位。三种 NEON 实现共用向量点积循环和逐元素尾部处理。邻居缓存由前面的 8 位量化实现管理。
 
 ## 测试
 
@@ -130,7 +130,7 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 ./build/algorithm \
 
 - `benchmark/` 提供命令行、数据读取、评估和报告。
 - `solution/solution.h` 提供 `Solution::build`、`search` 和 `reset`。底库向量供 FP32 精排引用，需在索引使用期间保持有效。结果按查询行连续存储，距离可通过 `distance_buffer()` 读取。更新底库需要重新构建。
-- `solution/rnndescent/discomputer/` 包含平台距离内核和邻居池，`tests/` 包含回归测试。
+- `solution/rnndescent/discomputer/` 包含共用测距接口和平台入口。`flat/` 下是 FP32、FP16 和 INT16 的测距实现，`quantized/` 下是 INT8、UINT8 测距和邻居池。`tests/` 包含回归测试。
 
 ## 商用许可
 
