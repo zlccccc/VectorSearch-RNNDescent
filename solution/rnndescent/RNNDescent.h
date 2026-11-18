@@ -603,7 +603,6 @@ struct RNNDescent {
 
                     neighbors.emplace_back(id, dist, true);
                 }
-                std::make_heap(neighbors.begin(), neighbors.end());
             }
         }
     }
@@ -720,32 +719,10 @@ struct RNNDescent {
         }
     }
 
-    void insert_nn(KNNGraph &graph, int id, int nn_id, float distance, bool flag) {
-        {
-            std::lock_guard<std::mutex> guard(node_locks_[id]);
-            graph[id].emplace_back(nn_id, distance, flag);
-
-            // if (distance > graph[id].front().distance)
-            //     return;
-            // for (int i = 0; i < graph[id].size(); i++) {
-            //     if (id == graph[id][i].id())
-            //         return;
-            // }
-            // if (graph[id].size() < graph[id].capacity()) {
-            //     graph[id].push_back(XNeighbor(id, distance, flag));
-            //     std::push_heap(graph[id].begin(), graph[id].end());
-            // } else {
-            //     std::pop_heap(graph[id].begin(), graph[id].end());
-            //     graph[id][graph[id].size() - 1] = XNeighbor(id, distance, flag);
-            //     std::push_heap(graph[id].begin(), graph[id].end());
-            // }
-
-            // for (int i = 0; i < graph[id].size(); i++) {
-            //     if (id == graph[id][i].id())
-            //         return;
-            // }
-            // graph[id].emplace_back(nn_id, distance, flag);
-        }
+    void insert_nn(KNNGraph &graph, int node_id, int neighbor_id, float distance, bool flag) {
+        // Append under the destination lock. update_neighbors batches sorting and deduplication.
+        std::lock_guard<std::mutex> guard(node_locks_[node_id]);
+        graph[node_id].emplace_back(neighbor_id, distance, flag);
     }
 
     std::vector<SelectedNeighborsContainerType> final_graph_neighbors;
