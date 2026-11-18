@@ -2,6 +2,17 @@
 
 本项目实现了基于 RNNDescent 的近似最近邻检索，使用平方 L2 距离。构建阶段迭代生成近邻图并重排节点。查询阶段用 8 位量化向量在图中筛选候选，再用原始 FP32 向量重新排序。
 
+后续优化优先减少数据读取和搬运，向量及邻居向量缓存尽量使用 INT8/UINT8 存储。计算按速度选择精度，在目标 Recall 下以端到端性能决定取舍。具体约定见 [开发与验证](docs/development.md)。
+
+| 内容 | 文档 |
+|---|---|
+| 运行模式、参数默认值、数据集预设和线程配置 | [参数配置](docs/configuration.md) |
+| C++ 调用示例、输入输出、内存所有权和重建 | [C++ 接口](docs/api.md) |
+| 建图、PCA、搜索、候选合并和内存组成 | [算法与数据流](docs/architecture.md) |
+| 距离公式、SIMD 内核和邻居缓存扩展 | [测距实现](solution/rnndescent/discomputer/README.md) |
+| 本地测试、GitHub Actions、构建问题定位 | [开发与验证](docs/development.md) |
+| 数据格式、下载、SIFT 与 GIST 测量方法 | [Benchmark 使用](benches/README.md) |
+
 ## 许可声明
 
 本项目（外部调试版本）的知识产权归华为公司所有，未经授权不得用于商业目的。请参阅文末的[商用许可](#商用许可)。
@@ -14,7 +25,18 @@
 sudo apt install build-essential cmake libopenblas-dev libgtest-dev libgmock-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 4
+ctest --test-dir build --output-on-failure --no-tests=error
 ```
+
+下面的随机数据示例可直接验证构建和查询入口。运行命令均从仓库根目录执行。
+
+~~~bash
+OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
+  ./build/algorithm --mode random --data-size 10000 --dim 128 \
+  --test-iter 100 --topk 10 --repeat 3 --exact-check-queries 20 \
+  --S 32 --R 64 --K0 16 --num-initialize 64 --search-L 48 --refine-max 48 \
+  --warmup-topk 0 --output-iter 0
+~~~
 
 用 `-DRNNDESCENT_SIMD=<值>` 选择编译目标。切换指令集时建议用不同的构建目录，以便分别保留可执行文件和测试结果。
 
@@ -67,9 +89,11 @@ ctest --test-dir build -R RecallTest --output-on-failure
 | `PCAProjectionTest` | 校验协方差和 Gram 矩阵两条训练路径的主方向与中心化 |
 | `BenchmarkCliTest`、`BenchmarkDataTest` | 校验 CLI、显式随机模式、邻居池预算，以及 fvecs/bvecs/ivecs 的读取和坏文件处理 |
 | `SolutionTest` | 小数据集建图、查询、重建和重置，用穷举校验 Top K ID 和精排距离，覆盖 PCA、缓存开关和两个索引交替查询 |
-| `RecallTest` | 固定随机种子，限制搜索预算，校验 Recall`10、缓存开关下的结果一致性和精排距离 |
+| `RecallTest` | 固定随机种子，限制搜索预算，校验 Recall@10、缓存开关下的结果一致性和精排距离 |
 
 只构建 benchmark 程序时，可在配置阶段传入 `-DBUILD_TESTING=OFF` 跳过测试依赖。
+
+[GitHub Actions](.github/workflows/unit-tests.yml) 在推送到 `main`、面向 `main` 的 PR 和手动触发时，在 Ubuntu 24.04 上构建 AVX2 版本并运行 `unit` 标签的测试。本地完整测试还包含 `integration` 标签下的索引生命周期和召回率验证。
 
 ## Benchmark
 
