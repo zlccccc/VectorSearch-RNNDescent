@@ -55,7 +55,10 @@ else()
     message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
-add_library(rnndescent_solution STATIC solution/solution.cpp solution/rnndescent/PCAProjection.cpp)
+add_library(rnndescent_solution STATIC
+    solution/solution.cpp
+    solution/rnndescent/CandidateReranker.cpp
+    solution/rnndescent/PCAProjection.cpp)
 target_link_libraries(rnndescent_solution PUBLIC rnndescent_build_options)
 
 add_executable(vector_search_app main.cpp)

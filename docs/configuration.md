@@ -35,7 +35,8 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 | `--num-initialize` | `SearchConfig::num_initialize` | 建图后选出的查询入口数，也影响 BFS 重排的起点 |
 | `--search-L` | `SearchConfig::search_L` | 搜索中保持有序的候选池宽度 |
 | `--beam-size` | `SearchConfig::beam_size` | 收集一批新候选前最多展开的节点数 |
-| `--refine-max` | `SearchConfig::refine_max` | 查询结束时从候选缓冲中取出进行原始 FP32 精排的数量 |
+| `--refine-max` | `SearchConfig::refine_max` | 查询结束时从候选池中取出、参与原始维度排序的数量 |
+| `--fp32-refine-max` | `SearchConfig::fp32_refine_max` | 按原始维度 8 位距离选择后，做 FP32 精排的数量；默认 32，0 表示全部候选都做 FP32 精排 |
 | `--neighbor-pool-gb` | `BuildConfig::neighbor_pool_size_limit_bytes` | 邻接 ID 与可选邻居向量缓存的池预算，CLI 单位为整数 GiB |
 | `--pca-out` | `PCAConfig::out_dim` | 开启 PCA 并指定查图维度 |
 | `--disable-pca` | `PCAConfig::enabled` | 使用原始维度建图和查图 |
@@ -43,7 +44,9 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 
 搜索会将 `search_L` 和 `refine_max` 至少提高到 Top K，将入口数至少提高到 `search_L`，再根据底库条数和四路算距要求调整入口数。预设日志和报告记录输入配置，具体归一化规则见 [RNNDescent.h](../solution/rnndescent/RNNDescent.h) 中的 `sanitize_search_config`。实际使用时可以显式设置四的倍数入口，并取 `topk <= refine_max <= search_L <= num_initialize`，让预算含义直接对应候选池。
 
-搜索会持续处理当前候选池中的未展开节点。扩大 `search_L` 会同时影响候选保留和搜索工作量。`beam_size` 会影响候选合并频率与搜索顺序，应结合 Recall@10 比较。最终精排量由 `refine_max` 单独控制。
+搜索会持续处理当前候选池中的未展开节点。扩大 `search_L` 会同时影响候选保留和搜索工作量。`beam_size` 会影响候选合并频率与搜索顺序，应结合 Recall@10 比较。`refine_max` 控制原始维度排序的候选量，`fp32_refine_max` 控制最后的 FP32 精排量。实际 FP32 数量至少为 Top K，并且不超过实际候选数；候选数不超过 FP32 数量时，直接做 FP32 精排。
+
+启用 PCA 时，先对候选计算原始维度的 INT8/UINT8 距离，再保留 FP32 精排候选。不开 PCA 时，查图已经计算相同原始维度的量化距离，直接复用这些分数。`--fp32-refine-max 0` 跳过量化筛选，恢复完整 FP32 精排。调整这个数量会影响 Recall，比较性能时需要分别调参到相同目标精度。
 
 PCA 在 `enabled=true` 且 `0 < out_dim < 输入维度` 时启用，训练要求 `out_dim <= 底库条数`。`--pca-out 64` 同时设置开关与维度。`--enable-pca` 只设置开关，需要配合有效的输出维度。精排使用原始向量与原始维度。
 
@@ -58,7 +61,7 @@ PCA 在 `enabled=true` 且 `0 < out_dim < 输入维度` 时启用，训练要求
 | sift100k | 64 | 96 | 24 | 80 | 72 | 4 | 24 |
 | gist | 320 | 256 | 64 | 3072 | 1152 | 8 | 1024 |
 
-表中的入口数为归一化前的配置值。所有预设的 `T1=4`、`T2=15`，PCA 默认关闭，邻居池预算默认 0 GiB。名称按小写匹配，例如目录名为 `gist1m` 时可加 `--dataset-name gist`。预设值用于启动测量，目标 Recall 由实际数据与 ground truth 校验。
+表中的入口数为归一化前的配置值。所有预设的 `T1=4`、`T2=15`，FP32 精排数量默认 32，PCA 默认关闭，邻居池预算默认 0 GiB。名称按小写匹配，例如目录名为 `gist1m` 时可加 `--dataset-name gist`。预设值用于启动测量，目标 Recall 由实际数据与 ground truth 校验。
 
 `BuildConfig` 的 `T1`、`T2`、`random_seed`、`save_neighbor`、`random_init` 可通过 C++ 设置。CLI 提供上表列出的建图和搜索覆盖项。
 

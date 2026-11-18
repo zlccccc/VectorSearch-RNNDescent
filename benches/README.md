@@ -54,11 +54,11 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
   ./build/algorithm --mode dataset --dataset-name gist \
   --dataset-dir benches/datasets/gist --topk 10 --repeat 7 \
   --S 320 --R 256 --K0 64 --num-initialize 3072 \
-  --search-L 768 --beam-size 8 --refine-max 768 \
+  --search-L 768 --beam-size 8 --refine-max 768 --fp32-refine-max 32 \
   --pca-out 64 --neighbor-pool-gb 4 --warmup-topk 0 --output-iter 0
 ~~~
 
-这组参数是完整 FP32 精排路径的测量起点。根据当前数据的 ground truth 调整 `search_L`、`refine_max` 等参数，达到目标 Recall@10 后比较 QPS。多线程建图的调度会影响图结构，记录相同种子之外，还需保存每轮的 Recall 与缓存覆盖。
+这组参数先用原始 960 维 INT8/UINT8 排序，再对 Top32 做 FP32 精排。用 `--fp32-refine-max 0` 对照完整 FP32 精排。根据当前数据的 ground truth 调整 `search_L`、`refine_max` 和 `fp32_refine_max`，达到目标 Recall@10 后比较 QPS。多线程建图的调度会影响图结构，记录相同种子之外，还需保存每轮的 Recall 与缓存覆盖。
 
 **报告同时记录配置、吞吐量和精度。**
 

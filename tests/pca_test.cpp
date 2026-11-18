@@ -29,6 +29,17 @@ TEST(PCAProjectionTest, ProjectsOntoTheLeadingCenteredAxis) {
         EXPECT_NEAR(projected[0], 0.0f, 1e-5f);
         EXPECT_NEAR(std::abs(projected[1]), 2.0f, 1e-5f);
         EXPECT_NEAR(projected[1], -projected[2], 1e-5f);
+
+        const auto query_view = rnndescent::FloatMatrixView::from_vector(query, dimension);
+        const auto batch = pca.project_queries(query_view);
+        ASSERT_EQ(batch.row_count(), 3);
+        ASSERT_EQ(batch.dimension(), 1);
+        for (int i = 0; i < batch.row_count(); ++i)
+            EXPECT_FLOAT_EQ(batch.row_ptr(i)[0], projected[i]);
+
+        const auto smaller_batch = pca.project_queries(rnndescent::FloatMatrixView::from_buffer(query.data() + dimension, 1, dimension));
+        ASSERT_EQ(smaller_batch.row_count(), 1);
+        EXPECT_FLOAT_EQ(smaller_batch.row_ptr(0)[0], projected[1]);
     }
 }
 

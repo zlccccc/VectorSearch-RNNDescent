@@ -97,6 +97,7 @@ inline void write_benchmark_report(const BenchmarkConfig &config, const Benchmar
     oss << "search_config.search_L=" << config.search_config.search_L << char(10);
     oss << "search_config.beam_size=" << config.search_config.beam_size << char(10);
     oss << "search_config.refine_max=" << config.search_config.refine_max << char(10);
+    oss << "search_config.fp32_refine_max=" << config.search_config.fp32_refine_max << char(10);
     oss << "search_config.num_threads=" << config.search_config.num_threads << char(10);
     oss << "pca_config.enabled=" << (config.pca_config.enabled ? 1 : 0) << char(10);
     oss << "pca_config.out_dim=" << config.pca_config.out_dim << char(10);

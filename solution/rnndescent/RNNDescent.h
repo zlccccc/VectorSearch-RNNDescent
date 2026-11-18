@@ -25,6 +25,7 @@
 #include <omp.h>
 
 #include "Assertions.h"
+#include "CandidateReranker.h"
 #include "Logger.h"
 #include "Views.h"
 #include "discomputer/PlatformSimdDistanceComputer.h"
@@ -89,6 +90,9 @@ struct RNNDescent {
         int search_L = 96;
         int num_initialize = 64;
         int refine_max = 64;
+        // Rank refinement candidates in 8-bit space, then recompute this many in FP32.
+        // Zero keeps full FP32 refinement. Queries returning more neighbors raise this limit to Top K.
+        int fp32_refine_max = 32;
     };
 
     static BuildConfig sanitize_build_config(BuildConfig config) {
@@ -109,6 +113,7 @@ struct RNNDescent {
         config.search_L = std::max(config.search_L, std::max(1, topk));
         config.num_initialize = std::max(config.num_initialize, config.search_L);
         config.refine_max = std::max(config.refine_max, std::max(topk, 1));
+        config.fp32_refine_max = std::max(config.fp32_refine_max, 0);
         if (max_points > 0) {
             config.search_L = std::min(config.search_L, max_points);
             config.refine_max = std::min(config.refine_max, max_points);
@@ -400,7 +405,7 @@ struct RNNDescent {
     std::vector<std::vector<SingleNeighbor>> threadUsefulset;
     std::vector<std::vector<float>> neighborDistance;
 
-    void searchSingle(int threadid, int queryid, MyDistanceComputer &realqdis, const SearchConfig &search_config, int max_degree,
+    void searchSingle(int threadid, int queryid, const CandidateReranker &reranker, const SearchConfig &search_config, int max_degree,
                       const SearchResultView &result) {
         result.validate();
         RNNDESCENT_ASSERT_MSG(max_degree > 0, "search max_degree must be positive");
@@ -574,23 +579,7 @@ struct RNNDescent {
         for (size_t i = 0; i < retset.size(); i++)
             retset[i].id = search_from_ids[retset[i].id & 0x7fffffff];
 
-        size_t exact_end = retset.size() / 4 * 4;
-        for (size_t i = 0; i < exact_end; i += 4)
-            realqdis.distances_batch_4(queryid, retset[i].id, retset[i + 1].id, retset[i + 2].id, retset[i + 3].id, retset[i].distance, retset[i + 1].distance,
-                                       retset[i + 2].distance, retset[i + 3].distance);
-        for (size_t i = exact_end; i < retset.size(); i++)
-            retset[i].distance = realqdis(queryid, retset[i].id);
-        if ((size_t)topk < retset.size()) {
-            std::nth_element(retset.begin(), retset.begin() + topk, retset.end());
-            std::sort(retset.begin(), retset.begin() + topk);
-        } else {
-            std::sort(retset.begin(), retset.end());
-        }
-
-        for (size_t i = 0; i < topk; i++) {
-            result.indices_ptr()[i] = retset[i].id;
-            result.distances_ptr()[i] = retset[i].distance;
-        }
+        reranker.rerank(queryid, retset, safe_search_config.fp32_refine_max, result);
 
         vt.advance();
 

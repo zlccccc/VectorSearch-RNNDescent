@@ -121,6 +121,23 @@ TEST(BenchmarkCliTest, AppliesSift100kPresetByDatasetName) {
     EXPECT_EQ(full.search_config.search_L, 128);
 }
 
+TEST(BenchmarkCliTest, ConfiguresFp32ShortlistAndFullRefinement) {
+    for (const int limit : {0, 16, 32, 64}) {
+        auto config = parse({"--mode", "dataset", "--dataset-name", "gist", "--fp32-refine-max", std::to_string(limit)});
+        benchmark::apply_solution_preset(config);
+        EXPECT_EQ(config.search_config.fp32_refine_max, limit);
+        EXPECT_EQ(config.search_config.refine_max, 1024);
+    }
+    auto defaults = parse({});
+    benchmark::apply_solution_preset(defaults);
+    EXPECT_EQ(defaults.search_config.fp32_refine_max, 32);
+    EXPECT_THAT([] { parse({"--fp32-refine-max", "-1"}); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
+    EXPECT_THAT([] { parse({"--fp32-refine-max", "32.5"}); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
+    EXPECT_THAT([] { parse({"--fp32-refine-max"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("missing value")));
+}
+
 TEST(BenchmarkCliTest, ExplicitRandomModeOverridesDatasetDetection) {
     const TempDirectory tmp;
     struct RestorePath {
@@ -238,6 +255,7 @@ TEST(BenchmarkDataTest, UsesCommonSearchSettingsForCustomDatasets) {
         EXPECT_THAT(text, HasSubstr("build_config.K0=" + std::to_string(build_defaults.K0) + "\n"));
         EXPECT_THAT(text, HasSubstr("search_config.num_initialize=" + std::to_string(search_defaults.num_initialize) + "\n"));
         EXPECT_THAT(text, HasSubstr("search_config.refine_max=20\n"));
+        EXPECT_THAT(text, HasSubstr("search_config.fp32_refine_max=32\n"));
     }
 }
 

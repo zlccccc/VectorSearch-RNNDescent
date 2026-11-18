@@ -16,6 +16,8 @@
 
 默认精排使用当前平台的 FP32 内核，引用调用方的原始底库。底库范数用 `Kernel::dot(row, row, d)` 计算，查询范数由 `Kernel::query_norm` 计算。距离按照 `norm(query) + norm(base) - 2 * dot(query, base)` 组装。
 
+默认只对原始维度 8 位排序留下的 Top32 做 FP32 算距。启用 PCA 时，`create_quantized_refine` 使用当前平台的量化内核编码原始维度底库与查询；不开 PCA 时直接复用查图已有的原始维度分数。`fp32_refine_max=0` 对全部精排候选做 FP32 算距。
+
 NEON FP16 把行转换为半精度，并用 FP32 累加。NEON INT16 保存编码行，用 64 位整数累加并乘量化步长的平方。CBLAS FP32 变体使用 `cblas_sdot`，测试中用于单条与批量距离校验。默认精排由平台工厂选择 SIMD FP32。
 
 **8 位量化使用逐维中心与索引级统一步长。**

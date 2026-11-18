@@ -135,4 +135,16 @@ void PCAProjection::apply(const FloatMatrixView &input, const MutableFloatMatrix
                 1.0f, output.data_ptr(), output_dimension_);
 }
 
+FloatMatrixView PCAProjection::project(const FloatMatrixView &input, std::vector<float> &buffer) const {
+    input.validate("PCA input");
+    RNNDESCENT_ASSERT_MSG(input.dimension() == input_dimension_, "PCA input dimension mismatch");
+    buffer.resize(static_cast<size_t>(input.row_count()) * output_dimension_);
+    apply(input, MutableFloatMatrixView::from_vector(buffer, output_dimension_));
+    return FloatMatrixView::from_vector(buffer, output_dimension_);
+}
+
+FloatMatrixView PCAProjection::project_queries(const FloatMatrixView &queries) {
+    return project(queries, query_buffer_);
+}
+
 } // namespace rnndescent

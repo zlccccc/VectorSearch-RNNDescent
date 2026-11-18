@@ -56,6 +56,7 @@ struct BenchmarkConfig {
     int override_num_initialize = -1;
     int override_search_l = -1;
     int override_refine_max = -1;
+    int override_fp32_refine_max = -1;
     int override_beam_size = -1;
     long long override_neighbor_pool_gb = -1;
     bool dim_explicit = false;
@@ -158,6 +159,8 @@ inline void apply_config_overrides(BenchmarkConfig &config) {
         config.search_config.search_L = config.override_search_l;
     if (config.override_refine_max > 0)
         config.search_config.refine_max = config.override_refine_max;
+    if (config.override_fp32_refine_max >= 0)
+        config.search_config.fp32_refine_max = config.override_fp32_refine_max;
     if (config.override_beam_size > 0)
         config.search_config.beam_size = config.override_beam_size;
     if (config.override_neighbor_pool_gb >= 0)
@@ -183,6 +186,7 @@ inline void print_solution_config(const BenchmarkConfig &config) {
     cout << "search config:"
          << " num_initialize=" << config.search_config.num_initialize << " search_L=" << config.search_config.search_L
          << " beam_size=" << config.search_config.beam_size << " refine_max=" << config.search_config.refine_max
+         << " fp32_refine_max=" << config.search_config.fp32_refine_max
          << " num_threads=" << config.search_config.num_threads << endl;
     cout << "pca config:"
          << " enabled=" << (config.pca_config.enabled ? 1 : 0) << " out_dim=" << config.pca_config.out_dim << endl;

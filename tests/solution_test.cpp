@@ -140,6 +140,60 @@ TEST(SolutionTest, SeparatelyBuiltIndexesKeepTheirOwnNeighbors) {
     }
 }
 
+TEST(SolutionTest, TwoStageRefinementReturnsOriginalFp32Distances) {
+    constexpr int rows = 96, dim = 65;
+    std::mt19937 rng(53);
+    std::vector<float> base(rows * dim);
+    for (auto &value : base)
+        value = float(rng() % 4096) / 2048 - 1;
+    const std::vector<float> queries(base.begin() + 17 * dim, base.begin() + 19 * dim);
+    Solution::WarmupConfig warmup;
+    warmup.topk = 0;
+    rnndescent::RNNDescent::BuildConfig build;
+    build.T1 = build.T2 = 1;
+    build.S = build.K0 = 16;
+    build.R = 32;
+    build.num_threads = 1;
+    rnndescent::RNNDescent::SearchConfig search;
+    search.num_initialize = search.search_L = search.refine_max = rows;
+    search.num_threads = 2;
+    Solution solution;
+    std::vector<int> ids;
+    for (bool pca : {false, true}) {
+        for (bool cache : {false, true}) {
+            for (int limit : {0, 32}) {
+                SCOPED_TRACE(::testing::Message() << "PCA=" << pca << ", cache=" << cache << ", FP32 limit=" << limit);
+                build.neighbor_pool_size_limit_bytes = cache ? 1 << 20 : 0;
+                search.fp32_refine_max = limit;
+                solution.build(dim, base, warmup, build, search, {pca, pca ? 17 : 0});
+                // Top K above 32 must expand the FP32 shortlist instead of truncating the output.
+                for (int topk : {5, 40}) {
+                    solution.search(queries, ids, topk);
+                    const auto &distances = solution.distance_buffer();
+                    ASSERT_EQ(ids.size(), 2 * topk);
+                    ASSERT_EQ(distances.size(), ids.size());
+                    for (int q = 0; q < 2; ++q) {
+                        EXPECT_EQ(ids[q * topk], 17 + q);
+                        std::vector<int> seen;
+                        for (int k = 0; k < topk; ++k) {
+                            const int id = ids[q * topk + k];
+                            ASSERT_GE(id, 0);
+                            ASSERT_LT(id, rows);
+                            EXPECT_EQ(std::count(seen.begin(), seen.end(), id), 0);
+                            seen.push_back(id);
+                            const double expected = scalar_l2(queries.data() + q * dim, base.data() + id * dim, dim);
+                            EXPECT_NEAR(distances[q * topk + k], expected, 1e-5 * expected + 1e-5);
+                            if (k > 0)
+                                EXPECT_LE(distances[q * topk + k - 1], distances[q * topk + k]);
+                        }
+                    }
+                }
+                solution.reset();
+            }
+        }
+    }
+}
+
 TEST(RecallTest, ImprovesWithSearchBudgetAndMatchesWithCache) {
     constexpr int dim = 65;
     constexpr int rows = 768;

@@ -15,6 +15,8 @@
 
 默认 FP32 精排引用调用方的底库内存。保留 `base` 的内容与地址，直到索引重置或销毁，随后可以替换底库并重建。量化数据、图结构、PCA 和每线程搜索缓冲由索引管理。查询调用同步完成，返回后可以复用查询缓冲。距离结果在下一次查询时更新，对象销毁时失效。
 
+默认先用原始维度的 INT8/UINT8 距离选择 Top32，再计算这些候选的原始 FP32 距离并返回 Top K。`SearchConfig::refine_max` 控制参与原始维度排序的候选量，`fp32_refine_max` 默认 32，设为 0 时对全部候选做 FP32 精排。Top K 超过该数量时，实际 FP32 数量提高到 Top K。该筛选会影响 Recall，返回距离仍为原始 FP32 空间的平方 L2。
+
 `search` 会更新量化查询、PCA 查询缓冲和每线程访问表。同一 `Solution` 实例按顺序调用批量查询，在批次内使用配置的 OpenMP 线程。不同实例分别管理自己的索引和邻居池。外层需要并发访问同一实例时，由调用方串行化这些入口。
 
 `reset()` 之后，查询会报告索引尚未构建。它会保留部分查询工作缓冲的容量以便复用，`distance_buffer()` 可暂时保留上一批结果。对象销毁时释放这些缓冲。
@@ -51,7 +53,8 @@ int main() {
     rnndescent::RNNDescent::SearchConfig search;
     search.num_initialize = 64;
     search.search_L = 48;
-    search.refine_max = 24;
+    search.refine_max = 48;
+    search.fp32_refine_max = 32;
     search.beam_size = 4;
     search.num_threads = 16;
     rnndescent::IndexRNNDescent::PCAConfig pca{true, 16};
@@ -72,6 +75,7 @@ int main() {
 ~~~bash
 c++ -O3 -std=c++17 -fopenmp -mavx2 -mfma -DRNNDESCENT_FORCE_AVX2 -I . \
   /tmp/rnndescent-example.cpp solution/solution.cpp solution/rnndescent/PCAProjection.cpp \
+  solution/rnndescent/CandidateReranker.cpp \
   -lopenblas -o /tmp/rnndescent-example
 OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 /tmp/rnndescent-example
 ~~~

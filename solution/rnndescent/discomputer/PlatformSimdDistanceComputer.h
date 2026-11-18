@@ -66,5 +66,9 @@ struct SelectedDistanceComputerFactory {
     static std::unique_ptr<MyDistanceComputer> create_refine_search(const float *data, int n, int d) {
         return std::make_unique<SimdDistanceComputerFP32L2>(data, n, d);
     }
+
+    static std::unique_ptr<MyDistanceComputer> create_quantized_refine(const float *data, int n, int d) {
+        return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d);
+    }
 };
 } // namespace rnndescent

@@ -25,6 +25,7 @@ inline void print_usage(const char *prog) {
     cout << "  --output-iter <n> --exact-check-queries <n> --warmup-topk <k>\n";
     cout << "  --S <n> --R <n> --K0 <n>\n";
     cout << "  --num-initialize <n> --search-L <n> --refine-max <n> [--beam-size <n>]\n";
+    cout << "  --fp32-refine-max <n>  FP32 shortlist size (default 32; 0 refines all candidates)\n";
     cout << "  --neighbor-pool-gb <n>  Neighbor pool budget in GiB (default 0 disables vector caching)\n";
     cout << "  --enable-pca --disable-pca --pca-out <n>\n";
 }
@@ -96,6 +97,13 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             config.override_search_l = stoi(require_value(arg));
         } else if (arg == "--refine-max") {
             config.override_refine_max = stoi(require_value(arg));
+        } else if (arg == "--fp32-refine-max") {
+            const string input = require_value(arg);
+            size_t parsed = 0;
+            const int value = stoi(input, &parsed);
+            if (parsed != input.size() || value < 0)
+                throw std::runtime_error("--fp32-refine-max requires a non-negative integer");
+            config.override_fp32_refine_max = value;
         } else if (arg == "--beam-size") {
             config.override_beam_size = stoi(require_value(arg));
         } else if (arg == "--neighbor-pool-gb") {
