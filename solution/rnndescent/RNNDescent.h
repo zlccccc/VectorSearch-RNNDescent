@@ -260,7 +260,7 @@ struct RNNDescent {
             for (int i = 0; i < n; i++) {
                 auto &pool = graph[i];
                 sort(pool.begin(), pool.end());
-                // 需要清理下内存; 变成4的倍数方便后面reorder
+                // Keep the neighbor IDs unique and pad the row for four-way scoring.
                 selected_ids.clear();
                 selected_ids.reserve(pool.size() * 2 + 4);
                 for (auto &edge : pool) {
@@ -284,97 +284,23 @@ struct RNNDescent {
         // Return pages freed by graph construction before allocating the search index.
         malloc_trim(0);
 #endif
-        // 确定全局入口点
-        Logger::info(verbose, "n = %d; initialize = %d\n", n, safe_search_config.num_initialize);
         {
-            std::mt19937 rng(safe_build_config.random_seed);
-            search_from_ids.reserve(n);
-            search_from_ids.resize(safe_search_config.num_initialize);
-            if (safe_build_config.random_init)
-                gen_random(rng, search_from_ids, n);
-            else
-                iota(search_from_ids.begin(), search_from_ids.end(), 0);
-        }
-
-        // Map original row IDs to their positions in the reordered graph.
-        std::vector<int> rollback_ids(n);
-
-        {
-            Logger::line(verbose, "Start Reordering The Graph.");
-            // Traverse from the query entry points to place nearby nodes together.
-            MyVisitedTable vis(n);
-
-            // cluster_id: 重排ID以后, 从哪个cluster可以bfs到当前点
-            std::vector<int> cluster_id(n);
-            for (int i = 0; i < search_from_ids.size(); i++) {
-                vis.set(search_from_ids[i]);
-                cluster_id[search_from_ids[i]] = i;
-            }
-            std::vector<int> bfs_distance(n); // 只是用来记录一下
-            int all_have_next = 0;
-            for (int i = 0; i < search_from_ids.size(); i++) {
-                int u = search_from_ids[i];
-                bool have_next = false;
-                for (size_t edge = edge_offsets[u]; edge < edge_offsets[u + 1]; ++edge) {
-                    const int v = edges[edge];
-                    if (!vis.get(v)) {
-                        vis.set(v);
-                        search_from_ids.push_back(v);
-                        have_next = true;
-                        bfs_distance[v] = bfs_distance[u] + 1;
-                        cluster_id[v] = cluster_id[u];
-                    }
-                }
-                all_have_next += have_next;
-            }
-
-            { // bfs重排后的cluster ID
-                std::vector<int> cluster_size(safe_search_config.num_initialize);
-                for (int i = 0; i < cluster_id.size(); i++)
-                    cluster_size[cluster_id[i]]++;
-                for (int v : cluster_size)
-                    Logger::info(verbose, "%d ", v);
-                Logger::line(verbose, " <<- initial cluster size");
-                std::vector<int> bfs_length_count;
-                for (int i = 0; i < search_from_ids.size(); i++) {
-                    int v = bfs_distance[search_from_ids[i]];
-                    if (v >= bfs_length_count.size())
-                        bfs_length_count.resize(v + 1);
-                    bfs_length_count[v]++;
-                }
-                for (int i = 0; i < bfs_length_count.size(); i++)
-                    Logger::info(verbose, "bfs_length %d: %d\n", i, bfs_length_count[i]);
-            }
-
-            int cannot_search = 0; // 这里先暂时不处理这种情况; 会有概率有的点搜不到
-            for (int i = 0; i < n; i++) {
-                if (!vis.get(i))
-                    search_from_ids.push_back(i), cannot_search++;
-            }
-#ifdef INTERNAL_CLOCK_TEST
-            Logger::info(verbose, "search from ids = %d; have_next = %d; cannot_search = %d\n", (int)search_from_ids.size(), all_have_next, cannot_search);
-            if (n != search_from_ids.size())
-                throw std::runtime_error("search_from_ids size mismatch after reordering");
-#endif
-
-            for (int i = 0; i < n; i++) // 连graph的时候边id需更新
-                rollback_ids[search_from_ids[i]] = i;
+            const auto original_to_bfs = reorder_by_bfs(edges, edge_offsets, safe_search_config.num_initialize, safe_build_config, verbose);
 
             // Write quantized rows in BFS order directly from the original matrix.
             graph_distance_computer =
                 SelectedDistanceComputerFactory::create_cached_graph(data_view.data_ptr(), n, dim, search_from_ids.data());
-        }
-        { // 空间局部性优化
+
             const auto code_stride = graph_distance_computer->code_stride();
             neighbor_pool_.initialize(
                 code_stride, edge_offsets, safe_build_config.neighbor_pool_size_limit_bytes, safe_build_config.save_neighbor);
             final_graph_neighbors.reserve(n);
-            for (int i = 0; i < n; i++) {
-                const int u = search_from_ids[i];
-                const size_t begin = edge_offsets[u];
-                const int count = static_cast<int>(edge_offsets[u + 1] - begin);
+            for (int bfs_id = 0; bfs_id < n; ++bfs_id) {
+                const int original_id = search_from_ids[bfs_id];
+                const size_t begin = edge_offsets[original_id];
+                const int count = static_cast<int>(edge_offsets[original_id + 1] - begin);
                 const int *neighbors = count > 0 ? edges.data() + begin : nullptr;
-                final_graph_neighbors.emplace_back(neighbor_pool_, neighbors, count, graph_distance_computer.get(), rollback_ids,
+                final_graph_neighbors.emplace_back(neighbor_pool_, neighbors, count, graph_distance_computer.get(), original_to_bfs,
                                                    safe_build_config.save_neighbor);
             }
             if (safe_build_config.save_neighbor) {
@@ -401,6 +327,7 @@ struct RNNDescent {
         }
     }
 
+    // Maps BFS IDs to original rows. The prefix holds the query entry points.
     std::vector<int> search_from_ids;
 
     std::vector<std::vector<SingleNeighbor>> threadRetset; // threadRetset和之前的retset起到的价值差不多
@@ -582,10 +509,18 @@ struct RNNDescent {
         int refinemax = std::min(refine_max, (int)retset.size());
         retset.resize(refinemax);
 
-        for (size_t i = 0; i < retset.size(); i++)
-            retset[i].id = search_from_ids[retset[i].id & 0x7fffffff];
+        const int *original_ids = nullptr;
+        if (reranker.uses_graph_ordered_codes()) {
+            // The coarse ranker reads BFS-ordered rows by graph ID.
+            for (auto &candidate : retset)
+                candidate.id &= 0x7fffffff;
+            original_ids = search_from_ids.data();
+        } else {
+            for (auto &candidate : retset)
+                candidate.id = search_from_ids[candidate.id & 0x7fffffff];
+        }
 
-        reranker.rerank(queryid, retset, safe_search_config.fp32_refine_max, result);
+        reranker.rerank(queryid, retset, safe_search_config.fp32_refine_max, result, original_ids);
 
 #ifdef INTERNAL_CLOCK_TEST
         nowtime = std::chrono::high_resolution_clock::now();
@@ -817,6 +752,53 @@ struct RNNDescent {
     std::unique_ptr<MyDistanceComputer> graph_distance_computer;
 
   private:
+    std::vector<int> reorder_by_bfs(const std::vector<int> &edges, const std::vector<size_t> &edge_offsets,
+                                    int entry_count, const BuildConfig &build_config, bool verbose) {
+        const int n = static_cast<int>(edge_offsets.size() - 1);
+        search_from_ids.reserve(n);
+        search_from_ids.resize(entry_count);
+        if (build_config.random_init) {
+            std::mt19937 rng(build_config.random_seed);
+            gen_random(rng, search_from_ids, n);
+        } else {
+            std::iota(search_from_ids.begin(), search_from_ids.end(), 0);
+        }
+
+        MyVisitedTable visited(n);
+        for (int root : search_from_ids)
+            visited.set(root);
+
+        // The row order doubles as the BFS queue. Seed all entry points before visiting any edges.
+        for (size_t head = 0, depth = 0; head < search_from_ids.size(); ++depth) {
+            const size_t layer_end = search_from_ids.size();
+            Logger::info(verbose, "BFS depth %zu: %zu nodes\n", depth, layer_end - head);
+            for (; head < layer_end; ++head) {
+                const int u = search_from_ids[head];
+                for (size_t i = edge_offsets[u]; i < edge_offsets[u + 1]; ++i) {
+                    const int v = edges[i];
+                    if (!visited.get(v)) {
+                        visited.set(v);
+                        search_from_ids.push_back(v);
+                    }
+                }
+            }
+        }
+
+        const size_t reachable = search_from_ids.size();
+        // Keep unreachable rows in original order at the end of the permutation.
+        for (int original_id = 0; original_id < n; ++original_id) {
+            if (!visited.get(original_id))
+                search_from_ids.push_back(original_id);
+        }
+        Logger::info(verbose, "BFS reached %zu of %d nodes; appended %zu unreachable nodes\n",
+                     reachable, n, search_from_ids.size() - reachable);
+
+        std::vector<int> original_to_bfs(n);
+        for (int bfs_id = 0; bfs_id < n; ++bfs_id)
+            original_to_bfs[search_from_ids[bfs_id]] = bfs_id;
+        return original_to_bfs;
+    }
+
     // Adjacency rows are padded for four-way distance scoring.
     static size_t padded_degree(int degree) { return (static_cast<size_t>(degree) + 3) / 4 * 4; }
 

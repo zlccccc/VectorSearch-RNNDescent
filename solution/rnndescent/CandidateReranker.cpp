@@ -22,10 +22,13 @@ void score_candidates(MyDistanceComputer &distance, int query_id, std::vector<Si
 
 } // namespace
 
-CandidateReranker::CandidateReranker(const FloatMatrixView &base, int graph_dimension, int candidate_count, int fp32_limit)
+CandidateReranker::CandidateReranker(const FloatMatrixView &base, int graph_dimension, int candidate_count, int fp32_limit,
+                                     const int *graph_row_order)
     : CandidateReranker(SelectedDistanceComputerFactory::create_refine_search(base.data_ptr(), base.row_count(), base.dimension()), graph_dimension) {
-    if (graph_dimension != base.dimension() && fp32_limit > 0 && fp32_limit < candidate_count)
-        quantized_ = SelectedDistanceComputerFactory::create_quantized_refine(base.data_ptr(), base.row_count(), base.dimension());
+    if (graph_dimension != base.dimension() && fp32_limit > 0 && fp32_limit < candidate_count) {
+        quantized_ = SelectedDistanceComputerFactory::create_quantized_refine(base.data_ptr(), base.row_count(), base.dimension(), graph_row_order);
+        graph_ordered_codes_ = graph_row_order != nullptr;
+    }
 }
 
 CandidateReranker::CandidateReranker(std::unique_ptr<MyDistanceComputer> fp32, int graph_dimension,
@@ -39,7 +42,7 @@ void CandidateReranker::set_queries(const FloatMatrixView &queries) {
 }
 
 void CandidateReranker::rerank(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_limit,
-                               const SearchResultView &result) const {
+                               const SearchResultView &result, const int *original_ids) const {
     const int topk = result.topk();
     const int fp32_count = std::max(fp32_limit, topk);
     if (fp32_limit > 0 && static_cast<size_t>(fp32_count) < candidates.size()) {
@@ -54,6 +57,10 @@ void CandidateReranker::rerank(int query_id, std::vector<SingleNeighbor> &candid
         candidates.resize(fp32_count);
     }
 
+    if (original_ids) {
+        for (auto &candidate : candidates)
+            candidate.id = original_ids[candidate.id];
+    }
     score_candidates(*fp32_, query_id, candidates);
     const auto top_end = candidates.begin() + topk;
     if (top_end != candidates.end())

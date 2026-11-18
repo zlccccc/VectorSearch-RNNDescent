@@ -135,7 +135,7 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
     NeighborsStorageBase() = default;
 
     NeighborsStorageBase(Pool &storage, const int *neighbor, int count, MyDistanceComputer *dis,
-                         const std::vector<int> &rollback_ids, bool save_neighbor)
+                         const std::vector<int> &original_to_bfs, bool save_neighbor)
         : code_stride(storage.code_stride_), size(count), dis(dis) {
         if (size == 0)
             return;
@@ -152,7 +152,7 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
 
         edges = reinterpret_cast<int *>(storage.allocate_ptr(size * sizeof(int)));
         for (int i = 0; i < size; ++i)
-            edges[i] = rollback_ids[neighbor[i]];
+            edges[i] = original_to_bfs[neighbor[i]];
     }
 
     // The pool slices have already been assigned. Each worker fills only its own neighborhood.

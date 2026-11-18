@@ -74,7 +74,7 @@ struct IndexRNNDescent {
 
         const int candidate_count = std::min({n, search_config.search_L, search_config.refine_max});
         reranker = std::make_unique<CandidateReranker>(base, rnndescent->graph_distance_computer->dimension(), candidate_count,
-                                                       search_config.fp32_refine_max);
+                                                       search_config.fp32_refine_max, rnndescent->search_from_ids.data());
     }
 
     void search(const FloatMatrixView &queries, const SearchResultView &result) {

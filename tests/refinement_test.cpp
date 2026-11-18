@@ -122,5 +122,50 @@ TEST(RefinementTest, ReusesOriginalDimensionalGraphScores) {
     EXPECT_EQ(ids, expected);
 }
 
+TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
+    constexpr int rows = 96, dim = 65, graph_dim = 17;
+    std::vector<float> base(rows * dim), projection(rows * graph_dim);
+    for (int i = 0; i < rows; ++i) {
+        for (int k = 0; k < dim; ++k)
+            base[i * dim + k] = float((i * 41 + k * 13 + i * k * 5) % 1009) / 1009;
+        std::copy_n(base.data() + i * dim, graph_dim, projection.data() + i * graph_dim);
+    }
+    rnndescent::RNNDescent::BuildConfig build;
+    build.T1 = build.T2 = 1;
+    build.S = build.K0 = 16;
+    build.R = 32;
+    build.num_threads = 1;
+    rnndescent::RNNDescent::SearchConfig search;
+    search.num_initialize = rows;
+    search.search_L = 64;
+    search.refine_max = 61;
+    search.num_threads = 1;
+    rnndescent::RNNDescent graph(rnndescent::FloatMatrixView::from_vector(projection, graph_dim), false, build, search);
+    ASSERT_FALSE(std::is_sorted(graph.search_from_ids.begin(), graph.search_from_ids.end()));
+    const auto base_view = rnndescent::FloatMatrixView::from_vector(base, dim);
+    rnndescent::CandidateReranker original(base_view, graph_dim, search.refine_max, 32);
+    rnndescent::CandidateReranker bfs(base_view, graph_dim, search.refine_max, 32, graph.search_from_ids.data());
+
+    constexpr int query_id = 19;
+    const auto query = rnndescent::FloatMatrixView::from_buffer(base.data() + query_id * dim, 1, dim);
+    graph.graph_distance_computer->set_query(projection.data() + query_id * graph_dim, 1);
+    original.set_queries(query);
+    bfs.set_queries(query);
+    for (const auto [limit, topk] : {std::pair{32, 10}, std::pair{32, 40}, std::pair{0, 10}}) {
+        SCOPED_TRACE(::testing::Message() << "FP32 limit=" << limit << ", TopK=" << topk);
+        search.fp32_refine_max = limit;
+        const auto collect = [&](const rnndescent::CandidateReranker &reranker) {
+            std::vector<int> ids(topk);
+            std::vector<float> distances(topk);
+            graph.searchSingle(0, 0, reranker, search, build.K0,
+                               rnndescent::SearchResultView::from_vectors(ids, distances, topk));
+            return std::make_pair(std::move(ids), std::move(distances));
+        };
+        const auto expected = collect(original);
+        EXPECT_EQ(expected.first.front(), query_id);
+        EXPECT_EQ(collect(bfs), expected);
+    }
+}
+
 } // namespace
 } // namespace tests
