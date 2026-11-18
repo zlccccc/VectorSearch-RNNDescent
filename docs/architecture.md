@@ -31,7 +31,11 @@ flowchart TD
 
 [PCAProjection](../solution/rnndescent/PCAProjection.cpp) 训练时最多采样 `1000 * 输入维度` 条向量，采用固定随机种子 1234。它计算均值和协方差，使用 OpenBLAS 的 `ssyrk` 与 LAPACK 的 `dsyev_` 求主方向。训练条数小于输入维度时求较小的 Gram 矩阵，再恢复并归一化主方向。
 
+采样通过行 ID 记录顺序，按最多 16,384 行收集一个 FP32 批次，再累加协方差。GIST1M 的 960 维训练批次约占 60 MiB。分块累加会改变浮点求和顺序，投影差异通过目标数据的 Recall 验证。
+
 底库与查询使用相同的投影矩阵和中心化偏置。投影通过 OpenBLAS 的 `sgemm` 完成。构建完图后释放临时底库投影矩阵，保留投影参数和查询工作缓冲。数学库依赖由 OpenBLAS 提供。
+
+PCA 查询缓冲按实际批量增长并复用容量。
 
 **查询批次中的每条查询由一个 OpenMP 工作线程处理。**
 

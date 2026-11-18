@@ -71,9 +71,6 @@ struct IndexRNNDescent {
             prevtime = nowtime;
             Logger::info(verbose, "PCA Process done in %f ms\n", process_time);
             rebuild_graph_index(FloatMatrixView::from_vector(projected, projected_dim));
-
-            constexpr int maxquery = 10000;
-            pca_query_buffer.reserve(static_cast<size_t>(projected_dim) * maxquery);
         } else {
             pca.reset();
             rebuild_graph_index(FloatMatrixView::from_buffer(x, n, input_dimension_));

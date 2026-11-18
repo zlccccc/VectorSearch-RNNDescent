@@ -86,7 +86,7 @@ ctest --test-dir build -R RecallTest --output-on-failure
 |---|---|
 | `SimdDistanceTest`、`SimdQuantizationTest` | 对照标量结果校验 FP32、INT8/UINT8 距离，覆盖单条、四条一组、建图距离、非对齐维度和常量向量 |
 | `NeighborCacheLayoutTest`、`NeighborCacheTest` | 校验四邻居 SIMD 数据布局、ID 重映射、预算用尽时回退以及缓存开关下的距离一致性 |
-| `PCAProjectionTest` | 校验协方差和 Gram 矩阵两条训练路径的主方向与中心化 |
+| `PCAProjectionTest` | 校验协方差和 Gram 矩阵两条训练路径的主方向、中心化及采样跨批次行为 |
 | `BenchmarkCliTest`、`BenchmarkDataTest` | 校验 CLI、显式随机模式、邻居池预算，以及 fvecs/bvecs/ivecs 的读取和坏文件处理 |
 | `SolutionTest` | 小数据集建图、查询、重建和重置，用穷举校验 Top K ID 和精排距离，覆盖 PCA、缓存开关和两个索引交替查询 |
 | `RecallTest` | 固定随机种子，限制搜索预算，校验 Recall@10、缓存开关下的结果一致性和精排距离 |

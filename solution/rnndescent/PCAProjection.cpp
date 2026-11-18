@@ -46,23 +46,21 @@ PCAProjection::PCAProjection(const FloatMatrixView &base, int output_dimension)
     constexpr int rows_per_dimension = 1000;
     const int n = static_cast<int>(std::min<long long>(rows, static_cast<long long>(rows_per_dimension) * d));
     const float *training = base.data_ptr();
-    std::vector<float> sample;
+    std::vector<int> sampled_rows;
     if (n < rows) {
-        std::vector<int> row_ids(rows);
-        std::iota(row_ids.begin(), row_ids.end(), 0);
+        sampled_rows.resize(rows);
+        std::iota(sampled_rows.begin(), sampled_rows.end(), 0);
         std::mt19937 random(1234);
-        sample.resize(static_cast<size_t>(n) * d);
         for (int i = 0; i < n; ++i) {
             const int other = i + static_cast<int>(random() % (rows - i));
-            std::swap(row_ids[i], row_ids[other]);
-            std::copy_n(base.row_ptr(row_ids[i]), d, sample.data() + static_cast<size_t>(i) * d);
+            std::swap(sampled_rows[i], sampled_rows[other]);
         }
-        training = sample.data();
+        sampled_rows.resize(n);
     }
 
     std::vector<float> mean(d, 0.0f);
     for (int i = 0; i < n; ++i) {
-        const auto *row = training + static_cast<size_t>(i) * d;
+        const auto *row = base.row_ptr(sampled_rows.empty() ? i : sampled_rows[i]);
         for (int j = 0; j < d; ++j)
             mean[j] += row[j];
     }
@@ -75,7 +73,21 @@ PCAProjection::PCAProjection(const FloatMatrixView &base, int output_dimension)
         for (int col = 0; col < d; ++col)
             for (int row = 0; row <= col; ++row)
                 covariance[static_cast<size_t>(col) * d + row] = -n * mean[col] * mean[row];
-        cblas_ssyrk(CblasColMajor, CblasUpper, CblasNoTrans, d, n, 1.0f, training, d, 1.0f, covariance.data(), d);
+        if (sampled_rows.empty()) {
+            cblas_ssyrk(CblasColMajor, CblasUpper, CblasNoTrans, d, n, 1.0f, training, d, 1.0f, covariance.data(), d);
+        } else {
+            // Gather only one BLAS batch, instead of retaining a full FP32 training copy.
+            constexpr int batch_rows = 16384;
+            std::vector<float> sample(static_cast<size_t>(std::min(n, batch_rows)) * d);
+            for (int offset = 0; offset < n; offset += batch_rows) {
+                const int count = std::min(batch_rows, n - offset);
+#pragma omp parallel for
+                for (int i = 0; i < count; ++i)
+                    std::copy_n(base.row_ptr(sampled_rows[offset + i]), d, sample.data() + static_cast<size_t>(i) * d);
+                cblas_ssyrk(CblasColMajor, CblasUpper, CblasNoTrans, d, count, 1.0f, sample.data(), d,
+                            1.0f, covariance.data(), d);
+            }
+        }
         components_ = leading_eigenvectors(covariance, d, output_dimension);
     } else {
         // With fewer rows than dimensions, solve the smaller Gram matrix.

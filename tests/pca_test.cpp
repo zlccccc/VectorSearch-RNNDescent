@@ -32,5 +32,22 @@ TEST(PCAProjectionTest, ProjectsOntoTheLeadingCenteredAxis) {
     }
 }
 
+TEST(PCAProjectionTest, SampledTrainingPreservesTheLeadingAxisAcrossBatches) {
+    for (const int dimension : {2, 17}) {
+        SCOPED_TRACE(dimension);
+        const int rows = dimension * 1000 + 1;
+        std::vector<float> base(static_cast<size_t>(rows) * dimension, 3.0f);
+        for (int i = 0; i < rows; ++i)
+            base[static_cast<size_t>(i) * dimension] = static_cast<float>(i % 31 - 15);
+        rnndescent::PCAProjection pca(rnndescent::FloatMatrixView::from_vector(base, dimension), 1);
+        std::vector<float> queries(2 * dimension, 3.0f), projected(2);
+        queries[0] = 0.0f;
+        queries[dimension] = 2.0f;
+        pca.apply(rnndescent::FloatMatrixView::from_vector(queries, dimension),
+                  rnndescent::MutableFloatMatrixView::from_vector(projected, 1));
+        EXPECT_NEAR(std::abs(projected[1] - projected[0]), 2.0f, 1e-4f);
+    }
+}
+
 } // namespace
 } // namespace tests
