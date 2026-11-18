@@ -24,6 +24,7 @@
 
 #include <omp.h>
 
+#include "ActiveCandidateIds.h"
 #include "Assertions.h"
 #include "CandidateReranker.h"
 #include "Logger.h"
@@ -386,21 +387,22 @@ struct RNNDescent {
                 }
             }
         }
-        threadVt.resize(safe_search_config.num_threads);
+        thread_active_ids_.resize(safe_search_config.num_threads);
         threadRetset.resize(safe_search_config.num_threads);
         neighborDistance.resize(safe_search_config.num_threads);
         threadUsefulset.resize(safe_search_config.num_threads);
+        const size_t batch_capacity = padded_degree(safe_build_config.K0) * safe_search_config.beam_size;
+        const size_t max_active_ids = std::min(static_cast<size_t>(n), safe_search_config.search_L + batch_capacity);
         for (int i = 0; i < safe_search_config.num_threads; i++) {
-            threadVt[i].init(n);
+            thread_active_ids_[i].reset(max_active_ids);
             threadRetset[i].reserve(std::max(safe_search_config.num_initialize, safe_search_config.search_L));
             neighborDistance[i].reserve(safe_search_config.search_L);
-            threadUsefulset[i].reserve(safe_build_config.K0 * safe_search_config.beam_size);
+            threadUsefulset[i].reserve(batch_capacity);
         }
     }
 
     std::vector<int> search_from_ids;
 
-    std::vector<MyVisitedTable> threadVt;                  // threadRetset和之前的retset起到的价值差不多
     std::vector<std::vector<SingleNeighbor>> threadRetset; // threadRetset和之前的retset起到的价值差不多
     std::vector<std::vector<SingleNeighbor>> threadUsefulset;
     std::vector<std::vector<float>> neighborDistance;
@@ -432,23 +434,18 @@ struct RNNDescent {
             throw std::runtime_error("num_initialize must be >= topk");
         if (num_initialize < search_L)
             throw std::runtime_error("num_initialize must be >= search_L");
-        if (max_degree * beam_size < max_degree)
-            throw std::runtime_error("beam expansion overflow");
         RNNDESCENT_ASSERT_MSG(graph_distance_computer != nullptr, "The index is not build yet.");
 
         auto &retset = threadRetset[threadid];
         auto &usefulset = threadUsefulset[threadid];
-        auto &vt = threadVt[threadid];
+        auto &active_ids = thread_active_ids_[threadid];
         // Score the entry points in batches of four.
         if (num_initialize % 4 != 0)
             throw std::runtime_error("num_initialize must be a multiple of 4");
         retset.resize(num_initialize);
-        usefulset.resize(max_degree * beam_size);
+        const size_t batch_capacity = padded_degree(max_degree) * beam_size;
+        usefulset.resize(batch_capacity);
         for (int i = 0; i < num_initialize; i += 4) {
-            vt.set(i + 0);
-            vt.set(i + 1);
-            vt.set(i + 2);
-            vt.set(i + 3);
             retset[i + 0].id = i + 0;
             retset[i + 1].id = i + 1;
             retset[i + 2].id = i + 2;
@@ -460,6 +457,9 @@ struct RNNDescent {
         std::nth_element(retset.begin(), retset.begin() + search_L, retset.end());
         // Keep the active candidate pool sorted by distance.
         std::sort(retset.data(), retset.data() + search_L);
+        active_ids.reset(std::min(static_cast<size_t>(available_points), search_L + batch_capacity));
+        for (int i = 0; i < search_L; ++i)
+            active_ids.insert(retset[i].id);
 
 #ifdef INTERNAL_CLOCK_TEST
         int bfs_length = 0, bfs_items = 0;
@@ -470,8 +470,8 @@ struct RNNDescent {
         int for_count = 0, calculate_distance_count = 0, useful_count = 0;
 #endif
 
-        const auto merge_candidates_from_end = [](SingleNeighbor *pool, int length, const SingleNeighbor *incoming,
-                                                  const SingleNeighbor *incoming_end) {
+        const auto merge_candidates_from_end = [&active_ids](SingleNeighbor *pool, int length, const SingleNeighbor *incoming,
+                                                             const SingleNeighbor *incoming_end) {
             int kept = 0;
             int upper = std::min(length, static_cast<int>(incoming_end - incoming));
             // The caller skips empty batches. Try the largest possible count first.
@@ -492,6 +492,13 @@ struct RNNDescent {
             auto *current = pool + length - kept;
             auto *out = pool + length;
             const auto *next = incoming + kept;
+            // The worst retained distance never increases. An evicted or rejected ID
+            // cannot pass the strict distance cutoff again with the same score.
+            for (auto *it = current; it != out; ++it)
+                active_ids.erase(it->id & 0x7fffffff);
+            for (auto *it = next; it != incoming_end; ++it)
+                active_ids.erase(it->id);
+
             // Read and write from the tail. On ties, place the new candidate after the old one.
             while (next != incoming) {
                 if (current != pool && next[-1] < current[-1])
@@ -522,7 +529,7 @@ struct RNNDescent {
 #endif
                 auto &neighbors = final_graph_neighbors[n];
 
-                // Score the full neighborhood before checking the visited table.
+                // Score the full neighborhood before filtering and deduplicating candidates.
                 // GIST1M (AVX2, 64D PCA, 16 threads, L=2560, refine=2048):
                 // With a 0 GiB neighbor pool, bitmap deduplication before four-way scoring
                 // cut INT8 evaluations by 52% and raised QPS by 32% with identical results.
@@ -543,9 +550,8 @@ struct RNNDescent {
 #pragma unroll
                 for (int k = 0; k < neighbors.size; k++) {
                     if (neighborDistance[threadid][k] < limit) {
-                        if (vt.get(neighbors.edges[k]))
+                        if (!active_ids.insert(neighbors.edges[k]))
                             continue;
-                        vt.set(neighbors.edges[k]);
                         *usefulsetEnd++ = {neighbors.edges[k], neighborDistance[threadid][k]};
                     }
                 }
@@ -580,8 +586,6 @@ struct RNNDescent {
             retset[i].id = search_from_ids[retset[i].id & 0x7fffffff];
 
         reranker.rerank(queryid, retset, safe_search_config.fp32_refine_max, result);
-
-        vt.advance();
 
 #ifdef INTERNAL_CLOCK_TEST
         nowtime = std::chrono::high_resolution_clock::now();
@@ -635,7 +639,7 @@ struct RNNDescent {
         std::vector<SelectedNeighborsContainerType>().swap(final_graph_neighbors);
         neighbor_pool_.reset();
         search_from_ids.resize(0);
-        // std::vector<MyVisitedTable>().swap(threadVt); // 这个比较大
+        thread_active_ids_.clear();
         graph_distance_computer.reset();
         flush_perf_stats();
     }
@@ -813,6 +817,10 @@ struct RNNDescent {
     std::unique_ptr<MyDistanceComputer> graph_distance_computer;
 
   private:
+    // Adjacency rows are padded for four-way distance scoring.
+    static size_t padded_degree(int degree) { return (static_cast<size_t>(degree) + 3) / 4 * 4; }
+
+    std::vector<ActiveCandidateIds> thread_active_ids_;
     SelectedNeighborsContainerType::Pool neighbor_pool_;
     std::vector<MutexWarpper> node_locks_;
 };
