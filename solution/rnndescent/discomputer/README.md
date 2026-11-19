@@ -9,6 +9,7 @@
 | [flat/NeonDotProduct.h](flat/NeonDotProduct.h) | NEON FP32、FP16 和 INT16 共用的分块与尾部循环 |
 | [quantized/QuantizedDistanceComputer.h](quantized/QuantizedDistanceComputer.h) | 训练 8 位量化参数、编码底库与查询，并计算码空间平方距离 |
 | `quantized/` 下的平台内核 | INT8 或 UINT8 连续读和缓存读的点积 |
+| [quantized/NeonInt8Kernel.h](quantized/NeonInt8Kernel.h) | NEON INT8 点积与四路邻居缓存算距 |
 | [quantized/NeighborsStorageBase.h](quantized/NeighborsStorageBase.h) | 每个索引的邻居池、邻接 ID、范数和四路缓存布局 |
 | [utils.h](utils.h) | 对齐分配器、访问表和候选表示 |
 
@@ -61,6 +62,8 @@ score(q, x) = sum_j(code(q)_j - code(x)_j)^2
 BFS 重排通过 `row_order` 指定每个图节点对应的原始行，量化器直接按该顺序编码。`copy_index` 默认复制逻辑码，邻居缓存通过 `include_padding=true` 复制完整行宽。
 
 缓存中四条邻居的第一个 SIMD 块连续存储，再放四条的第二个块，依次排列。查询一个邻接表时，`cached_distances` 根据相同块宽读码，结合预存范数生成距离。池预算耗尽时，邻接表保留 ID，算距通过底库码的四路接口完成。
+
+NEON INT8 的邻居缓存按四行交错。每步用 `vld1q_s8_x4` 成组加载四条邻居的 16 字节块，用 `SDOT` 累加点积，再用三次成对相加合并归约，并一次写出四个平方 L2。
 
 **扩展量化内核时沿用同一套量化与缓存协议。**
 
