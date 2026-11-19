@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -153,28 +152,6 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         edges = reinterpret_cast<int *>(storage.allocate_ptr(size * sizeof(int)));
         for (int i = 0; i < size; ++i)
             edges[i] = original_to_bfs[neighbor[i]];
-    }
-
-    // The pool slices have already been assigned. Each worker fills only its own neighborhood.
-    void populate_cache(uint8_t *reorder_scratch) {
-        if (pool == nullptr)
-            return;
-
-        for (int i = 0; i < size; ++i)
-            dis->copy_index(edges[i], pool + static_cast<size_t>(i) * code_stride, l2norms[i], true);
-
-        // Interleave four neighbors by SIMD lane for sequential reads in the distance kernel.
-        constexpr size_t lane_width = Derived::cache_lane_width;
-        for (int base = 0; base < size; base += 4) {
-            auto *block = pool + static_cast<size_t>(base) * code_stride;
-            for (size_t i = 0; i < code_stride; i += lane_width) {
-                for (size_t lane = 0; lane < 4; ++lane) {
-                    std::memcpy(reorder_scratch + i * 4 + lane * lane_width,
-                                block + lane * code_stride + i, lane_width);
-                }
-            }
-            std::memcpy(block, reorder_scratch, 4 * static_cast<size_t>(code_stride));
-        }
     }
 };
 

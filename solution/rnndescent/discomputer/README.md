@@ -8,9 +8,14 @@
 | `flat/` 下的平台内核 | FP32 点积、四路点积、NEON FP16 与 INT16 运算 |
 | [flat/NeonDotProduct.h](flat/NeonDotProduct.h) | NEON FP32、FP16 和 INT16 共用的分块与尾部循环 |
 | [quantized/QuantizedDistanceComputer.h](quantized/QuantizedDistanceComputer.h) | 训练 8 位量化参数、编码底库与查询，并计算码空间平方距离 |
+| [quantized/QuantizedKernelBase.h](quantized/QuantizedKernelBase.h) | INT8 与 UINT8 共用的分块打包、缓存遍历和平方 L2 写回 |
 | `quantized/` 下的平台内核 | INT8 或 UINT8 连续读和缓存读的点积 |
 | [quantized/NeonInt8Kernel.h](quantized/NeonInt8Kernel.h) | NEON INT8 点积与四路邻居缓存算距 |
-| [quantized/NeighborsStorageBase.h](quantized/NeighborsStorageBase.h) | 每个索引的邻居池、邻接 ID、范数和四路缓存布局 |
+| [quantized/Avx2UInt8Kernel.h](quantized/Avx2UInt8Kernel.h) | AVX2 UINT8 内核，以及与 AVX-VNNI 共用的 AVX2 运算和批量循环 |
+| [quantized/AvxVnniUInt8Kernel.h](quantized/AvxVnniUInt8Kernel.h) | AVX-VNNI 内核和字节乘加实现 |
+| [quantized/Avx2SimdDistanceComputerInt8.h](quantized/Avx2SimdDistanceComputerInt8.h) | AVX2 INT8 四行内核 |
+| [quantized/Avx512SimdDistanceComputerUInt8.h](quantized/Avx512SimdDistanceComputerUInt8.h) | AVX-512 UINT8 的缓存打包、GEMV 与四行算距 |
+| [quantized/NeighborsStorageBase.h](quantized/NeighborsStorageBase.h) | 邻居池、邻接 ID 和范数的存储与分配 |
 | [utils.h](utils.h) | 对齐分配器、访问表和候选表示 |
 
 **FlatDistanceComputer 直接引用 FP32 行，并为低精度变体保存编码行。**
@@ -61,19 +66,30 @@ score(q, x) = sum_j(code(q)_j - code(x)_j)^2
 
 BFS 重排通过 `row_order` 指定每个图节点对应的原始行，量化器直接按该顺序编码。`copy_index` 默认复制逻辑码，邻居缓存通过 `include_padding=true` 复制完整行宽。
 
-缓存中四条邻居的第一个 SIMD 块连续存储，再放四条的第二个块，依次排列。查询一个邻接表时，`cached_distances` 根据相同块宽读码，结合预存范数生成距离。池预算耗尽时，邻接表保留 ID，算距通过底库码的四路接口完成。
+默认缓存中四条邻居的第一个 SIMD 块连续存储，再放四条的第二个块，依次排列。AVX2 UINT8 和 AVX-VNNI 用 `Tile16` 把完整的 16 行按每行 4 字节交错打包。查询广播对应的 4 字节，每条 SIMD lane 累加一个邻居的点积。剩余 4、8、12 行以 `Tile4` 为单位，按默认四路布局打包和算距。两种布局都按邻接表原顺序写回平方 L2。打包只要求邻居数为 4 的倍数。
+
+`QuantizedKernelBase<Format, BlockBytes, Rows, InterleaveBytes>` 由后端指定码类型、编码补齐宽度、每块邻居数和每次交错的字节数。基类处理已分好的完整块，混合块由外层切分。GEMV 主块采用 16 行、4 字节交错，各后端的四行块按各自的 SIMD 块宽交错。基类打包只需暂存一行编码，各后端提供自己的 SIMD 点积和归约。
+
+AVX2 UINT8 和 AVX-VNNI 各有一个 kernel 类型，`Tile4` 和 `Tile16` 指定打包形状。算距入口直接遍历 16 行主块和四行尾块，整个邻接表共用一次广播的查询平方范数。`compute4` 合并归约四个点积，再用 SIMD 同时写出四个分数。后端在编译时选择自己的字节乘加。
+
+这两个后端把底库和查询的编码长度向上补零到 32 字节的倍数。32 和 64 字节步长走固定长度循环。128 字节步长在 AVX2 UINT8 展开四行尾块，在 AVX-VNNI 使用独立的函数展开 16 行主块和四行尾块。通用的 16 行主块每次处理 16 字节，用四组独立的累加器缩短点积的指令依赖链。查询循环沿补齐后的跨度读取，维度尾部无需单独处理。
+
+AVX-512 UINT8 在 64 字节步长展开 16 行 GEMV，四行块用 AVX-512 lane 重排把四个点积一起归约，再向量化合成平方 L2。
 
 NEON INT8 的邻居缓存按四行交错。每步用 `vld1q_s8_x4` 成组加载四条邻居的 16 字节块，用 `SDOT` 累加点积，再用三次成对相加合并归约，并一次写出四个平方 L2。
+
+池预算耗尽时，邻接表保留 ID，算距通过底库码的四路接口完成。缓存内核优化的整体收益取决于查询花在缓存内算距的时间占比。
 
 **扩展量化内核时沿用同一套量化与缓存协议。**
 
 | 内核成员 | 约定 |
 |---|---|
 | `Quantization` | 提供 `Code`、`max_scale` 和 `encode` |
-| `block_bytes` | 单条码的 SIMD 块宽，连续读、补齐和缓存布局共用 |
+| `block_bytes` | 单条码的 SIMD 块宽，用于连续读、补齐和默认缓存布局 |
 | `dot(a, b, stride)` | 返回两条码的整数点积 |
 | `dot4(q, x0, x1, x2, x3, stride)` | 返回同一查询与四条码的点积 |
-| `cached_distances(...)` | 读取四路交错缓存并写入每个邻居的码空间平方 L2 |
+| `pack_neighbor_cache(...)` | 可选的建图打包入口，提供时由内核决定缓存布局 |
+| `cached_distances(...)` | 按对应的缓存布局写入每个邻居的码空间平方 L2 |
 
 用内核实例化 `QuantizedDistanceComputer<Kernel>` 和 `QuantizedNeighbors<Kernel>`，在平台入口同时绑定距离计算器与邻居容器。Flat 内核提供 `Code`、`Dot`、`dot`、`dot4`，FP32 内核还提供 `query_norm`；编码行内核提供其转换和缩放字段。
 

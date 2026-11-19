@@ -33,7 +33,9 @@ constexpr int lane_width = 32;
 constexpr int lane_width = std::is_unsigned_v<Code> ? 64 : 16;
 #endif
 static_assert(Neighbors::cache_lane_width == lane_width);
-constexpr int dimensions[] = {1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 125, 128, 129, 256, 512, 960, 961, 1024};
+constexpr int dimensions[] = {
+    1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 125, 128, 129, 256, 384, 385, 512, 960, 961, 1024, 1537,
+};
 
 std::vector<float> make_vectors(int count, int dim, int seed) {
     std::vector<float> vectors(count * dim);
@@ -159,7 +161,7 @@ TEST(SimdQuantizationTest, ExtremeCodesPreserveSquaredDistances) {
         storage.initialize(stride, {0, 4}, 1 << 20);
         Neighbors cached(storage, ids, 4, quantized.get(), {0, 1}, true);
         ASSERT_NE(cached.pool, nullptr);
-        std::vector<uint8_t> scratch(4 * stride);
+        std::vector<uint8_t> scratch(stride);
         cached.populate_cache(scratch.data());
         std::vector<float> distances;
         cached.compute_distance(1, distances);
@@ -236,52 +238,102 @@ const std::vector<int> remap{3, 6, 2, 7, 0, 4, 1, 5};
 const int edges[rows] = {5, 2, 7, 0, 6, 3, 1, 4};
 
 TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
+    // 28 neighbors exercise the four-row layout and, on GEMV backends, a 16-row tile with a 12-row remainder.
+    constexpr int count = 28;
     const int d = GetParam();
-    const auto base = make_vectors(rows, d, 5);
+    const auto base = make_vectors(count, d, 5);
     const auto query = make_vectors(queries, d, 17);
-    auto computer = SelectedDistanceComputerFactory::create_cached_graph(base.data(), rows, d);
+    auto computer = SelectedDistanceComputerFactory::create_cached_graph(base.data(), count, d);
     computer->set_query(query.data(), queries);
     const size_t stride = computer->code_stride();
+    std::array<int, count> edge_ids{};
+    std::vector<int> id_map(count);
+    for (int i = 0; i < count; ++i) {
+        edge_ids[i] = (3 * i + 1) % count;
+        id_map[i] = (5 * i + 9) % count;
+    }
     Neighbors::Pool storage;
-    storage.initialize(stride, {0, rows, 2 * rows, 2 * rows}, 1 << 20);
-    Neighbors cached(storage, edges, rows, computer.get(), remap, true);
-    Neighbors uncached(storage, edges, rows, computer.get(), remap, false);
-    Neighbors empty(storage, nullptr, 0, computer.get(), remap, true);
+    storage.initialize(stride, {0, count, 2 * count, 2 * count}, 1 << 20);
+    Neighbors cached(storage, edge_ids.data(), count, computer.get(), id_map, true);
+    Neighbors uncached(storage, edge_ids.data(), count, computer.get(), id_map, false);
+    Neighbors empty(storage, nullptr, 0, computer.get(), id_map, true);
     ASSERT_NE(cached.pool, nullptr);
     ASSERT_NE(cached.l2norms, nullptr);
     EXPECT_EQ(uncached.pool, nullptr);
     EXPECT_EQ(uncached.l2norms, nullptr);
-    std::vector<uint8_t> scratch(4 * stride);
+    std::vector<uint8_t> scratch(stride);
     cached.populate_cache(scratch.data());
     uncached.populate_cache(scratch.data());
     empty.populate_cache(scratch.data());
 
-    std::vector<std::vector<Code>> codes(rows, std::vector<Code>(stride));
-    for (int i = 0; i < rows; ++i) {
-        const int expected_id = remap[edges[i]];
+    std::vector<std::vector<Code>> codes(count, std::vector<Code>(stride));
+    for (int i = 0; i < count; ++i) {
+        const int expected_id = id_map[edge_ids[i]];
         EXPECT_EQ(cached.edges[i], expected_id);
         EXPECT_EQ(uncached.edges[i], expected_id);
         Norm norm = 0;
         computer->copy_index(expected_id, codes[i].data(), norm);
         EXPECT_EQ(cached.l2norms[i], norm);
     }
-    for (int i = 0; i < rows; i += 4) {
+#if defined(RNNDESCENT_FORCE_AVX2_UINT8) || defined(RNNDESCENT_FORCE_AVX_VNNI)
+    const bool uses_gemv = true;
+#else
+    const bool uses_gemv = lane_width == 64 && stride == 64;
+#endif
+    for (int i = 0; i < count;) {
+        const int tile = uses_gemv && count - i >= 16 ? 16 : 4;
+        const size_t block_bytes = tile == 16 ? 4 : lane_width;
         size_t offset = i * stride;
-        for (size_t col = 0; col < stride; col += lane_width)
-            for (int row = 0; row < 4; ++row)
-                for (size_t k = col; k < col + lane_width; ++k)
+        for (size_t col = 0; col < stride; col += block_bytes)
+            for (int row = 0; row < tile; ++row)
+                for (size_t k = col; k < col + block_bytes; ++k)
                     EXPECT_EQ(cached.pool[offset++], codes[i + row][k]);
+        i += tile;
     }
 
     std::vector<float> from_cache, direct;
     for (int q = 0; q < queries; ++q) {
         cached.compute_distance(q, from_cache);
         uncached.compute_distance(q, direct);
-        EXPECT_EQ(direct.size(), rows);
+        EXPECT_EQ(direct.size(), count);
         EXPECT_EQ(from_cache, direct) << "query " << q;
     }
     empty.compute_distance(0, from_cache);
     EXPECT_TRUE(from_cache.empty());
+}
+
+TEST(QuantizedKernelBaseTest, PacksAndScoresEightRowTiles) {
+    using Format = std::conditional_t<std::is_signed_v<Code>, rnndescent::SignedInt8Quantization, rnndescent::UInt8Quantization>;
+    constexpr size_t chunk = 8;
+    using Tile = rnndescent::QuantizedKernelBase<Format, lane_width, 8, chunk>;
+    constexpr int count = 2 * Tile::rows;
+    constexpr int dim = lane_width + 3;
+    const auto base = make_vectors(count, dim, 5);
+    const auto query = make_vectors(1, dim, 17);
+    auto computer = SelectedDistanceComputerFactory::create_cached_graph(base.data(), count, dim);
+    computer->set_query(query.data(), 1);
+    const auto stride = computer->code_stride();
+    std::array<int, count> ids{}, norms{};
+    for (int i = 0; i < count; ++i)
+        ids[i] = count - i - 1;
+    std::vector<Code> packed(count * stride);
+    std::vector<uint8_t> scratch(stride);
+    Tile::pack_tiles(*computer, ids.data(), count, stride, packed.data(), norms.data(), scratch.data());
+
+    const auto query_data = computer->get_quantized_query(0);
+    const auto *q = static_cast<const Code *>(query_data.code);
+    std::array<float, count> scores{};
+    Tile::compute_tiles(count, stride, packed.data(), norms.data(), scores.data(),
+                         [&](const Code *block, const int *tile_norms, float *out) {
+        std::array<int32_t, Tile::rows> dots{};
+        for (size_t feature = 0; feature < stride; feature += chunk)
+            for (int row = 0; row < Tile::rows; ++row)
+                for (size_t k = 0; k < chunk; ++k)
+                    dots[row] += q[feature + k] * block[feature * Tile::rows + row * chunk + k];
+        Tile::store_scores(query_data.squared_norm, tile_norms, dots, out);
+    });
+    for (int i = 0; i < count; ++i)
+        EXPECT_EQ(scores[i], (*computer)(0, ids[i]));
 }
 
 TEST(NeighborCacheTest, FallsBackWhenBudgetIsExhausted) {

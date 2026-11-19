@@ -4,6 +4,7 @@
 #include "../MyDistanceComputer.h"
 #include "../utils.h"
 #include "NeighborsStorageBase.h"
+#include "QuantizedKernelBase.h"
 
 #include <algorithm>
 #include <cmath>
@@ -146,6 +147,12 @@ template <class Kernel> class QuantizedDistanceComputer final : public MyDistanc
     }
 };
 
+template <class Kernel, class = void>
+inline constexpr bool has_neighbor_cache_packer = false;
+
+template <class Kernel>
+inline constexpr bool has_neighbor_cache_packer<Kernel, std::void_t<decltype(&Kernel::pack_neighbor_cache)>> = true;
+
 template <class Kernel>
 struct QuantizedNeighbors : NeighborsStorageBase<QuantizedNeighbors<Kernel>, typename Kernel::Quantization::Code, int> {
     using Code = typename Kernel::Quantization::Code;
@@ -153,13 +160,29 @@ struct QuantizedNeighbors : NeighborsStorageBase<QuantizedNeighbors<Kernel>, typ
     using Base::Base;
     static constexpr size_t cache_lane_width = Kernel::block_bytes;
 
+    void populate_cache(uint8_t *scratch) {
+        if (!this->pool)
+            return;
+
+        if constexpr (has_neighbor_cache_packer<Kernel>) {
+            Kernel::pack_neighbor_cache(*this->dis, this->edges, this->size, this->code_stride,
+                                        this->pool, this->l2norms, scratch);
+        } else {
+            QuantizedKernelBase<typename Kernel::Quantization, Kernel::block_bytes, 4>::pack_tiles(
+                *this->dis, this->edges, this->size, this->code_stride, this->pool, this->l2norms, scratch);
+        }
+    }
+
     void compute_distance(int idq, std::vector<float> &result) {
         result.resize(this->size);
         if (this->pool != nullptr) {
+            // Score the prepacked neighborhood and combine the dots with the squared norms.
             const auto query = this->dis->get_quantized_query(idq);
             Kernel::cached_distances(static_cast<const Code *>(query.code), query.squared_norm, this->size, this->code_stride,
                                      this->pool, this->l2norms, result.data());
         } else {
+            // Uncached neighborhoods fetch quantized rows by ID and score four at a time.
+            // Time spent in this fallback limits the end-to-end gain from the cached kernel.
             const auto *ids = this->edges;
             for (int i = 0; i < this->size; i += 4) {
                 this->dis->distances_batch_4(idq, ids[i], ids[i + 1], ids[i + 2], ids[i + 3], result[i], result[i + 1], result[i + 2], result[i + 3]);
