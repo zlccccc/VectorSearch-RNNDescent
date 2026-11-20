@@ -24,8 +24,8 @@
 
 #include <omp.h>
 
-#include "ActiveCandidateIds.h"
 #include "Assertions.h"
+#include "CandidateBitmap.h"
 #include "CandidateReranker.h"
 #include "Logger.h"
 #include "Views.h"
@@ -313,14 +313,13 @@ struct RNNDescent {
                 }
             }
         }
-        thread_active_ids_.resize(safe_search_config.num_threads);
+        thread_candidate_ids_.resize(safe_search_config.num_threads);
         threadRetset.resize(safe_search_config.num_threads);
         neighborDistance.resize(safe_search_config.num_threads);
         threadUsefulset.resize(safe_search_config.num_threads);
         const size_t batch_capacity = padded_degree(safe_build_config.K0) * safe_search_config.beam_size;
-        const size_t max_active_ids = std::min(static_cast<size_t>(n), safe_search_config.search_L + batch_capacity);
         for (int i = 0; i < safe_search_config.num_threads; i++) {
-            thread_active_ids_[i].reset(max_active_ids);
+            thread_candidate_ids_[i].initialize(n);
             threadRetset[i].reserve(std::max(safe_search_config.num_initialize, safe_search_config.search_L));
             neighborDistance[i].reserve(safe_search_config.search_L);
             threadUsefulset[i].reserve(batch_capacity);
@@ -365,7 +364,7 @@ struct RNNDescent {
 
         auto &retset = threadRetset[threadid];
         auto &usefulset = threadUsefulset[threadid];
-        auto &active_ids = thread_active_ids_[threadid];
+        auto &candidate_ids = thread_candidate_ids_[threadid];
         // Score the entry points in batches of four.
         if (num_initialize % 4 != 0)
             throw std::runtime_error("num_initialize must be a multiple of 4");
@@ -384,9 +383,10 @@ struct RNNDescent {
         std::nth_element(retset.begin(), retset.begin() + search_L, retset.end());
         // Keep the active candidate pool sorted by distance.
         std::sort(retset.data(), retset.data() + search_L);
-        active_ids.reset(std::min(static_cast<size_t>(available_points), search_L + batch_capacity));
+        // Mark admitted IDs until the query ends. A discarded ID cannot pass the shrinking cutoff again.
+        candidate_ids.clear();
         for (int i = 0; i < search_L; ++i)
-            active_ids.insert(retset[i].id);
+            candidate_ids.insert(retset[i].id);
 
 #ifdef INTERNAL_CLOCK_TEST
         int bfs_length = 0, bfs_items = 0;
@@ -397,8 +397,8 @@ struct RNNDescent {
         int for_count = 0, calculate_distance_count = 0, useful_count = 0;
 #endif
 
-        const auto merge_candidates_from_end = [&active_ids](SingleNeighbor *pool, int length, const SingleNeighbor *incoming,
-                                                             const SingleNeighbor *incoming_end) {
+        const auto merge_candidates_from_end = [](SingleNeighbor *pool, int length, const SingleNeighbor *incoming,
+                                                   const SingleNeighbor *incoming_end) {
             int kept = 0;
             int upper = std::min(length, static_cast<int>(incoming_end - incoming));
             // The caller skips empty batches. Try the largest possible count first.
@@ -419,13 +419,6 @@ struct RNNDescent {
             auto *current = pool + length - kept;
             auto *out = pool + length;
             const auto *next = incoming + kept;
-            // The worst retained distance never increases. An evicted or rejected ID
-            // cannot pass the strict distance cutoff again with the same score.
-            for (auto *it = current; it != out; ++it)
-                active_ids.erase(it->id & 0x7fffffff);
-            for (auto *it = next; it != incoming_end; ++it)
-                active_ids.erase(it->id);
-
             // Read and write from the tail. On ties, place the new candidate after the old one.
             while (next != incoming) {
                 if (current != pool && next[-1] < current[-1])
@@ -477,7 +470,7 @@ struct RNNDescent {
 #pragma unroll
                 for (int k = 0; k < neighbors.size; k++) {
                     if (neighborDistance[threadid][k] < limit) {
-                        if (!active_ids.insert(neighbors.edges[k]))
+                        if (!candidate_ids.insert(neighbors.edges[k]))
                             continue;
                         *usefulsetEnd++ = {neighbors.edges[k], neighborDistance[threadid][k]};
                     }
@@ -574,7 +567,7 @@ struct RNNDescent {
         std::vector<SelectedNeighborsContainerType>().swap(final_graph_neighbors);
         neighbor_pool_.reset();
         search_from_ids.resize(0);
-        thread_active_ids_.clear();
+        thread_candidate_ids_.clear();
         graph_distance_computer.reset();
         flush_perf_stats();
     }
@@ -779,7 +772,7 @@ struct RNNDescent {
     // Adjacency rows are padded for four-way distance scoring.
     static size_t padded_degree(int degree) { return (static_cast<size_t>(degree) + 3) / 4 * 4; }
 
-    std::vector<ActiveCandidateIds> thread_active_ids_;
+    std::vector<CandidateBitmap> thread_candidate_ids_;
     SelectedNeighborsContainerType::Pool neighbor_pool_;
     std::vector<MutexWarpper> node_locks_;
 };
