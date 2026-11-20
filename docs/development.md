@@ -63,7 +63,7 @@ cmake -S . -B build/profile -DCMAKE_BUILD_TYPE=Release \
 cmake --build build/profile --target vector_search_app --parallel 4
 ~~~
 
-该选项启用 `INTERNAL_CLOCK_TEST`，记录入口算距、邻居读取、候选更新和精排等线程累计耗时与计数。计时和聚合会增加运行开销，端到端 QPS 对照使用关闭该选项的构建。
+该选项启用 `INTERNAL_CLOCK_TEST`，记录各搜索阶段的平均线程耗时和操作计数。`getneighbor_time` 包括图遍历、记录邻接段和复制 ID，`calculate_time` 是邻居算距，`update_time` 包括阈值筛选、去重、排序和合并。端到端 QPS 对照使用关闭该选项的构建，避免计时和聚合开销。
 
 **构建错误可从依赖和实际目标配置定位。**
 

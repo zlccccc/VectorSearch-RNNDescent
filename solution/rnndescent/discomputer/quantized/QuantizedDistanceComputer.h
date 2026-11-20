@@ -173,13 +173,18 @@ struct QuantizedNeighbors : NeighborsStorageBase<QuantizedNeighbors<Kernel>, typ
         }
     }
 
-    void compute_distance(int idq, std::vector<float> &result) {
+    template <typename Allocator>
+    void compute_distance(int idq, std::vector<float, Allocator> &result) {
         result.resize(this->size);
+        compute_distance(idq, result.data());
+    }
+
+    void compute_distance(int idq, float *result) {
         if (this->pool != nullptr) {
             // Score the prepacked neighborhood and combine the dots with the squared norms.
             const auto query = this->dis->get_quantized_query(idq);
             Kernel::cached_distances(static_cast<const Code *>(query.code), query.squared_norm, this->size, this->code_stride,
-                                     this->pool, this->l2norms, result.data());
+                                     this->pool, this->l2norms, result);
         } else {
             // Uncached neighborhoods fetch quantized rows by ID and score four at a time.
             // Time spent in this fallback limits the end-to-end gain from the cached kernel.

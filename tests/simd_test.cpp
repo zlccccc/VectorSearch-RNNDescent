@@ -291,12 +291,15 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
         i += tile;
     }
 
-    std::vector<float> from_cache, direct;
+    std::vector<float, rnndescent::AlignedAllocator<float>> from_cache;
+    std::vector<float> direct;
     for (int q = 0; q < queries; ++q) {
         cached.compute_distance(q, from_cache);
         uncached.compute_distance(q, direct);
         EXPECT_EQ(direct.size(), count);
-        EXPECT_EQ(from_cache, direct) << "query " << q;
+        ASSERT_EQ(from_cache.size(), direct.size());
+        EXPECT_EQ(reinterpret_cast<std::uintptr_t>(from_cache.data()) % rnndescent::alignSize, 0u);
+        EXPECT_TRUE(std::equal(from_cache.begin(), from_cache.end(), direct.begin())) << "query " << q;
     }
     empty.compute_distance(0, from_cache);
     EXPECT_TRUE(from_cache.empty());

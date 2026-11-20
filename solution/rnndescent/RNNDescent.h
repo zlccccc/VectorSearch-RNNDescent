@@ -14,7 +14,6 @@
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,12 +24,13 @@
 #include <omp.h>
 
 #include "Assertions.h"
-#include "CandidateBitmap.h"
 #include "CandidateReranker.h"
 #include "GraphPruning.h"
 #include "Logger.h"
 #include "Views.h"
 #include "discomputer/PlatformSimdDistanceComputer.h"
+#include "search/CandidateBitmap.h"
+#include "search/NeighborScoreFilter.h"
 
 namespace rnndescent {
 
@@ -191,24 +191,11 @@ struct RNNDescent {
         float recalculate_time{0};
         long long query_count{0};
         long long calculate_distance_count{0};
-        long long for_count{0};
         long long bfs_length{0};
         long long useful_count{0};
         long long bfs_items{0};
 
-        void reset() {
-            init_time = 0;
-            getneighbor_time = 0;
-            calculate_time = 0;
-            update_time = 0;
-            recalculate_time = 0;
-            query_count = 0;
-            calculate_distance_count = 0;
-            for_count = 0;
-            bfs_length = 0;
-            useful_count = 0;
-            bfs_items = 0;
-        }
+        void reset() { *this = {}; }
     } perf_stats;
 #endif
     ~RNNDescent() { reset(); }
@@ -273,24 +260,16 @@ struct RNNDescent {
             edges.reserve(padded_edge_count);
             std::mt19937 padding_rng(safe_build_config.random_seed + 1);
             std::uniform_int_distribution<int> padding_dist(0, n - 1);
-            std::unordered_set<int> selected_ids;
             for (int i = 0; i < n; i++) {
                 auto &pool = graph[i];
-                sort(pool.begin(), pool.end());
-                // Keep the neighbor IDs unique and pad the row for four-way scoring.
-                selected_ids.clear();
-                selected_ids.reserve(pool.size() * 2 + 4);
-                for (auto &edge : pool) {
-                    if (!selected_ids.count(edge.id())) { // 这个地方感觉不太应该写成这样; 如果写得好的话, 理论上刚开始的edge id不会重复
-                        selected_ids.insert(edge.id());
-                        edges.push_back(edge.id());
-                    }
-                }
+                // Graph construction has already sorted and deduplicated this row.
+                for (const auto &edge : pool)
+                    edges.push_back(edge.id());
                 while ((edges.size() - edge_offsets[i]) % 4 != 0) {
                     int id = padding_dist(padding_rng);
-                    while (selected_ids.count(id))
+                    const auto begin = edges.begin() + edge_offsets[i];
+                    while (std::find(begin, edges.end(), id) != edges.end())
                         id = padding_dist(padding_rng);
-                    selected_ids.insert(id);
                     edges.push_back(id);
                 }
                 edge_offsets[i + 1] = edges.size();
@@ -333,13 +312,18 @@ struct RNNDescent {
         thread_candidate_ids_.resize(safe_search_config.num_threads);
         threadRetset.resize(safe_search_config.num_threads);
         neighborDistance.resize(safe_search_config.num_threads);
+        thread_neighbor_ids_.resize(safe_search_config.num_threads);
+        thread_neighbor_spans_.resize(safe_search_config.num_threads);
         threadUsefulset.resize(safe_search_config.num_threads);
-        const size_t batch_capacity = padded_degree(safe_build_config.K0) * safe_search_config.beam_size;
+        const int beam_size = std::min(safe_search_config.beam_size, safe_search_config.search_L);
+        const size_t beam_capacity = padded_degree(safe_build_config.K0) * beam_size;
         for (int i = 0; i < safe_search_config.num_threads; i++) {
             thread_candidate_ids_[i].initialize(n);
             threadRetset[i].reserve(std::max(safe_search_config.num_initialize, safe_search_config.search_L));
-            neighborDistance[i].reserve(safe_search_config.search_L);
-            threadUsefulset[i].reserve(batch_capacity);
+            neighborDistance[i].reserve(beam_capacity);
+            thread_neighbor_ids_[i].reserve(beam_capacity);
+            thread_neighbor_spans_[i].reserve(beam_size);
+            threadUsefulset[i].reserve(beam_capacity);
         }
     }
 
@@ -348,7 +332,8 @@ struct RNNDescent {
 
     std::vector<std::vector<SingleNeighbor>> threadRetset; // threadRetset和之前的retset起到的价值差不多
     std::vector<std::vector<SingleNeighbor>> threadUsefulset;
-    std::vector<std::vector<float>> neighborDistance;
+    // SIMD screening immediately reloads the scores written by the distance kernel.
+    std::vector<std::vector<float, AlignedAllocator<float>>> neighborDistance;
 
     void searchSingle(int threadid, int queryid, const CandidateReranker &reranker, const SearchConfig &search_config, int max_degree,
                       const SearchResultView &result) {
@@ -363,8 +348,8 @@ struct RNNDescent {
             throw std::runtime_error("search topk exceeds indexed point count");
         const SearchConfig safe_search_config = sanitize_search_config(search_config, topk, available_points);
         const int num_threads = safe_search_config.num_threads;
-        const int beam_size = safe_search_config.beam_size;
         const int search_L = safe_search_config.search_L;
+        const int beam_size = std::min(safe_search_config.beam_size, search_L);
         const int num_initialize = safe_search_config.num_initialize;
         const int refine_max = safe_search_config.refine_max;
         if (!(0 <= threadid && threadid < num_threads))
@@ -386,8 +371,17 @@ struct RNNDescent {
         if (num_initialize % 4 != 0)
             throw std::runtime_error("num_initialize must be a multiple of 4");
         retset.resize(num_initialize);
-        const size_t batch_capacity = padded_degree(max_degree) * beam_size;
-        usefulset.resize(batch_capacity);
+        const size_t beam_capacity = padded_degree(max_degree) * beam_size;
+        usefulset.resize(beam_capacity);
+        auto &score_buffer = neighborDistance[threadid];
+        auto &id_buffer = thread_neighbor_ids_[threadid];
+        auto &span_buffer = thread_neighbor_spans_[threadid];
+        score_buffer.resize(beam_capacity);
+        id_buffer.resize(beam_capacity);
+        span_buffer.resize(beam_size);
+        float *const neighbor_scores = score_buffer.data();
+        int *const neighbor_ids = id_buffer.data();
+        auto *const neighbor_spans = span_buffer.data();
         for (int i = 0; i < num_initialize; i += 4) {
             retset[i + 0].id = i + 0;
             retset[i + 1].id = i + 1;
@@ -407,11 +401,10 @@ struct RNNDescent {
 
 #ifdef INTERNAL_CLOCK_TEST
         int bfs_length = 0, bfs_items = 0;
-        int calcdis = 0;
         nowtime = std::chrono::high_resolution_clock::now();
         init_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
         prevtime = nowtime;
-        int for_count = 0, calculate_distance_count = 0, useful_count = 0;
+        long long calculate_distance_count = 0, useful_count = 0;
 #endif
 
         const auto merge_candidates_from_end = [](SingleNeighbor *pool, int length, const SingleNeighbor *incoming,
@@ -450,7 +443,8 @@ struct RNNDescent {
         int smallest_pos = 0;
         // Continue until every candidate in the active pool has been expanded.
         while (smallest_pos < search_L) {
-            SingleNeighbor *usefulsetEnd = usefulset.data();
+            size_t score_count = 0;
+            int span_count = 0;
             for (int beam = 0; smallest_pos < search_L && beam < beam_size; smallest_pos++) {
                 if (retset[smallest_pos].id & 0x80000000)
                     continue;
@@ -472,49 +466,59 @@ struct RNNDescent {
                 // cut INT8 evaluations by 52% and raised QPS by 32% with identical results.
                 // With a full neighbor cache, checking the bitmap to skip fully seen groups
                 // reduced QPS by 2% on the same workload.
-                neighbors.compute_distance(queryid, neighborDistance[threadid]);
+                neighbors.compute_distance(queryid, neighbor_scores + score_count);
 
 #ifdef INTERNAL_CLOCK_TEST
                 nowtime = std::chrono::high_resolution_clock::now();
                 calculate_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
                 prevtime = nowtime;
                 bfs_items++;
-                for_count += neighbors.size;
                 calculate_distance_count += neighbors.size;
 #endif
 
-                float limit = retset[search_L - 1].distance;
-#pragma unroll
-                for (int k = 0; k < neighbors.size; k++) {
-                    if (neighborDistance[threadid][k] < limit) {
-                        if (!candidate_ids.insert(neighbors.edges[k]))
-                            continue;
-                        *usefulsetEnd++ = {neighbors.edges[k], neighborDistance[threadid][k]};
-                    }
+                if (neighbors.size > 0) {
+                    neighbor_spans[span_count++] = {neighbors.edges, neighbors.size};
+                    score_count += neighbors.size;
                 }
-#ifdef INTERNAL_CLOCK_TEST
-                nowtime = std::chrono::high_resolution_clock::now();
-                update_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-                prevtime = nowtime;
-#endif
             }
 #ifdef INTERNAL_CLOCK_TEST
             bfs_length++;
-            useful_count += usefulsetEnd - usefulset.data();
 #endif
-            if (usefulsetEnd == usefulset.data())
+            if (score_count == 0)
                 continue;
-            std::sort(usefulset.data(), usefulsetEnd);
-
+            // Copy IDs in score order after all neighborhoods in the beam are scored.
+            auto *out = neighbor_ids;
+            for (int i = 0; i < span_count; ++i) {
+                const auto &span = neighbor_spans[i];
+                std::memcpy(out, span.ids, span.count * sizeof(int));
+                out += span.count;
+            }
+#ifdef INTERNAL_CLOCK_TEST
+            nowtime = std::chrono::high_resolution_clock::now();
+            getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+            prevtime = nowtime;
+#endif
+            // The cutoff stays fixed during the beam. Keep the adjacency order for deduplication.
+            auto *const usefulsetEnd = detail::append_neighbors_below_cutoff(
+                neighbor_scores, neighbor_ids, score_count,
+                retset[search_L - 1].distance, candidate_ids, usefulset.data());
+            if (usefulsetEnd != usefulset.data()) {
+                std::sort(usefulset.data(), usefulsetEnd);
+                const int first_changed = merge_candidates_from_end(retset.data(), search_L, usefulset.data(), usefulsetEnd);
+                smallest_pos = std::min(smallest_pos, first_changed);
+            }
 #ifdef INTERNAL_CLOCK_TEST
             nowtime = std::chrono::high_resolution_clock::now();
             update_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
             prevtime = nowtime;
+            useful_count += usefulsetEnd - usefulset.data();
 #endif
-
-            const int first_changed = merge_candidates_from_end(retset.data(), search_L, usefulset.data(), usefulsetEnd);
-            smallest_pos = std::min(smallest_pos, first_changed);
         }
+#ifdef INTERNAL_CLOCK_TEST
+        nowtime = std::chrono::high_resolution_clock::now();
+        getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
+        prevtime = nowtime;
+#endif
 
         int refinemax = std::min(refine_max, (int)retset.size());
         retset.resize(refinemax);
@@ -535,9 +539,7 @@ struct RNNDescent {
 #ifdef INTERNAL_CLOCK_TEST
         nowtime = std::chrono::high_resolution_clock::now();
         float recalculate_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-        prevtime = nowtime;
         {
-            // 需要atomic加锁
             std::lock_guard<std::mutex> lock(m_mutex);
             perf_stats.query_count++;
             perf_stats.init_time += init_time;
@@ -545,9 +547,7 @@ struct RNNDescent {
             perf_stats.update_time += update_time;
             perf_stats.calculate_time += calculate_time;
             perf_stats.recalculate_time += recalculate_time;
-            perf_stats.calculate_distance_count += calcdis;
             perf_stats.bfs_length += bfs_length;
-            perf_stats.for_count += for_count;
             perf_stats.bfs_items += bfs_items;
             perf_stats.calculate_distance_count += calculate_distance_count;
             perf_stats.useful_count += useful_count;
@@ -566,14 +566,15 @@ struct RNNDescent {
         Logger::info("RNN Descent Running Time: mean bfs %f times; %f nodes; init_time = "
                      "%f, getneighbor_time = %f, calculate_time = %f, update_time = %f; "
                      "recalculate_time = %f; alltime = %f; calculate_dist_count = %f; "
-                     "for_count = %f; useful_count = %f\n",
+                     "useful_count = %f\n",
                      (float)perf_stats.bfs_length / perf_stats.query_count, (float)perf_stats.bfs_items / perf_stats.query_count,
                      perf_stats.init_time / perf_stats.query_count, perf_stats.getneighbor_time / perf_stats.query_count,
                      perf_stats.calculate_time / perf_stats.query_count, perf_stats.update_time / perf_stats.query_count,
                      perf_stats.recalculate_time / perf_stats.query_count,
-                     (perf_stats.init_time + perf_stats.getneighbor_time + perf_stats.calculate_time + perf_stats.update_time + perf_stats.recalculate_time) /
+                     (perf_stats.init_time + perf_stats.getneighbor_time + perf_stats.calculate_time + perf_stats.update_time +
+                      perf_stats.recalculate_time) /
                          perf_stats.query_count,
-                     (float)perf_stats.calculate_distance_count / perf_stats.query_count, (float)perf_stats.for_count / perf_stats.query_count,
+                     (float)perf_stats.calculate_distance_count / perf_stats.query_count,
                      (float)perf_stats.useful_count / perf_stats.query_count);
         perf_stats.reset();
 #endif
@@ -585,6 +586,8 @@ struct RNNDescent {
         neighbor_pool_.reset();
         search_from_ids.resize(0);
         thread_candidate_ids_.clear();
+        thread_neighbor_ids_.clear();
+        thread_neighbor_spans_.clear();
         graph_distance_computer.reset();
         flush_perf_stats();
     }
@@ -787,6 +790,12 @@ struct RNNDescent {
     static size_t padded_degree(int degree) { return (static_cast<size_t>(degree) + 3) / 4 * 4; }
 
     std::vector<CandidateBitmap> thread_candidate_ids_;
+    std::vector<std::vector<int, AlignedAllocator<int>>> thread_neighbor_ids_;
+    struct NeighborIdSpan {
+        const int *ids;
+        int count;
+    };
+    std::vector<std::vector<NeighborIdSpan, AlignedAllocator<NeighborIdSpan>>> thread_neighbor_spans_;
     SelectedNeighborsContainerType::Pool neighbor_pool_;
     std::vector<MutexWarpper> node_locks_;
 };
