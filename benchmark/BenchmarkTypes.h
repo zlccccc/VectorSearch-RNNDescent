@@ -181,7 +181,9 @@ inline void apply_solution_preset(BenchmarkConfig &config) {
 inline void print_solution_config(const BenchmarkConfig &config) {
     cout << "build config:"
          << " T1=" << config.build_config.T1 << " T2=" << config.build_config.T2 << " S=" << config.build_config.S << " R=" << config.build_config.R
-         << " K0=" << config.build_config.K0 << " num_threads=" << config.build_config.num_threads
+         << " K0=" << config.build_config.K0
+         << " local_three_hop_pruning=" << config.build_config.local_three_hop_pruning
+         << " num_threads=" << config.build_config.num_threads
          << " neighbor_pool_limit_gb=" << (double)config.build_config.neighbor_pool_size_limit_bytes / 1024 / 1024 / 1024 << endl;
     cout << "search config:"
          << " num_initialize=" << config.search_config.num_initialize << " search_L=" << config.search_config.search_L

@@ -32,6 +32,7 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 | `--S` | `BuildConfig::S` | 每个节点的初始随机邻居数量 |
 | `--R` | `BuildConfig::R` | 反向边处理时保留的候选上限 |
 | `--K0` | `BuildConfig::K0` | 最终邻接表的裁剪上限，存储时会补齐到四条一组 |
+| `--local-three-hop-prune` | `BuildConfig::local_three_hop_pruning` | 启用局部三跳筛边，默认关闭 |
 | `--num-initialize` | `SearchConfig::num_initialize` | 建图后选出的查询入口数，也影响 BFS 重排的起点 |
 | `--search-L` | `SearchConfig::search_L` | 搜索中保持有序的候选池宽度 |
 | `--beam-size` | `SearchConfig::beam_size` | 收集一批新候选前最多展开的节点数 |
@@ -45,6 +46,8 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 搜索会将 `search_L` 和 `refine_max` 至少提高到 Top K，将入口数至少提高到 `search_L`，再根据底库条数和四路算距要求调整入口数。预设日志和报告记录输入配置，具体归一化规则见 [RNNDescent.h](../solution/rnndescent/RNNDescent.h) 中的 `sanitize_search_config`。实际使用时可以显式设置四的倍数入口，并取 `topk <= refine_max <= search_L <= num_initialize`，让预算含义直接对应候选池。
 
 搜索会持续处理当前候选池中的未展开节点。扩大 `search_L` 会同时影响候选保留和搜索工作量。`beam_size` 会影响候选合并频率与搜索顺序，应结合 Recall@10 比较。`refine_max` 控制原始维度排序的候选量，`fp32_refine_max` 控制最后的 FP32 精排量。实际 FP32 数量至少为 Top K，并且不超过实际候选数；候选数不超过 FP32 数量时，直接做 FP32 精排。
+
+局部三跳筛边在最终裁剪前替换有替代路径的边，保持每个节点的出度。启用后可用 ground truth 重新选择达到目标 Recall 的 `search_L`。
 
 启用 PCA 时，先对候选计算原始维度的 INT8/UINT8 距离，再保留 FP32 精排候选。不开 PCA 时，查图已经计算相同原始维度的量化距离，直接复用这些分数。`--fp32-refine-max 0` 跳过量化筛选，恢复完整 FP32 精排。调整这个数量会影响 Recall，比较性能时需要分别调参到相同目标精度。
 

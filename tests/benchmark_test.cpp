@@ -96,11 +96,13 @@ TEST(BenchmarkCliTest, RejectsInvalidBudgetsAndMissingValues) {
 }
 
 TEST(BenchmarkCliTest, GraphBuildOptionsOverrideDatasetPreset) {
-    auto config = parse({"--mode", "dataset", "--dataset-name", "gist", "--S", "192", "--R", "512", "--K0", "96"});
+    auto config = parse({"--mode", "dataset", "--dataset-name", "gist", "--S", "192", "--R", "512", "--K0", "96",
+                         "--local-three-hop-prune"});
     benchmark::apply_solution_preset(config);
     EXPECT_EQ(config.build_config.S, 192);
     EXPECT_EQ(config.build_config.R, 512);
     EXPECT_EQ(config.build_config.K0, 96);
+    EXPECT_TRUE(config.build_config.local_three_hop_pruning);
     EXPECT_THAT([] { parse({"--R", "0"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("positive integer")));
     EXPECT_THAT([] { parse({"--S", "32.5"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("positive integer")));
 }

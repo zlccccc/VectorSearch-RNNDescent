@@ -24,6 +24,7 @@ inline void print_usage(const char *prog) {
     cout << "  --data-size <n> --dim <d> --test-iter <n> --topk <k> --repeat <n>\n";
     cout << "  --output-iter <n> --exact-check-queries <n> --warmup-topk <k>\n";
     cout << "  --S <n> --R <n> --K0 <n>\n";
+    cout << "  --local-three-hop-prune  Use three-hop alternatives when selecting final graph edges\n";
     cout << "  --num-initialize <n> --search-L <n> --refine-max <n> [--beam-size <n>]\n";
     cout << "  --fp32-refine-max <n>  FP32 shortlist size (default 32; 0 refines all candidates)\n";
     cout << "  --neighbor-pool-gb <n>  Neighbor pool budget in GiB (default 0 disables vector caching)\n";
@@ -91,6 +92,8 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             config.override_r = require_positive_int(arg);
         } else if (arg == "--K0") {
             config.override_k0 = stoi(require_value(arg));
+        } else if (arg == "--local-three-hop-prune") {
+            config.build_config.local_three_hop_pruning = true;
         } else if (arg == "--num-initialize") {
             config.override_num_initialize = stoi(require_value(arg));
         } else if (arg == "--search-L") {

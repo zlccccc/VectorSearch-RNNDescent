@@ -27,6 +27,7 @@
 #include "Assertions.h"
 #include "CandidateBitmap.h"
 #include "CandidateReranker.h"
+#include "GraphPruning.h"
 #include "Logger.h"
 #include "Views.h"
 #include "discomputer/PlatformSimdDistanceComputer.h"
@@ -48,16 +49,9 @@ struct XNeighbor {
             id_ |= 0x80000000;
         }
     }
-    int id() { return id_ & 0x7fffffff; }
-    int flag() {
-        if (id_ & 0x80000000)
-            return true;
-        else
-            return false;
-        // return flag_;
-    }
+    int id() const { return id_ & 0x7fffffff; }
+    bool flag() const { return (id_ & 0x80000000) != 0; }
     void setflag(bool flag) {
-        // flag_ = flag;
         if (flag)
             id_ |= 0x80000000;
         else
@@ -71,6 +65,28 @@ struct XNeighbor {
     }
 };
 
+namespace detail {
+
+inline void sort_and_merge_neighbors(std::vector<XNeighbor> &neighbors) {
+    std::sort(neighbors.begin(), neighbors.end());
+    // Copies of an edge carry the same distance, so sorting groups them.
+    const auto same_edge = [](const XNeighbor &a, const XNeighbor &b) { return a.id() == b.id(); };
+    auto kept = std::adjacent_find(neighbors.begin(), neighbors.end(), same_edge);
+    if (kept == neighbors.end())
+        return;
+    for (auto next = kept + 1; next != neighbors.end(); ++next) {
+        if (same_edge(*kept, *next)) {
+            // Equal IDs differ only in the high bit. Keep the edge fresh if either copy is fresh.
+            kept->id_ |= next->id_;
+        } else {
+            *++kept = *next;
+        }
+    }
+    neighbors.erase(kept + 1, neighbors.end());
+}
+
+} // namespace detail
+
 struct RNNDescent {
     struct BuildConfig {
         int T1 = 4;
@@ -83,6 +99,7 @@ struct RNNDescent {
         long long neighbor_pool_size_limit_bytes = 0;
         bool save_neighbor = true;
         bool random_init = true;
+        bool local_three_hop_pruning = false;
     };
 
     struct SearchConfig {
@@ -213,16 +230,16 @@ struct RNNDescent {
         }
 
 #pragma omp parallel for num_threads(build_config.num_threads)
-        for (int u = 0; u < n; ++u) { // remove edges
-            auto &pool = graph[u];
-            std::sort(pool.begin(), pool.end());
-            pool.erase(std::unique(pool.begin(), pool.end(), [](XNeighbor &a, XNeighbor &b) { return a.id() == b.id(); }), pool.end());
+        for (int u = 0; u < n; ++u)
+            detail::sort_and_merge_neighbors(graph[u]);
+
+        if (build_config.local_three_hop_pruning) {
+            const auto replaced = detail::prune_local_three_hop(graph, build_config.K0, build_config.num_threads);
+            Logger::info(verbose, "Local three-hop pruning replaced %zu edges\n", replaced);
         }
 
-        // 这里的resize可能会导致图不联通; 这件事情需要在上面build的时候就考虑到
         size_t all_edges_size = 0;
         for (int u = 0; u < n; ++u) {
-            // 清理内存
             if (graph[u].size() > build_config.K0)
                 graph[u].resize(build_config.K0);
             all_edges_size += graph[u].size();
@@ -621,8 +638,7 @@ struct RNNDescent {
                 pool.clear();
             }
             auto &candidates = retired.capacity() == 0 ? old_pool : retired;
-            std::sort(candidates.begin(), candidates.end());
-            candidates.erase(std::unique(candidates.begin(), candidates.end(), [](XNeighbor &a, XNeighbor &b) { return a.id() == b.id(); }), candidates.end());
+            detail::sort_and_merge_neighbors(candidates);
 
             for (auto &nn : candidates) {
                 bool ok = true;
@@ -691,10 +707,8 @@ struct RNNDescent {
                         neighbor.setflag(true);
                         merged.push_back(neighbor);
                     }
-                    std::sort(merged.begin(), merged.end());
-                    const auto unique_end = std::unique(merged.begin(), merged.end(),
-                                                        [](XNeighbor &a, XNeighbor &b) { return a.id() == b.id(); });
-                    const auto count = std::min<size_t>(unique_end - merged.begin(), build_config.R);
+                    detail::sort_and_merge_neighbors(merged);
+                    const auto count = std::min<size_t>(merged.size(), build_config.R);
                     outgoing.assign(merged.begin(), merged.begin() + count);
                 }
             }

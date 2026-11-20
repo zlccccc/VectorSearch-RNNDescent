@@ -91,6 +91,7 @@ inline void write_benchmark_report(const BenchmarkConfig &config, const Benchmar
     oss << "build_config.S=" << config.build_config.S << char(10);
     oss << "build_config.R=" << config.build_config.R << char(10);
     oss << "build_config.K0=" << config.build_config.K0 << char(10);
+    oss << "build_config.local_three_hop_pruning=" << config.build_config.local_three_hop_pruning << char(10);
     oss << "build_config.num_threads=" << config.build_config.num_threads << char(10);
     oss << "build_config.neighbor_pool_size_limit_bytes=" << config.build_config.neighbor_pool_size_limit_bytes << char(10);
     oss << "search_config.num_initialize=" << config.search_config.num_initialize << char(10);
