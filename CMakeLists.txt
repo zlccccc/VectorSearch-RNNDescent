@@ -70,7 +70,7 @@ set(RNNDESCENT_INDEX_HEADERS
     solution/rnndescent/common/Views.h
     solution/rnndescent/build/GraphBuilder.h
     solution/rnndescent/build/GraphConfig.h
-    solution/rnndescent/GraphPruning.h
+    solution/rnndescent/build/GraphPruning.h
     solution/rnndescent/build/GraphReorder.h
     solution/rnndescent/search/GraphSearcher.h
     solution/rnndescent/build/GraphTypes.h
