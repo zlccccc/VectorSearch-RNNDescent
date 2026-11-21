@@ -76,7 +76,6 @@ set(RNNDESCENT_INDEX_HEADERS
     solution/rnndescent/build/GraphTypes.h
     solution/rnndescent/IndexRNNDescent.h
     solution/rnndescent/RNNDescent.h
-    solution/rnndescent/CandidateReranker.h
     solution/rnndescent/search/CandidateReranker.h
     solution/rnndescent/PCAProjection.h)
 
