@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <utility>
 
-#include "Assertions.h"
-#include "discomputer/PlatformSimdDistanceComputer.h"
+#include "../Assertions.h"
+#include "../discomputer/PlatformSimdDistanceComputer.h"
 
 namespace rnndescent {
 namespace {

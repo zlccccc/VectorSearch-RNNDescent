@@ -1,10 +1,10 @@
 #pragma once
 
-#include "GraphConfig.h"
-#include "GraphTypes.h"
-#include "Views.h"
-#include "discomputer/PlatformSimdDistanceComputer.h"
-#include "discomputer/utils.h"
+#include "../build/GraphConfig.h"
+#include "../build/GraphTypes.h"
+#include "../Views.h"
+#include "../discomputer/PlatformSimdDistanceComputer.h"
+#include "../discomputer/utils.h"
 
 #include <memory>
 #include <vector>

@@ -1,11 +1,11 @@
 #pragma once
 
-#include "GraphBuilder.h"
-#include "GraphConfig.h"
+#include "build/GraphBuilder.h"
+#include "build/GraphConfig.h"
 #include "GraphPruning.h"
-#include "GraphReorder.h"
-#include "GraphSearcher.h"
-#include "GraphTypes.h"
+#include "reorder/GraphReorder.h"
+#include "search/GraphSearcher.h"
+#include "build/GraphTypes.h"
 #include "Logger.h"
 
 #include <memory>

@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "Assertions.h"
-#include "CandidateReranker.h"
+#include "search/CandidateReranker.h"
 #include "Logger.h"
 #include "PCAProjection.h"
 #include "RNNDescent.h"

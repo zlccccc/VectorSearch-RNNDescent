@@ -75,7 +75,7 @@ int main() {
 ~~~bash
 c++ -O3 -std=c++17 -fopenmp -mavx2 -mfma -DRNNDESCENT_FORCE_AVX2 -I . \
   /tmp/rnndescent-example.cpp solution/solution.cpp solution/rnndescent/PCAProjection.cpp \
-  solution/rnndescent/CandidateReranker.cpp \
+  solution/rnndescent/search/CandidateReranker.cpp \
   -lopenblas -o /tmp/rnndescent-example
 OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 /tmp/rnndescent-example
 ~~~

@@ -1,7 +1,7 @@
 #include "GraphBuilder.h"
 
-#include "GraphPruning.h"
-#include "Logger.h"
+#include "../GraphPruning.h"
+#include "../Logger.h"
 
 #include <algorithm>
 #include <numeric>

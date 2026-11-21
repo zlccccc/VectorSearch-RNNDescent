@@ -57,23 +57,24 @@ endif()
 
 set(RNNDESCENT_INDEX_SOURCES
     solution/solution.cpp
-    solution/rnndescent/GraphBuilder.cpp
-    solution/rnndescent/GraphReorder.cpp
-    solution/rnndescent/GraphSearcher.cpp
-    solution/rnndescent/CandidateReranker.cpp
+    solution/rnndescent/build/GraphBuilder.cpp
+    solution/rnndescent/reorder/GraphReorder.cpp
+    solution/rnndescent/search/GraphSearcher.cpp
+    solution/rnndescent/search/CandidateReranker.cpp
     solution/rnndescent/PCAProjection.cpp)
 
 set(RNNDESCENT_INDEX_HEADERS
     solution/solution.h
-    solution/rnndescent/GraphBuilder.h
-    solution/rnndescent/GraphConfig.h
+    solution/rnndescent/build/GraphBuilder.h
+    solution/rnndescent/build/GraphConfig.h
     solution/rnndescent/GraphPruning.h
-    solution/rnndescent/GraphReorder.h
-    solution/rnndescent/GraphSearcher.h
-    solution/rnndescent/GraphTypes.h
+    solution/rnndescent/reorder/GraphReorder.h
+    solution/rnndescent/search/GraphSearcher.h
+    solution/rnndescent/build/GraphTypes.h
     solution/rnndescent/IndexRNNDescent.h
     solution/rnndescent/RNNDescent.h
     solution/rnndescent/CandidateReranker.h
+    solution/rnndescent/search/CandidateReranker.h
     solution/rnndescent/PCAProjection.h)
 
 add_library(rnndescent_solution STATIC)

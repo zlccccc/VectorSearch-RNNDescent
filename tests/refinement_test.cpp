@@ -1,4 +1,4 @@
-#include "solution/rnndescent/CandidateReranker.h"
+#include "solution/rnndescent/search/CandidateReranker.h"
 #include "solution/rnndescent/RNNDescent.h"
 
 #include <algorithm>

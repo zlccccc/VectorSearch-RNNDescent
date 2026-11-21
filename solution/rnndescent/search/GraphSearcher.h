@@ -1,12 +1,12 @@
 #pragma once
 
 #include "CandidateReranker.h"
-#include "GraphConfig.h"
-#include "GraphTypes.h"
-#include "Views.h"
-#include "discomputer/PlatformSimdDistanceComputer.h"
-#include "search/CandidateBitmap.h"
-#include "search/NeighborScoreFilter.h"
+#include "../build/GraphConfig.h"
+#include "../build/GraphTypes.h"
+#include "../Views.h"
+#include "../discomputer/PlatformSimdDistanceComputer.h"
+#include "CandidateBitmap.h"
+#include "NeighborScoreFilter.h"
 
 #include <memory>
 #include <mutex>
