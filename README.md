@@ -6,6 +6,7 @@
 
 | 内容 | 文档 |
 |---|---|
+| 索引模块、建图、重排和搜索职责 | [RNNDescent 模块](solution/rnndescent/README.md) |
 | 运行模式、参数默认值、数据集预设和线程配置 | [参数配置](docs/configuration.md) |
 | C++ 调用示例、输入输出、内存所有权和重建 | [C++ 接口](docs/api.md) |
 | 建图、PCA、搜索、候选合并和内存组成 | [算法与数据流](docs/architecture.md) |
@@ -143,6 +144,7 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 ./build/algorithm \
 
 - `benchmark/` 提供命令行、数据读取、评估和报告。
 - `solution/solution.h` 提供 `Solution::build`、`search` 和 `reset`。底库向量供 FP32 精排引用，需在索引使用期间保持有效。结果按查询行连续存储，距离可通过 `distance_buffer()` 读取。更新底库需要重新构建。
+- `solution/rnndescent/` 包含索引编排、图构建、BFS 重排、图搜索和候选重排。模块边界见 [RNNDescent 模块](solution/rnndescent/README.md)。
 - `solution/rnndescent/discomputer/` 包含共用测距接口和平台入口。`flat/` 下是 FP32、FP16 和 INT16 的测距实现，`quantized/` 下是 INT8、UINT8 测距和邻居池。`tests/` 包含回归测试。
 
 ## 商用许可

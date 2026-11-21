@@ -55,10 +55,33 @@ else()
     message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
-add_library(rnndescent_solution STATIC
+set(RNNDESCENT_INDEX_SOURCES
     solution/solution.cpp
+    solution/rnndescent/GraphBuilder.cpp
+    solution/rnndescent/GraphReorder.cpp
+    solution/rnndescent/GraphSearcher.cpp
     solution/rnndescent/CandidateReranker.cpp
     solution/rnndescent/PCAProjection.cpp)
+
+set(RNNDESCENT_INDEX_HEADERS
+    solution/solution.h
+    solution/rnndescent/GraphBuilder.h
+    solution/rnndescent/GraphConfig.h
+    solution/rnndescent/GraphPruning.h
+    solution/rnndescent/GraphReorder.h
+    solution/rnndescent/GraphSearcher.h
+    solution/rnndescent/GraphTypes.h
+    solution/rnndescent/IndexRNNDescent.h
+    solution/rnndescent/RNNDescent.h
+    solution/rnndescent/CandidateReranker.h
+    solution/rnndescent/PCAProjection.h)
+
+add_library(rnndescent_solution STATIC)
+target_sources(rnndescent_solution
+    PRIVATE ${RNNDESCENT_INDEX_SOURCES}
+    PUBLIC ${RNNDESCENT_INDEX_HEADERS})
+source_group("Index Sources" FILES ${RNNDESCENT_INDEX_SOURCES})
+source_group("Index Headers" FILES ${RNNDESCENT_INDEX_HEADERS})
 target_link_libraries(rnndescent_solution PUBLIC rnndescent_build_options)
 
 add_executable(vector_search_app main.cpp)

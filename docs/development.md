@@ -63,6 +63,8 @@ cmake -S . -B build/profile -DCMAKE_BUILD_TYPE=Release \
 cmake --build build/profile --target vector_search_app --parallel 4
 ~~~
 
+索引实现按图构建、BFS 重排和图搜索拆分。新增模块的实现文件由 `rnndescent_solution` 目标统一编译，CMake 中按 `Index Sources` 和 `Index Headers` 分组。模块职责见 [RNNDescent 模块说明](../solution/rnndescent/README.md)。
+
 该选项启用 `INTERNAL_CLOCK_TEST`，记录各搜索阶段的平均线程耗时和操作计数。`getneighbor_time` 包括图遍历、记录邻接段和复制 ID，`calculate_time` 是邻居算距，`update_time` 包括阈值筛选、去重、排序和合并。端到端 QPS 对照使用关闭该选项的构建，避免计时和聚合开销。
 
 **构建错误可从依赖和实际目标配置定位。**

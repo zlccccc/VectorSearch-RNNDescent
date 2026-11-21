@@ -2,7 +2,7 @@
 
 入口程序由 [main.cpp](../main.cpp) 调用 [BenchmarkRunner.h](../benchmark/BenchmarkRunner.h)。后者负责读取数据、选择参数和计时，再通过 [Solution](../solution/solution.cpp) 使用索引。
 
-`IndexRNNDescent` 负责组装三个模块。`PCAProjection` 提供投影后的矩阵，`RNNDescent` 构建图并在查询时生成候选，`CandidateReranker` 在原始向量空间选出最终结果。
+`IndexRNNDescent` 负责组装 PCA、图索引和候选重排。`RNNDescent` 保留兼容外观，内部由 `GraphBuilder`、`GraphReorder` 和 `GraphSearcher` 分别负责建图、BFS 重排及查询候选生成。`CandidateReranker` 在原始向量空间选出最终结果。模块职责见 [RNNDescent 模块说明](../solution/rnndescent/README.md)。
 
 **建索引**
 
@@ -11,7 +11,8 @@ flowchart LR
     B["原始 FP32 底库"] -->|启用 PCA| P["PCAProjection<br/>训练并投影底库"]
     B -->|关闭 PCA| G
     P --> G
-    G["RNNDescent<br/>建图、裁边、BFS 编号重排"] --> I["图索引<br/>量化底库、邻接表、可选邻居缓存"]
+    G["GraphBuilder<br/>建图、裁边"] --> R0["GraphReorder<br/>BFS 编号与索引物化"]
+    R0 --> I["图索引<br/>量化底库、邻接表、可选邻居缓存"]
     B --> R["CandidateReranker<br/>引用原始 FP32 底库<br/>按需用 BFS 顺序编码原始维度 8 位底库"]
     G -->|BFS 行序| R
 ~~~
@@ -23,7 +24,7 @@ flowchart TD
     Q["原始 FP32 查询"] -->|启用 PCA| P["PCAProjection<br/>投影查询并复用缓冲"]
 
     subgraph GRAPH["RNNDescent · 图搜索"]
-        V["量化查图查询"] --> S["图遍历、候选去重与合并"]
+        V["量化查图查询"] --> S["GraphSearcher<br/>图遍历、候选去重与合并"]
         S --> F["取至多 refine_max 个候选<br/>保留 BFS 图 ID"]
     end
 
@@ -46,7 +47,7 @@ flowchart TD
 
 **建图由迭代更新、反向边处理和重排组成。**
 
-[RNNDescent](../solution/rnndescent/RNNDescent.h) 按 `S` 生成初始随机邻居，通过量化平方距离比较候选。`T1` 控制外层迭代次数，每轮内执行 `T2` 次邻居更新，外层轮次之间处理反向边并用 `R` 限制候选规模。结束后按距离裁剪到 `K0`，邻接 ID 存储补齐为四条一组。
+[GraphBuilder](../solution/rnndescent/GraphBuilder.h) 按 `S` 生成初始随机邻居，通过量化平方距离比较候选。`T1` 控制外层迭代次数，每轮内执行 `T2` 次邻居更新，外层轮次之间处理反向边并用 `R` 限制候选规模。结束后按距离裁剪到 `K0`，邻接 ID 存储补齐为四条一组。
 
 重复边合并时，只要任一副本标记为新边，合并结果就保留这个标志。邻居更新会跳过两条边均已处理过的候选对，因此新边标志会影响后续传播。
 
