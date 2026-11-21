@@ -58,7 +58,7 @@ endif()
 set(RNNDESCENT_INDEX_SOURCES
     solution/solution.cpp
     solution/rnndescent/build/GraphBuilder.cpp
-    solution/rnndescent/reorder/GraphReorder.cpp
+    solution/rnndescent/build/GraphReorder.cpp
     solution/rnndescent/search/GraphSearcher.cpp
     solution/rnndescent/search/CandidateReranker.cpp
     solution/rnndescent/PCAProjection.cpp)
@@ -68,7 +68,7 @@ set(RNNDESCENT_INDEX_HEADERS
     solution/rnndescent/build/GraphBuilder.h
     solution/rnndescent/build/GraphConfig.h
     solution/rnndescent/GraphPruning.h
-    solution/rnndescent/reorder/GraphReorder.h
+    solution/rnndescent/build/GraphReorder.h
     solution/rnndescent/search/GraphSearcher.h
     solution/rnndescent/build/GraphTypes.h
     solution/rnndescent/IndexRNNDescent.h

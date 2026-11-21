@@ -6,7 +6,7 @@
 |---|---|---|
 | 图类型与配置 | `build/GraphTypes.h`、`build/GraphConfig.h` | 邻居表示、图别名、建图和查询参数归一化 |
 | 图构建 | `build/GraphBuilder.h/.cpp` | 初始随机图、邻居更新、反向边、裁剪和补齐前的邻接表 |
-| 图重排 | `reorder/GraphReorder.h/.cpp` | BFS 编号、原始 ID 映射、量化底库和邻居缓存物化 |
+| 图重排 | `build/GraphReorder.h/.cpp` | BFS 编号、原始 ID 映射、量化底库和邻居缓存物化 |
 | 图搜索 | `search/GraphSearcher.h/.cpp` | 每线程搜索缓冲、候选位图、邻居算距、候选筛选和合并 |
 | 候选重排 | `search/CandidateReranker.h/.cpp` | 原始维度 UINT8 粗排和 FP32 精排 |
 

@@ -3,7 +3,7 @@
 #include "build/GraphBuilder.h"
 #include "build/GraphConfig.h"
 #include "GraphPruning.h"
-#include "reorder/GraphReorder.h"
+#include "build/GraphReorder.h"
 #include "search/GraphSearcher.h"
 #include "build/GraphTypes.h"
 #include "Logger.h"

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "GraphConfig.h"
-#include "../reorder/GraphReorder.h"
+#include "GraphReorder.h"
 #include "GraphTypes.h"
 #include "../Views.h"
 #include "../discomputer/PlatformSimdDistanceComputer.h"
