@@ -1,6 +1,6 @@
 #include "GraphReorder.h"
 
-#include "../Logger.h"
+#include "../common/Logger.h"
 
 #include <algorithm>
 #include <numeric>

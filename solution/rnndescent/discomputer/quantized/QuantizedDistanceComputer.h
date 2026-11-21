@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../Logger.h"
+#include "../../common/Logger.h"
 #include "../MyDistanceComputer.h"
 #include "../utils.h"
 #include "NeighborsStorageBase.h"

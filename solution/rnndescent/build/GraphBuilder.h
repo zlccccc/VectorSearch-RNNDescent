@@ -3,7 +3,7 @@
 #include "GraphConfig.h"
 #include "GraphReorder.h"
 #include "GraphTypes.h"
-#include "../Views.h"
+#include "../common/Views.h"
 #include "../discomputer/PlatformSimdDistanceComputer.h"
 
 #include <random>

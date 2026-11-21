@@ -7,12 +7,12 @@
 #include <memory>
 #include <vector>
 
-#include "Assertions.h"
+#include "common/Assertions.h"
 #include "search/CandidateReranker.h"
-#include "Logger.h"
+#include "common/Logger.h"
 #include "PCAProjection.h"
 #include "RNNDescent.h"
-#include "Views.h"
+#include "common/Views.h"
 
 namespace rnndescent {
 

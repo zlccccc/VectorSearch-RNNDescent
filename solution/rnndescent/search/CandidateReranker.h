@@ -3,7 +3,7 @@
 #include <memory>
 #include <vector>
 
-#include "../Views.h"
+#include "../common/Views.h"
 #include "../discomputer/MyDistanceComputer.h"
 #include "../discomputer/utils.h"
 

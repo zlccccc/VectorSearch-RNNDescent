@@ -3,7 +3,7 @@
 #include "CandidateReranker.h"
 #include "../build/GraphConfig.h"
 #include "../build/GraphTypes.h"
-#include "../Views.h"
+#include "../common/Views.h"
 #include "../discomputer/PlatformSimdDistanceComputer.h"
 #include "CandidateBitmap.h"
 #include "NeighborScoreFilter.h"

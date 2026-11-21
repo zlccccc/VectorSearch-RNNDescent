@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../../Assertions.h"
-#include "../../Logger.h"
+#include "../../common/Assertions.h"
+#include "../../common/Logger.h"
 #include "../MyDistanceComputer.h"
 #include "../utils.h"
 

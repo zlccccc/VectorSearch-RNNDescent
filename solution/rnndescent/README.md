@@ -4,6 +4,7 @@
 
 | 模块 | 文件 | 职责 |
 |---|---|---|
+| 公共基础设施 | `common/Assertions.h`、`common/Logger.h`、`common/Views.h` | 断言、日志、矩阵视图和输入校验 |
 | 图类型与配置 | `build/GraphTypes.h`、`build/GraphConfig.h` | 邻居表示、图别名、建图和查询参数归一化 |
 | 图构建 | `build/GraphBuilder.h/.cpp` | 初始随机图、邻居更新、反向边、裁剪和补齐前的邻接表 |
 | 图重排 | `build/GraphReorder.h/.cpp` | BFS 编号、原始 ID 映射、量化底库和邻居缓存物化 |

@@ -6,7 +6,7 @@
 #include "build/GraphReorder.h"
 #include "search/GraphSearcher.h"
 #include "build/GraphTypes.h"
-#include "Logger.h"
+#include "common/Logger.h"
 
 #include <memory>
 #include <random>

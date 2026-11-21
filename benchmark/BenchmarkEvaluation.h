@@ -1,7 +1,7 @@
 #pragma once
 
 #include "BenchmarkTypes.h"
-#include "../solution/rnndescent/Logger.h"
+#include "../solution/rnndescent/common/Logger.h"
 
 #include <algorithm>
 #include <cmath>

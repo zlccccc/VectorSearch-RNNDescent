@@ -1,6 +1,6 @@
 #include "solution.h"
-#include "rnndescent/Logger.h"
-#include "rnndescent/Views.h"
+#include "rnndescent/common/Logger.h"
+#include "rnndescent/common/Views.h"
 
 #include <cstring>
 #include <random>
