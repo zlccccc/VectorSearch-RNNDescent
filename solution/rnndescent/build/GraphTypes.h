@@ -41,7 +41,9 @@ struct XNeighbor {
 
 using KNNGraph = std::vector<std::vector<XNeighbor>>;
 
-inline void sort_and_merge_neighbors_impl(std::vector<XNeighbor> &neighbors) {
+namespace detail {
+
+inline void sort_and_merge_neighbors(std::vector<XNeighbor> &neighbors) {
     std::sort(neighbors.begin(), neighbors.end());
     const auto same_edge = [](const XNeighbor &a, const XNeighbor &b) { return a.id() == b.id(); };
     auto kept = std::adjacent_find(neighbors.begin(), neighbors.end(), same_edge);
@@ -55,11 +57,6 @@ inline void sort_and_merge_neighbors_impl(std::vector<XNeighbor> &neighbors) {
         }
     }
     neighbors.erase(kept + 1, neighbors.end());
-}
-
-namespace detail {
-inline void sort_and_merge_neighbors(std::vector<XNeighbor> &neighbors) {
-    sort_and_merge_neighbors_impl(neighbors);
 }
 } // namespace detail
 
