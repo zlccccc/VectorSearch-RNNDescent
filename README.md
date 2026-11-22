@@ -101,7 +101,7 @@ ctest --test-dir build -R RecallTest --output-on-failure
 
 ## Benchmark
 
-SIFT100K 和 GIST100K 用固定图对照 AVX2、AVX-VNNI、AVX-512 VNNI 和 NEON Dot Product 的查图性能。1 线程和 2 线程 QPS、本机百万级结果及复测命令见 [Benchmark 性能基准](benchmark/README.md)。
+SIFT100K 和 GIST100K 用固定图和统一参数对照 AVX2、AVX-VNNI、AVX-512 VNNI 和 NEON Dot Product 的 1 线程与 2 线程性能。本机及云机的百万级结果和复测命令见 [Benchmark 性能基准](benchmark/README.md)。
 
 ### 随机向量
 
