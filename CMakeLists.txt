@@ -66,6 +66,7 @@ set(RNNDESCENT_INDEX_SOURCES
 set(RNNDESCENT_INDEX_HEADERS
     solution/solution.h
     solution/rnndescent/common/Assertions.h
+    solution/rnndescent/common/HugePages.h
     solution/rnndescent/common/Logger.h
     solution/rnndescent/common/Views.h
     solution/rnndescent/build/GraphBuilder.h

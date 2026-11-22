@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../common/HugePages.h"
 #include "../MyDistanceComputer.h"
 
 #include <cstddef>
@@ -42,7 +43,9 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
             if constexpr (std::is_integral_v<Code>)
                 kernel.train(input, n * d);
             encode_rows(input, n, matrix, matrix_norms);
+            detail::try_huge_pages(matrix.data(), matrix.size() * sizeof(Code));
         }
+        detail::try_huge_pages(matrix_norms.data(), matrix_norms.size() * sizeof(Dot));
     }
 
     int row_count() const override { return static_cast<int>(n); }

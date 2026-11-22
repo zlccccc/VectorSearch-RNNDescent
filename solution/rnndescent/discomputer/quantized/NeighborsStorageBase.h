@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../common/Assertions.h"
+#include "../../common/HugePages.h"
 #include "../../common/Logger.h"
 #include "../MyDistanceComputer.h"
 #include "../utils.h"
@@ -85,6 +86,8 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
             }
 
             preserve_limit = target_size - required_size;
+            if (preserve_limit > 0)
+                detail::try_huge_pages(bytes_.data(), bytes_.size());
 
             const double cache_ratio = cached_bytes > 0 ? (100.0 * preserve_limit / cached_bytes) : 0.0;
             Logger::info("%lld edges; total of %.2f%% neighbors can be cached; cache size %.2fG\n", total_edges, cache_ratio,

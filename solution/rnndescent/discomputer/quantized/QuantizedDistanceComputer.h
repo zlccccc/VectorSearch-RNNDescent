@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../common/HugePages.h"
 #include "../../common/Logger.h"
 #include "../MyDistanceComputer.h"
 #include "../utils.h"
@@ -81,6 +82,8 @@ template <class Kernel> class QuantizedDistanceComputer final : public MyDistanc
             const float *source = data + static_cast<size_t>(row_order ? row_order[i] : i) * d;
             matrix_norms[i] = encode_row(source, matrix.data() + i * stride);
         }
+        detail::try_huge_pages(matrix.data(), matrix.size() * sizeof(Code));
+        detail::try_huge_pages(matrix_norms.data(), matrix_norms.size() * sizeof(int));
     }
 
     int row_count() const override { return n; }
