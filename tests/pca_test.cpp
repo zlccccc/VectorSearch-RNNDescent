@@ -60,5 +60,49 @@ TEST(PCAProjectionTest, SampledTrainingPreservesTheLeadingAxisAcrossBatches) {
     }
 }
 
+TEST(PCAProjectionTest, HadamardMixesPcaAxesAndPreservesProjectedDistances) {
+    for (const int output_dim : {6, 64, 96}) {
+        SCOPED_TRACE(output_dim);
+        const int axes = output_dim + 1;
+        const int rows = 2 * axes;
+        // Exercise both the Gram and covariance training paths.
+        const int input_dim = output_dim == 6 ? rows + 1 : axes + 1;
+        constexpr float center = 0.25f;
+        std::vector<float> base(static_cast<size_t>(rows) * input_dim, center);
+        for (int axis = 0; axis < axes; ++axis) {
+            const float offset = (axes - axis) * 0.25f;
+            base[static_cast<size_t>(2 * axis) * input_dim + axis] += offset;
+            base[static_cast<size_t>(2 * axis + 1) * input_dim + axis] -= offset;
+        }
+        rnndescent::PCAProjection pca(rnndescent::FloatMatrixView::from_vector(base, input_dim), output_dim);
+
+        std::vector<float> queries(4 * input_dim, center);
+        queries[input_dim] += 1;
+        queries[2 * input_dim + output_dim - 1] += 1;
+        queries[3 * input_dim + output_dim] += 1;
+        const auto projected = pca.project_queries(rnndescent::FloatMatrixView::from_vector(queries, input_dim));
+        int first_block = 1;
+        while (first_block <= output_dim / 2)
+            first_block *= 2;
+        const float mixed_axis = 1.0f / std::sqrt(static_cast<float>(first_block));
+        for (int i = 0; i < output_dim; ++i) {
+            EXPECT_NEAR(projected.row_ptr(0)[i], 0.0f, 1e-5f);
+            EXPECT_NEAR(std::abs(projected.row_ptr(1)[i]), i < first_block ? mixed_axis : 0.0f, 1e-5f);
+            EXPECT_NEAR(projected.row_ptr(3)[i], 0.0f, 1e-5f);
+        }
+        const auto squared_distance = [&](int a, int b) {
+            float sum = 0;
+            for (int i = 0; i < output_dim; ++i) {
+                const float diff = projected.row_ptr(a)[i] - projected.row_ptr(b)[i];
+                sum += diff * diff;
+            }
+            return sum;
+        };
+        EXPECT_NEAR(squared_distance(0, 1), 1.0f, 1e-5f);
+        EXPECT_NEAR(squared_distance(0, 2), 1.0f, 1e-5f);
+        EXPECT_NEAR(squared_distance(1, 2), 2.0f, 1e-5f);
+    }
+}
+
 } // namespace
 } // namespace tests

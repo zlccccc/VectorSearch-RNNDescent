@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cblas.h>
+#include <cmath>
+#include <cstdint>
 #include <numeric>
 #include <random>
 
@@ -31,6 +33,49 @@ std::vector<float> leading_eigenvectors(const std::vector<float> &symmetric, bla
         std::copy_n(vectors.data() + static_cast<size_t>(dimension - 1 - i) * dimension, dimension,
                     leading.data() + static_cast<size_t>(i) * dimension);
     return leading;
+}
+
+void rotate_pca_basis(std::vector<float> &components, std::vector<float> &bias, int input_dimension) {
+    // A block-diagonal Hadamard keeps the rotation orthogonal at any output
+    // dimension. Sign flips and butterflies act on the projection rows and bias.
+    const int dimension = static_cast<int>(bias.size());
+    std::mt19937_64 random(64);
+    std::uint64_t signs = 0x6d2ed559ca31b498ull;
+    for (int start = 0; start < dimension;) {
+        int size = 1;
+        while (size <= (dimension - start) / 2)
+            size *= 2;
+
+        const float normalization = 1.0f / std::sqrt(static_cast<float>(size));
+        const int end = start + size;
+        for (int i = start; i < end; ++i) {
+            const int bit = i % 64;
+            if (i != 0 && bit == 0)
+                signs = random();
+            const float scale = ((signs >> bit) & 1) ? -normalization : normalization;
+            auto *row = components.data() + static_cast<size_t>(i) * input_dimension;
+            for (int j = 0; j < input_dimension; ++j)
+                row[j] *= scale;
+            bias[i] *= scale;
+        }
+        for (int half = 1; half < size; half *= 2) {
+            for (int tile = start; tile < end; tile += 2 * half) {
+                for (int i = tile; i < tile + half; ++i) {
+                    auto *left = components.data() + static_cast<size_t>(i) * input_dimension;
+                    auto *right = left + static_cast<size_t>(half) * input_dimension;
+                    for (int j = 0; j < input_dimension; ++j) {
+                        const float a = left[j], b = right[j];
+                        left[j] = a + b;
+                        right[j] = a - b;
+                    }
+                    const float a = bias[i], b = bias[i + half];
+                    bias[i] = a + b;
+                    bias[i + half] = a - b;
+                }
+            }
+        }
+        start = end;
+    }
 }
 
 } // namespace
@@ -118,6 +163,7 @@ PCAProjection::PCAProjection(const FloatMatrixView &base, int output_dimension)
         for (int j = 0; j < d; ++j)
             bias_[i] -= component[j] * mean[j];
     }
+    rotate_pca_basis(components_, bias_, d);
 }
 
 void PCAProjection::apply(const FloatMatrixView &input, const MutableFloatMatrixView &output) const {
