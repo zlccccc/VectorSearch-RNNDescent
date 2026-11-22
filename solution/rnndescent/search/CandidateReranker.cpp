@@ -8,19 +8,28 @@
 
 namespace rnndescent {
 
-CandidateReranker::CandidateReranker(const FloatMatrixView &base, int graph_dimension, int candidate_count, int fp32_limit,
+CandidateReranker::CandidateReranker(const FloatMatrixView &base, int graph_dimension, int candidate_count,
+                                     const config::SearchConfig &config,
                                      const int *graph_row_order)
     : CandidateReranker(SelectedDistanceComputerFactory::create_refine_search(base.data_ptr(), base.row_count(), base.dimension()), graph_dimension) {
-    if (graph_dimension != base.dimension() && fp32_limit > 0 && fp32_limit < candidate_count) {
+    shortlist_enabled_ = config.rerank_quantization.has_value();
+    // Byte navigation scores are already the original-dimensional byte
+    // scores when PCA is disabled. Packed navigation uses a different
+    // encoding from the affine packed reranker even in the original space.
+    reuse_graph_scores_ = graph_dimension == base.dimension() &&
+                         config.graph_quantization == QuantizedFormat::Byte &&
+                         config.rerank_quantization == QuantizedFormat::Byte;
+    if (shortlist_enabled_ && !reuse_graph_scores_ && config.fp32_refine_max > 0 && config.fp32_refine_max < candidate_count) {
         graph_ordered_codes_ = graph_row_order != nullptr;
         quantized_ = SelectedDistanceComputerFactory::create_quantized_refine(base.data_ptr(), base.row_count(),
-                                                                             base.dimension(), graph_row_order, fp32_limit);
+                                                                             base.dimension(), graph_row_order,
+                                                                             *config.rerank_quantization);
     }
 }
 
 CandidateReranker::CandidateReranker(std::unique_ptr<MyDistanceComputer> fp32, int graph_dimension,
                                      std::unique_ptr<MyDistanceComputer> quantized)
-    : fp32_(std::move(fp32)), quantized_(std::move(quantized)), graph_dimension_(graph_dimension) {}
+    : fp32_(std::move(fp32)), quantized_(std::move(quantized)), reuse_graph_scores_(fp32_->dimension() == graph_dimension) {}
 
 void CandidateReranker::set_queries(const FloatMatrixView &queries) {
     fp32_->set_query(queries.data_ptr(), queries.row_count());
@@ -32,22 +41,35 @@ void CandidateReranker::rerank(int query_id, std::vector<SingleNeighbor> &candid
                                const SearchResultView &result, const int *original_ids) const {
     const int topk = result.topk();
     const int fp32_count = std::max(fp32_limit, topk);
-    if (fp32_limit > 0 && static_cast<size_t>(fp32_count) < candidates.size()) {
-        if (quantized_) {
-            quantized_->score_candidates(query_id, candidates);
-        } else {
-            // The graph already scored the original-dimensional codes when PCA is off.
-            RNNDESCENT_ASSERT_MSG(fp32_->dimension() == graph_dimension_,
-                                  "PCA refinement requires original-dimensional quantized distances");
-        }
-        std::nth_element(candidates.begin(), candidates.begin() + fp32_count, candidates.end());
-        candidates.resize(fp32_count);
-    }
+    if (shortlist_enabled_ && fp32_limit > 0 && static_cast<size_t>(fp32_count) < candidates.size())
+        shortlist(query_id, candidates, fp32_count, original_ids);
 
     if (original_ids) {
         for (auto &candidate : candidates)
             candidate.id = original_ids[candidate.id];
     }
+    refine_fp32(query_id, candidates, result);
+}
+
+void CandidateReranker::shortlist(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_count,
+                                  const int *&original_ids) const {
+    if (quantized_) {
+        if (original_ids && !graph_ordered_codes_) {
+            for (auto &candidate : candidates)
+                candidate.id = original_ids[candidate.id];
+            original_ids = nullptr;
+        }
+        quantized_->score_candidates(query_id, candidates);
+    } else {
+        RNNDESCENT_ASSERT_MSG(reuse_graph_scores_, "shortlisting requires compatible original-dimensional scores");
+    }
+    std::nth_element(candidates.begin(), candidates.begin() + fp32_count, candidates.end());
+    candidates.resize(fp32_count);
+}
+
+void CandidateReranker::refine_fp32(int query_id, std::vector<SingleNeighbor> &candidates,
+                                    const SearchResultView &result) const {
+    const int topk = result.topk();
     fp32_->score_candidates(query_id, candidates);
     const auto top_end = candidates.begin() + topk;
     if (top_end != candidates.end())

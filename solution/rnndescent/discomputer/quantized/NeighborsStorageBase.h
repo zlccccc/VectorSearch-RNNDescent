@@ -41,7 +41,9 @@ template <typename Derived, typename CodeType, typename NormType> struct Neighbo
         void initialize(uint32_t code_stride, const std::vector<size_t> &offsets, long long max_pool_size = 0,
                         bool save_neighbor = true) {
             RNNDESCENT_ASSERT_MSG(bytes_.empty(), "neighbor pool must be reset before initialization");
-            RNNDESCENT_ASSERT_MSG(code_stride % Derived::cache_lane_width == 0, "neighbor codes must occupy whole SIMD blocks");
+            // The DistanceComputer owns the packed layout. In particular, a
+            // ZMM-wide dot product may read a 32-byte packed row from this pool.
+            RNNDESCENT_ASSERT_MSG(code_stride > 0, "neighbor codes require a positive stride");
             code_stride_ = code_stride;
             const bool cache_enabled = save_neighbor && max_pool_size > 0;
 

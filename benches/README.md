@@ -4,6 +4,8 @@
 
 构建命令见 [项目 README](../README.md)，参数定义和数据集预设见 [参数配置](../docs/configuration.md)。本页命令均从仓库根目录执行。
 
+近期 QPS、Recall 和性能复测命令见 [Benchmark 性能基准](../benchmark/README.md)。
+
 | 数据集 | 底库规模 | 原始维度 | 准备方式 |
 |---|---:|---:|---|
 | SIFT Small | 10,000 | 128 | 下载 `siftsmall` |
@@ -58,7 +60,7 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
   --pca-out 64 --neighbor-pool-gb 4 --warmup-topk 0 --output-iter 0
 ~~~
 
-这组参数先用原始 960 维 INT8/UINT8 排序，再对 Top32 做 FP32 精排。用 `--fp32-refine-max 0` 对照完整 FP32 精排。根据当前数据的 ground truth 调整 `search_L`、`refine_max` 和 `fp32_refine_max`，达到目标 Recall@10 后比较 QPS。多线程建图的调度会影响图结构，记录相同种子之外，还需保存每轮的 Recall 与缓存覆盖。
+这组参数默认先用原始 960 维 INT8/UINT8 粗排，再对 Top32 做 FP32 精排。可单独加 `--graph-quantization uint4` 或 `--rerank-quantization uint4` 对照 4 位查图或粗排。加 `--rerank-quantization fp32` 则对图搜索送出的所有候选做 FP32 精排。根据当前数据的 ground truth 调整 `search_L`、`refine_max` 和 `fp32_refine_max`，达到目标 Recall@10 后比较 QPS。多线程建图的调度会影响图结构，记录相同种子之外，还需保存每轮的 Recall 与缓存覆盖。
 
 **报告同时记录配置、吞吐量和精度。**
 

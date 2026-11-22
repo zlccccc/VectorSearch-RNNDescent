@@ -2,7 +2,7 @@
 
 入口程序由 [main.cpp](../main.cpp) 调用 [BenchmarkRunner.h](../benchmark/BenchmarkRunner.h)。后者负责读取数据、选择参数和计时，再通过 [Solution](../solution/solution.cpp) 使用索引。
 
-`IndexRNNDescent` 负责组装 PCA、图索引和候选重排。`RNNDescent` 保留兼容外观，内部由 `GraphBuilder`、`GraphReorder` 和 `GraphSearcher` 分别负责建图、BFS 重排及查询候选生成。`CandidateReranker` 在原始向量空间选出最终结果。模块职责见 [RNNDescent 模块说明](../solution/rnndescent/README.md)。
+`IndexRNNDescent` 负责组装 PCA、图索引和候选重排。`RNNDescent` 保留兼容外观，内部由 `GraphBuilder`、`GraphReorder` 和 `GraphSearcher` 分别负责建图、BFS 重排及查询初排。`CandidateReranker` 负责可选的量化粗排和最终 FP32 精排。查图和粗排各自在建索引时选择 DistanceComputer。模块职责见 [RNNDescent 模块说明](../solution/rnndescent/README.md)。
 
 **建索引**
 
@@ -12,9 +12,9 @@ flowchart LR
     B -->|关闭 PCA| G
     P --> G
     G["GraphBuilder<br/>建图、裁边"] --> R0["GraphReorder<br/>BFS 编号与索引物化"]
-    R0 --> I["图索引<br/>量化底库、邻接表、可选邻居缓存"]
+    R0 --> I["图索引<br/>按查图配置编码底库和可选邻居缓存"]
     B --> R["CandidateReranker<br/>引用原始 FP32 底库<br/>按需用 BFS 顺序编码原始维度底库"]
-    G -->|BFS 行序| R
+    R0 -->|BFS 行序| R
 ~~~
 
 **查询**
@@ -23,24 +23,25 @@ flowchart LR
 flowchart TD
     Q["原始 FP32 查询"] -->|启用 PCA| P["PCAProjection<br/>投影查询并复用缓冲"]
 
-    subgraph GRAPH["RNNDescent · 图搜索"]
-        V["量化查图查询"] --> S["GraphSearcher<br/>图遍历、候选去重与合并"]
+    subgraph GRAPH["初排 · 图搜索"]
+        V["准备查图查询（8 位或 4 位底库）"] --> S["GraphSearcher<br/>图遍历、候选去重与合并"]
         S --> F["取至多 refine_max 个候选<br/>保留 BFS 图 ID"]
     end
 
     subgraph RERANK["CandidateReranker · 候选重排"]
-        U["准备原始维度查询"] --> C{"需要缩小 FP32 精排范围？"}
-        C -->|是| A["使用原始维度的量化分数<br/>有 PCA 时重算，无 PCA 时复用"]
+        C{"启用量化粗排且候选超限？"}
+        C -->|是| A["粗排 · 原始维度分数（8 位或 4 位）"]
         A --> M["按 fp32_refine_max 保留候选"]
         C -->|否| X
         M --> X["精排前映射回原始 ID"]
-        X --> E["原始 FP32 算距"]
+        X --> E["精排 · 原始 FP32 算距"]
         E --> T["选择并排序 Top K"]
     end
 
     Q -->|关闭 PCA| V
     P --> V
-    Q --> U
+    Q -->|原始维度查询| A
+    Q -->|原始维度查询| E
     F -->|原地传入候选缓冲| C
     T --> O["原始行号与平方 L2 距离"]
 ~~~
@@ -79,9 +80,9 @@ x86 比较后剩余的四项走标量尾部。SIFT100K 同图单线程对照中�
 
 建图结束时按底库点数预分配每线程的候选位图，每个 ID 占 1 bit。查询开始时清零并标记保留的入口，后续只标记首次通过阈值的候选。队尾分数只会收紧，落选或淘汰的 ID 以相同分数重现时无法再次通过严格小于队尾的阈值，因此标记可以保留到查询结束。
 
-搜索持续到有序候选池中的节点均已展开，最后取出前 `refine_max` 个候选，原地交给 [CandidateReranker](../solution/rnndescent/search/CandidateReranker.h)。候选重排类管理原始维度的距离计算器和查询编码。启用 PCA 且需要两阶段筛选时，原始维度底库直接按 BFS 顺序编码，使用图 ID 算距。用 `nth_element` 保留 `fp32_refine_max` 个候选（至少为 Top K），再将保留的候选映射回原始行号，计算 FP32 距离并选择 Top K。不开 PCA 时沿用原始维度的查图分数和原始 ID 路径。
+搜索持续到有序候选池中的节点均已展开，最后取出池内前 `refine_max` 项，原地交给 [CandidateReranker](../solution/rnndescent/search/CandidateReranker.h)。量化粗排启用时，按照单独配置的编码为原始维度建立距离计算器，直接按 BFS 顺序编码并用图 ID 算距。查图已经使用原始维度，且两阶段都采用 8 位编码时，可以复用图初排分数并省去第二份量化码。粗排通过 `nth_element` 留下 `fp32_refine_max` 项，至少保留 Top K。
 
-`fp32_refine_max=0` 恢复全部候选的 FP32 精排。候选数不超过实际 FP32 数量时也直接做 FP32 精排。只有启用 PCA 且需要两阶段筛选时，才额外保存原始维度的量化码；该计算器和查询编码按索引管理，在重置时释放。
+选择 FP32 直排、将 `fp32_refine_max` 设为 0，或本次候选数已经在 FP32 预算内时，直接把整批图候选交给 FP32。映射回原始 ID 后，用原始 FP32 向量算距并选出 Top K。建索引时若最大候选数已在精排预算内，也无需分配粗排量化底库。
 
 各阶段的参数、CLI 覆盖方式和数据集预设见 [参数配置](configuration.md)，可用参数由 [CLI 定义](../benchmark/BenchmarkCLI.h) 给出。
 

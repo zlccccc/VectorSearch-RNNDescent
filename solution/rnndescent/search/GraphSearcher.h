@@ -1,9 +1,7 @@
 #pragma once
 
-#include "CandidateReranker.h"
 #include "../build/GraphConfig.h"
 #include "../build/GraphTypes.h"
-#include "../common/Views.h"
 #include "../discomputer/PlatformSimdDistanceComputer.h"
 #include "CandidateBitmap.h"
 #include "NeighborScoreFilter.h"
@@ -37,7 +35,6 @@ struct PerfStats {
 #endif
 
 struct Storage {
-    std::vector<int> &search_from_ids;
     std::vector<SelectedNeighborsContainerType> &final_graph_neighbors;
     std::unique_ptr<MyDistanceComputer> &graph_distance_computer;
 };
@@ -46,8 +43,12 @@ class GraphSearcher {
   public:
     GraphSearcher(Storage storage, const config::SearchConfig &search_config, int max_degree, PerfStats &perf_stats);
 
-    void search_single(int threadid, int queryid, const CandidateReranker &reranker,
-                       const config::SearchConfig &search_config, int max_degree, const SearchResultView &result);
+    // The returned buffer belongs to this worker and contains BFS IDs.
+    std::vector<SingleNeighbor> &search_candidates(int threadid, int queryid, const config::SearchConfig &search_config,
+                                                  int max_degree, int topk);
+#ifdef INTERNAL_CLOCK_TEST
+    void record_refinement_time(float elapsed_ms);
+#endif
     void flush_perf_stats();
 
   private:

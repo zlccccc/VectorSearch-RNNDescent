@@ -31,7 +31,8 @@ struct AvxUInt8DotProduct : AvxUInt8KernelBase {
         return reduce(sum);
     }
 
-    static std::array<int32_t, 4> dot4(const uint8_t *q, const uint8_t *x0, const uint8_t *x1, const uint8_t *x2, const uint8_t *x3, size_t stride) {
+    static std::array<int32_t, 4> dot4(const uint8_t *q, const uint8_t *x0, const uint8_t *x1, const uint8_t *x2,
+                                       const uint8_t *x3, size_t stride) {
         // 64-byte codes are common with PCA. Expose the two loads per row to the compiler.
         if (stride == 2 * block_bytes)
             return dot4_blocks(q, x0, x1, x2, x3, 2 * block_bytes);

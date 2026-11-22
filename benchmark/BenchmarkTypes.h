@@ -176,12 +176,12 @@ inline void apply_solution_preset(BenchmarkConfig &config) {
     if (config.mode == "dataset")
         apply_dataset_preset(config);
     apply_config_overrides(config);
-#if defined(RNNDESCENT_FORCE_AVX_VNNI)
-    if (config.mode == "dataset" && normalize_dataset_name(config.dataset_name) == "gist" &&
-        config.pca_config.applies_to(rnndescent::SelectedDistanceComputerFactory::uint4_refine_dimension) &&
-        config.override_fp32_refine_max < 0)
-        config.search_config.fp32_refine_max = rnndescent::SelectedDistanceComputerFactory::uint4_refine_min_fp32;
-#endif
+}
+
+inline const char *quantization_name(std::optional<rnndescent::QuantizedFormat> format) {
+    if (!format)
+        return "fp32";
+    return *format == rnndescent::QuantizedFormat::UInt4 ? "uint4" : "8bit";
 }
 
 inline void print_solution_config(const BenchmarkConfig &config) {
@@ -195,6 +195,8 @@ inline void print_solution_config(const BenchmarkConfig &config) {
          << " num_initialize=" << config.search_config.num_initialize << " search_L=" << config.search_config.search_L
          << " beam_size=" << config.search_config.beam_size << " refine_max=" << config.search_config.refine_max
          << " fp32_refine_max=" << config.search_config.fp32_refine_max
+         << " graph_quantization=" << quantization_name(config.search_config.graph_quantization)
+         << " rerank_quantization=" << quantization_name(config.search_config.rerank_quantization)
          << " num_threads=" << config.search_config.num_threads << endl;
     cout << "pca config:"
          << " enabled=" << (config.pca_config.enabled ? 1 : 0) << " out_dim=" << config.pca_config.out_dim << endl;

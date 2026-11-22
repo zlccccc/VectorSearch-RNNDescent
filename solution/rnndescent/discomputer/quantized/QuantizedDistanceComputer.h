@@ -8,6 +8,7 @@
 #include "QuantizedKernelBase.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -46,25 +47,23 @@ inline constexpr bool has_neighbor_cache_packer = false;
 template <class Kernel>
 inline constexpr bool has_neighbor_cache_packer<Kernel, std::void_t<decltype(&Kernel::pack_neighbor_cache)>> = true;
 
-// A kernel selects the byte format, SIMD block width and dot products. Both the
-// distance computer and the neighbor cache use that same kernel and row stride.
-template <class Kernel> class QuantizedDistanceComputer final : public MyDistanceComputer {
-    using Quantization = typename Kernel::Quantization;
-    using Code = typename Quantization::Code;
-    // A 64-byte SIMD block can then be read from one aligned cache line.
-    using CodeAllocator = std::conditional_t<Kernel::block_bytes == alignSize, AlignedAllocator<Code>, std::allocator<Code>>;
-
+template <class Format, size_t BlockBytes>
+class ByteQuantization {
   public:
-    QuantizedDistanceComputer(const float *data, int n, int d, const int *row_order = nullptr)
-        : n(n), d(d), stride((this->d + Kernel::block_bytes - 1) / Kernel::block_bytes * Kernel::block_bytes) {
-        // Bound the worst-case squared L2 and all dot-product intermediates for every kernel.
-        constexpr int max_delta = 2 * SignedInt8Quantization::max_scale;
-        constexpr int max_dimension = std::numeric_limits<int32_t>::max() / (max_delta * max_delta);
-        if (d > max_dimension)
-            throw std::invalid_argument("quantized vectors support at most " + std::to_string(max_dimension) + " dimensions");
+    using Code = typename Format::Code;
+    using BaseParams = int;
+    using QueryParams = int;
+    static constexpr bool supports_cache = true;
+    static constexpr bool same_base_query_codes = true;
+    static constexpr bool align_codes = BlockBytes == alignSize;
+    // Keep the same bound for the signed and unsigned byte encoders.
+    static constexpr int max_delta = 2 * SignedInt8Quantization::max_scale;
 
-        matrix.resize(n * stride);
-        matrix_norms.resize(n);
+    static constexpr size_t base_stride(size_t d) { return (d + BlockBytes - 1) / BlockBytes * BlockBytes; }
+    static constexpr size_t query_stride(size_t stride) { return stride; }
+    static constexpr size_t logical_bytes(size_t d) { return d; }
+
+    void train(const float *data, int n, int d) {
         mean.resize(d);
         float max_range = 0.0f;
 #pragma omp parallel for reduction(max : max_range)
@@ -79,94 +78,171 @@ template <class Kernel> class QuantizedDistanceComputer final : public MyDistanc
             mean[k] = (max_value + min_value) / 2;
             max_range = std::max(max_range, (max_value - min_value) / 2);
         }
-        scale = max_range > 0.0f ? max_range / Quantization::max_scale : 1.0f;
-        Logger::info("Int8 QT scale = %f; mean = %f; maxvalue = %f\n", scale, mean[0], scale * Quantization::max_scale);
+        scale = max_range > 0.0f ? max_range / Format::max_scale : 1.0f;
+        Logger::info("Int8 QT scale = %f; mean = %f; maxvalue = %f\n", scale, mean[0], scale * Format::max_scale);
+    }
 
-        // Value initialization fills the padding with zero. Encode only the logical dimensions.
+    int encode_base(const float *source, Code *code, size_t d) const {
+        int norm = 0;
+        for (size_t k = 0; k < d; ++k) {
+            code[k] = Format::encode(source[k], mean[k], scale);
+            norm += code[k] * code[k];
+        }
+        return norm;
+    }
+
+    int encode_query(const float *source, Code *code, size_t d) const { return encode_base(source, code, d); }
+
+    // Scores use code units. The index-wide scale squared preserves ranking.
+    static float squared_distance(int base, int query, int dot) {
+        return static_cast<float>(query + base - 2 * dot);
+    }
+    static float ranking_score(int base, int query, int dot) { return squared_distance(base, query, dot); }
+
+  private:
+    std::vector<float> mean;
+    float scale = 0.0f;
+};
+
+// The encoding owns training, format and score conversion. The kernel owns
+// dot products and the cache layout. Every format uses the same row storage
+// and DistanceComputer entry points.
+template <class Kernel, class Encoding = ByteQuantization<typename Kernel::Quantization, Kernel::block_bytes>>
+class QuantizedDistanceComputer final : public MyDistanceComputer {
+    using Code = typename Encoding::Code;
+    using BaseParams = typename Encoding::BaseParams;
+    using QueryParams = typename Encoding::QueryParams;
+    using CodeAllocator = std::conditional_t<Encoding::align_codes, AlignedAllocator<Code>, std::allocator<Code>>;
+    using ParamsAllocator = std::conditional_t<Encoding::supports_cache, std::allocator<BaseParams>, AlignedAllocator<BaseParams>>;
+
+  public:
+    QuantizedDistanceComputer(const float *data, int n, int d, const int *row_order = nullptr)
+        : n_(n), d_(d), stride_(Encoding::base_stride(d)), query_stride_(Encoding::query_stride(stride_)) {
+        // Bound the squared distance and all integer dot-product intermediates.
+        constexpr int max_dimension = std::numeric_limits<int32_t>::max() / (Encoding::max_delta * Encoding::max_delta);
+        if (d > max_dimension)
+            throw std::invalid_argument("quantized vectors support at most " + std::to_string(max_dimension) + " dimensions");
+        RNNDESCENT_ASSERT_MSG(data != nullptr && n > 0 && d > 0, "quantization requires a nonempty base matrix");
+        encoding_.train(data, n, d);
+        matrix_.resize(static_cast<size_t>(n) * stride_);
+        base_params_.resize(n);
 #pragma omp parallel for
         for (int i = 0; i < n; ++i) {
-            const float *source = data + static_cast<size_t>(row_order ? row_order[i] : i) * d;
-            matrix_norms[i] = encode_row(source, matrix.data() + i * stride);
+            const auto *source = data + static_cast<size_t>(row_order ? row_order[i] : i) * d_;
+            base_params_[i] = encoding_.encode_base(source, matrix_.data() + static_cast<size_t>(i) * stride_, d_);
         }
-        detail::try_huge_pages(matrix.data(), matrix.size() * sizeof(Code));
-        detail::try_huge_pages(matrix_norms.data(), matrix_norms.size() * sizeof(int));
+        detail::try_huge_pages(matrix_.data(), matrix_.size() * sizeof(Code));
+        detail::try_huge_pages(base_params_.data(), base_params_.size() * sizeof(BaseParams));
     }
 
-    int row_count() const override { return n; }
-    int dimension() const override { return static_cast<int>(d); }
-    uint32_t code_stride() const override { return static_cast<uint32_t>(stride); }
+    int row_count() const override { return n_; }
+    int dimension() const override { return d_; }
+    uint32_t code_stride() const override { return static_cast<uint32_t>(stride_); }
 
     void set_query(const float *data, int count) override {
-        query.resize(count * stride);
-        query_norms.resize(count);
+        queries_.resize(static_cast<size_t>(count) * query_stride_);
+        query_params_.resize(count);
 #pragma omp parallel for
-        for (int i = 0; i < count; ++i)
-            query_norms[i] = encode_row(data + i * d, query.data() + i * stride);
+        for (int i = 0; i < count; ++i) {
+            const auto *source = data + static_cast<size_t>(i) * d_;
+            query_params_[i] = encoding_.encode_query(source, queries_.data() + static_cast<size_t>(i) * query_stride_, d_);
+        }
     }
 
-    // Rank candidates by squared L2 in code units. The index-wide scale^2 preserves their order.
-    float operator()(int idq, int i) override {
-        const auto dot = Kernel::dot(query.data() + idq * stride, matrix.data() + i * stride, stride);
-        return static_cast<float>(query_norms[idq] + matrix_norms[i] - 2 * dot);
+    float operator()(int q, int i) override {
+        return Encoding::squared_distance(base_params_[i], query_params_[q], dot(query(q), row(i)));
     }
 
     float symmetric_dis(int i, int j) override {
-        const auto *codes = matrix.data();
-        const auto dot = Kernel::dot(codes + i * stride, codes + j * stride, stride);
-        return static_cast<float>(matrix_norms[i] + matrix_norms[j] - 2 * dot);
+        if constexpr (Encoding::same_base_query_codes) {
+            return Encoding::squared_distance(base_params_[i], base_params_[j], dot(row(i), row(j)));
+        } else {
+            return Encoding::symmetric_distance(row(i), row(j), d_, base_params_[i], base_params_[j]);
+        }
     }
 
-    void distances_batch_4(int idq, int i0, int i1, int i2, int i3, float &dis0, float &dis1, float &dis2, float &dis3) override {
-        const auto *codes = matrix.data();
-        const auto dots = Kernel::dot4(query.data() + idq * stride, codes + i0 * stride, codes + i1 * stride,
-                                       codes + i2 * stride, codes + i3 * stride, stride);
-        const int qnorm = query_norms[idq];
-        dis0 = static_cast<float>(qnorm + matrix_norms[i0] - 2 * dots[0]);
-        dis1 = static_cast<float>(qnorm + matrix_norms[i1] - 2 * dots[1]);
-        dis2 = static_cast<float>(qnorm + matrix_norms[i2] - 2 * dots[2]);
-        dis3 = static_cast<float>(qnorm + matrix_norms[i3] - 2 * dots[3]);
+    void distances_batch_4(int q, int a, int b, int c, int d, float &da, float &db, float &dc, float &dd) override {
+        const auto products = dot4(query(q), a, b, c, d);
+        const auto &params = query_params_[q];
+        da = Encoding::squared_distance(base_params_[a], params, products[0]);
+        db = Encoding::squared_distance(base_params_[b], params, products[1]);
+        dc = Encoding::squared_distance(base_params_[c], params, products[2]);
+        dd = Encoding::squared_distance(base_params_[d], params, products[3]);
+    }
+
+    void score_candidates(int q, std::vector<SingleNeighbor> &candidates) override {
+        const auto *code = query(q);
+        const auto &params = query_params_[q];
+        size_t i = 0;
+        for (; i + 4 <= candidates.size(); i += 4) {
+            auto *group = candidates.data() + i;
+            const auto products = dot4(code, group[0].id, group[1].id, group[2].id, group[3].id);
+            for (int j = 0; j < 4; ++j)
+                group[j].distance = Encoding::ranking_score(base_params_[group[j].id], params, products[j]);
+        }
+        for (; i < candidates.size(); ++i) {
+            auto &candidate = candidates[i];
+            const auto product = dot(code, row(candidate.id));
+            candidate.distance = Encoding::ranking_score(base_params_[candidate.id], params, product);
+        }
+    }
+
+    void *get_query_ptr(int q) override { return queries_.data() + static_cast<size_t>(q) * query_stride_; }
+
+    QuantizedQuery get_quantized_query(int q) const override {
+        if constexpr (Encoding::supports_cache) {
+            return {query(q), query_params_[q]};
+        } else {
+            return MyDistanceComputer::get_quantized_query(q);
+        }
     }
 
     void copy_index(int i, void *out, int &norm, bool include_padding = false) override {
-        std::memcpy(out, matrix.data() + i * stride, include_padding ? stride : d);
-        norm = matrix_norms[i];
-    }
-
-    void *get_query_ptr(int idq) override { return query.data() + idq * stride; }
-
-    QuantizedQuery get_quantized_query(int idq) const override {
-        return {query.data() + idq * stride, query_norms[idq]};
+        if constexpr (Encoding::supports_cache) {
+            std::memcpy(out, row(i), (include_padding ? stride_ : Encoding::logical_bytes(d_)) * sizeof(Code));
+            norm = base_params_[i];
+        } else {
+            MyDistanceComputer::copy_index(i, out, norm, include_padding);
+        }
     }
 
     void pack_neighbor_cache(const int *ids, int count, void *codes, int *norms, uint8_t *scratch) override {
-        if constexpr (has_neighbor_cache_packer<Kernel>) {
+        if constexpr (!Encoding::supports_cache) {
+            MyDistanceComputer::pack_neighbor_cache(ids, count, codes, norms, scratch);
+        } else if constexpr (has_neighbor_cache_packer<Kernel>) {
             Kernel::pack_neighbor_cache(*this, ids, count, code_stride(), static_cast<Code *>(codes), norms, scratch);
         } else {
-            QuantizedKernelBase<Quantization, Kernel::block_bytes, 4>::pack_tiles(
+            QuantizedKernelBase<Encoding, Kernel::block_bytes, 4>::pack_tiles(
                 *this, ids, count, code_stride(), static_cast<Code *>(codes), norms, scratch);
         }
     }
 
-    void compute_cached_distances(int idq, int count, const void *codes, const int *norms, float *result) const override {
-        Kernel::cached_distances(query.data() + idq * stride, query_norms[idq], count, code_stride(),
-                                 static_cast<const Code *>(codes), norms, result);
+    void compute_cached_distances(int q, int count, const void *codes, const int *norms, float *result) const override {
+        if constexpr (Encoding::supports_cache) {
+            Kernel::cached_distances(query(q), query_params_[q], count, code_stride(),
+                                     static_cast<const Code *>(codes), norms, result);
+        } else {
+            MyDistanceComputer::compute_cached_distances(q, count, codes, norms, result);
+        }
     }
 
   private:
-    const int n;
-    const size_t d, stride;
-    std::vector<Code, CodeAllocator> matrix, query;
-    std::vector<int> matrix_norms, query_norms;
-    std::vector<float> mean;
-    float scale = 0.0f;
+    const int n_, d_;
+    const size_t stride_, query_stride_;
+    Encoding encoding_;
+    std::vector<Code, CodeAllocator> matrix_, queries_;
+    std::vector<BaseParams, ParamsAllocator> base_params_;
+    std::vector<QueryParams> query_params_;
 
-    int encode_row(const float *source, Code *code) const {
-        int norm = 0;
-        for (size_t k = 0; k < d; ++k) {
-            code[k] = Quantization::encode(source[k], mean[k], scale);
-            norm += code[k] * code[k];
-        }
-        return norm;
+    const Code *row(int i) const { return matrix_.data() + static_cast<size_t>(i) * stride_; }
+    const Code *query(int i) const { return queries_.data() + static_cast<size_t>(i) * query_stride_; }
+
+    int dot(const Code *q, const Code *x) const {
+        return Kernel::dot(q, x, stride_);
+    }
+
+    std::array<int, 4> dot4(const Code *q, int a, int b, int c, int d) const {
+        return Kernel::dot4(q, row(a), row(b), row(c), row(d), stride_);
     }
 };
 

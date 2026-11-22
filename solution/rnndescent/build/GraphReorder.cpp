@@ -1,5 +1,6 @@
 #include "GraphReorder.h"
 
+#include "../common/HugePages.h"
 #include "../common/Logger.h"
 
 #include <algorithm>
@@ -71,8 +72,7 @@ std::vector<int> GraphReorder::reorder_by_bfs(const std::vector<int> &edges, con
 }
 
 void GraphReorder::materialize(const FloatMatrixView &data_view, bool verbose, const config::BuildConfig &build_config,
-                               const config::SearchConfig &search_config, GraphBuildResult result, GraphIndexStorage &storage,
-                               bool pca_projection) {
+                               const config::SearchConfig &search_config, GraphBuildResult result, GraphIndexStorage &storage) {
     const int n = data_view.row_count();
     const int dim = data_view.dimension();
     const auto original_to_bfs = reorder_by_bfs(result.edges, result.edge_offsets, search_config.num_initialize, build_config,
@@ -80,7 +80,7 @@ void GraphReorder::materialize(const FloatMatrixView &data_view, bool verbose, c
 
     storage.graph_distance_computer =
         SelectedDistanceComputerFactory::create_cached_graph(data_view.data_ptr(), n, dim, storage.search_from_ids.data(),
-                                                              pca_projection);
+                                                              search_config.graph_quantization);
     const auto code_stride = storage.graph_distance_computer->code_stride();
     storage.neighbor_pool.initialize(code_stride, result.edge_offsets, build_config.neighbor_pool_size_limit_bytes,
                                      build_config.save_neighbor);
@@ -94,6 +94,10 @@ void GraphReorder::materialize(const FloatMatrixView &data_view, bool verbose, c
                                                    storage.graph_distance_computer.get(), original_to_bfs,
                                                    build_config.save_neighbor);
     }
+    // Traversal reads the node descriptors in graph expansion order.
+    detail::try_huge_pages(storage.final_graph_neighbors.data(),
+                          storage.final_graph_neighbors.size() * sizeof(SelectedNeighborsContainerType));
+
     if (build_config.save_neighbor) {
 #pragma omp parallel num_threads(build_config.num_threads)
         {

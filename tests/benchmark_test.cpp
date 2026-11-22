@@ -136,16 +136,31 @@ TEST(BenchmarkCliTest, ConfiguresFp32ShortlistAndFullRefinement) {
     EXPECT_EQ(defaults.search_config.fp32_refine_max, 32);
     auto gist_pca = parse({"--mode", "dataset", "--dataset-name", "gist", "--pca-out", "64"});
     benchmark::apply_solution_preset(gist_pca);
-#if defined(RNNDESCENT_FORCE_AVX_VNNI)
-    EXPECT_EQ(gist_pca.search_config.fp32_refine_max, 40);
-#else
     EXPECT_EQ(gist_pca.search_config.fp32_refine_max, 32);
-#endif
+    EXPECT_EQ(gist_pca.search_config.graph_quantization, rnndescent::QuantizedFormat::Byte);
+    EXPECT_EQ(gist_pca.search_config.rerank_quantization, rnndescent::QuantizedFormat::Byte);
     EXPECT_THAT([] { parse({"--fp32-refine-max", "-1"}); },
                 ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
     EXPECT_THAT([] { parse({"--fp32-refine-max", "32.5"}); },
                 ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
     EXPECT_THAT([] { parse({"--fp32-refine-max"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("missing value")));
+}
+
+TEST(BenchmarkCliTest, SelectsGraphAndRerankQuantizationIndependently) {
+    using rnndescent::QuantizedFormat;
+    auto config = parse({"--dataset-name", "gist", "--pca-out", "64", "--graph-quantization", "8bit",
+                         "--rerank-quantization", "uint4", "--fp32-refine-max", "16"});
+    benchmark::apply_solution_preset(config);
+    EXPECT_EQ(config.search_config.graph_quantization, QuantizedFormat::Byte);
+    EXPECT_EQ(config.search_config.rerank_quantization, QuantizedFormat::UInt4);
+    EXPECT_EQ(config.search_config.fp32_refine_max, 16);
+
+    auto direct = parse({"--graph-quantization", "uint4", "--rerank-quantization", "fp32"});
+    benchmark::apply_solution_preset(direct);
+    EXPECT_EQ(direct.search_config.graph_quantization, QuantizedFormat::UInt4);
+    EXPECT_FALSE(direct.search_config.rerank_quantization.has_value());
+    EXPECT_THAT([] { parse({"--graph-quantization", "fp32"}); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("requires 8bit or uint4")));
 }
 
 TEST(BenchmarkCliTest, ExplicitRandomModeOverridesDatasetDetection) {

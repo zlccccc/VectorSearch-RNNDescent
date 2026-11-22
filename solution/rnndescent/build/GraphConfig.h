@@ -1,6 +1,9 @@
 #pragma once
 
+#include "../common/QuantizedFormat.h"
+
 #include <algorithm>
+#include <optional>
 
 namespace rnndescent {
 namespace config {
@@ -26,6 +29,9 @@ struct SearchConfig {
     int num_initialize = 64;
     int refine_max = 64;
     int fp32_refine_max = 32;
+    QuantizedFormat graph_quantization = QuantizedFormat::Byte;
+    // A disengaged format sends the graph candidates straight to FP32.
+    std::optional<QuantizedFormat> rerank_quantization = QuantizedFormat::Byte;
 };
 
 inline BuildConfig sanitize_build_config(BuildConfig config) {

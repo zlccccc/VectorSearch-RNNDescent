@@ -27,6 +27,8 @@ inline void print_usage(const char *prog) {
     cout << "  --local-three-hop-prune  Use three-hop alternatives when selecting final graph edges\n";
     cout << "  --num-initialize <n> --search-L <n> --refine-max <n> [--beam-size <n>]\n";
     cout << "  --fp32-refine-max <n>  FP32 shortlist size (default 32; 0 refines all candidates)\n";
+    cout << "  --graph-quantization <8bit|uint4>  Graph navigation encoding\n";
+    cout << "  --rerank-quantization <8bit|uint4|fp32>  Original-dimensional shortlist encoding or direct FP32\n";
     cout << "  --neighbor-pool-gb <n>  Neighbor pool budget in GiB (default 0 disables vector caching)\n";
     cout << "  --enable-pca --disable-pca --pca-out <n>\n";
 }
@@ -107,6 +109,20 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             if (parsed != input.size() || value < 0)
                 throw std::runtime_error("--fp32-refine-max requires a non-negative integer");
             config.override_fp32_refine_max = value;
+        } else if (arg == "--graph-quantization" || arg == "--rerank-quantization") {
+            const auto value = require_value(arg);
+            if (arg == "--rerank-quantization" && value == "fp32") {
+                config.search_config.rerank_quantization.reset();
+            } else {
+                if (value != "8bit" && value != "uint4")
+                    throw std::runtime_error(arg + " requires 8bit or uint4" +
+                                             (arg == "--rerank-quantization" ? " or fp32" : ""));
+                const auto format = value == "uint4" ? rnndescent::QuantizedFormat::UInt4 : rnndescent::QuantizedFormat::Byte;
+                if (arg == "--graph-quantization")
+                    config.search_config.graph_quantization = format;
+                else
+                    config.search_config.rerank_quantization = format;
+            }
         } else if (arg == "--beam-size") {
             config.override_beam_size = stoi(require_value(arg));
         } else if (arg == "--neighbor-pool-gb") {

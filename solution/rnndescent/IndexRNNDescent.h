@@ -48,6 +48,12 @@ struct IndexRNNDescent {
 
         build_config = RNNDescent::sanitize_build_config(build_config);
         search_config = RNNDescent::sanitize_search_config(search_config);
+        const auto graph_search_config = RNNDescent::sanitize_search_config(search_config, 1, n);
+        const int candidate_count = std::min(graph_search_config.search_L, graph_search_config.refine_max);
+        SelectedDistanceComputerFactory::validate_quantization(search_config.graph_quantization);
+        if (search_config.rerank_quantization && search_config.fp32_refine_max > 0 &&
+            search_config.fp32_refine_max < candidate_count)
+            SelectedDistanceComputerFactory::validate_quantization(*search_config.rerank_quantization);
 
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = std::chrono::high_resolution_clock::now();
         float process_time;
@@ -64,7 +70,7 @@ struct IndexRNNDescent {
                 prevtime = nowtime;
                 Logger::info(verbose, "PCA Process done in %f ms\n", process_time);
             }
-            rnndescent = std::make_unique<RNNDescent>(graph_base, verbose, build_config, search_config, pca != nullptr);
+            rnndescent = std::make_unique<RNNDescent>(graph_base, verbose, build_config, search_config);
         }
 
         nowtime = std::chrono::high_resolution_clock::now();
@@ -72,9 +78,8 @@ struct IndexRNNDescent {
         prevtime = nowtime;
         Logger::info(verbose, "RNN Descent build done in %f ms\n", process_time);
 
-        const int candidate_count = std::min({n, search_config.search_L, search_config.refine_max});
         reranker = std::make_unique<CandidateReranker>(base, rnndescent->graph_distance_computer->dimension(), candidate_count,
-                                                       search_config.fp32_refine_max, rnndescent->search_from_ids.data());
+                                                       search_config, rnndescent->search_from_ids.data());
     }
 
     void search(const FloatMatrixView &queries, const SearchResultView &result) {

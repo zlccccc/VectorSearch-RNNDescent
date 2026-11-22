@@ -19,15 +19,14 @@ struct Avx512UInt8Kernel : QuantizedKernelBase<UInt8Quantization, sizeof(__m512i
             pack_tiles(distance, ids + split, count - split, stride, codes + size_t(split) * stride, norms + split, scratch);
     }
 
-    template <bool Interleaved = false>
     static std::array<int32_t, 4> dot4(const uint8_t *q, const uint8_t *x0, const uint8_t *x1,
                                        const uint8_t *x2, const uint8_t *x3, size_t stride) {
         // Expose the common 64- and 128-byte strides to the compiler.
         if (stride == block_bytes)
-            return dot4_blocks<Interleaved>(q, x0, x1, x2, x3, block_bytes);
+            return dot4_blocks(q, x0, x1, x2, x3, block_bytes);
         if (stride == 2 * block_bytes)
-            return dot4_blocks<Interleaved>(q, x0, x1, x2, x3, 2 * block_bytes);
-        return dot4_blocks<Interleaved>(q, x0, x1, x2, x3, stride);
+            return dot4_blocks(q, x0, x1, x2, x3, 2 * block_bytes);
+        return dot4_blocks(q, x0, x1, x2, x3, stride);
     }
 
     static int32_t dot(const uint8_t *q, const uint8_t *x, size_t stride) {
@@ -126,7 +125,6 @@ struct Avx512UInt8Kernel : QuantizedKernelBase<UInt8Quantization, sizeof(__m512i
         return result;
     }
 
-    template <bool Interleaved>
     static std::array<int32_t, 4> dot4_blocks(const uint8_t *q, const uint8_t *x0, const uint8_t *x1,
                                               const uint8_t *x2, const uint8_t *x3, size_t stride) {
         auto s0 = _mm512_setzero_si512();
@@ -134,12 +132,11 @@ struct Avx512UInt8Kernel : QuantizedKernelBase<UInt8Quantization, sizeof(__m512i
         auto s2 = _mm512_setzero_si512();
         auto s3 = _mm512_setzero_si512();
         for (size_t i = 0; i < stride; i += block_bytes) {
-            const size_t offset = Interleaved ? 4 * i : i;
             const auto block = _mm512_loadu_si512(q + i);
-            s0 = _mm512_dpbusd_epi32(s0, block, _mm512_loadu_si512(x0 + offset));
-            s1 = _mm512_dpbusd_epi32(s1, block, _mm512_loadu_si512(x1 + offset));
-            s2 = _mm512_dpbusd_epi32(s2, block, _mm512_loadu_si512(x2 + offset));
-            s3 = _mm512_dpbusd_epi32(s3, block, _mm512_loadu_si512(x3 + offset));
+            s0 = _mm512_dpbusd_epi32(s0, block, _mm512_loadu_si512(x0 + i));
+            s1 = _mm512_dpbusd_epi32(s1, block, _mm512_loadu_si512(x1 + i));
+            s2 = _mm512_dpbusd_epi32(s2, block, _mm512_loadu_si512(x2 + i));
+            s3 = _mm512_dpbusd_epi32(s3, block, _mm512_loadu_si512(x3 + i));
         }
         return reduce4(s0, s1, s2, s3);
     }

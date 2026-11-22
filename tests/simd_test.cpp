@@ -306,22 +306,27 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
     EXPECT_TRUE(from_cache.empty());
 }
 
-#if defined(RNNDESCENT_ENABLE_PCA_UINT4)
+#if defined(RNNDESCENT_HAS_UINT4_KERNEL)
 TEST(PackedUInt4CacheTest, MatchesScalarAndCacheFallback) {
-    using PackedGraph = rnndescent::UInt4GraphDistanceComputer<rnndescent::AvxVnniUInt4Kernel>;
+    using Kernel = rnndescent::SelectedUInt4Kernel;
+    using PackedGraph = rnndescent::QuantizedDistanceComputer<Kernel, Kernel::Encoding>;
+    constexpr size_t block = Kernel::block_bytes;
     constexpr int count = 28;
     std::array<int, count> edges;
     std::vector<int> row_order(count);
     std::iota(edges.begin(), edges.end(), 0);
     std::iota(row_order.rbegin(), row_order.rend(), 0);
-    for (int dimension : {64, 65}) {
+    for (int dimension : {31, 64, 65, 193}) {
         SCOPED_TRACE(dimension);
         const auto base = make_vectors(count, dimension, 5);
         const auto query = make_vectors(queries, dimension, 17);
         auto computer = std::make_unique<PackedGraph>(base.data(), count, dimension, row_order.data());
+        const auto selected = SelectedDistanceComputerFactory::create_cached_graph(
+            base.data(), count, dimension, row_order.data(), rnndescent::QuantizedFormat::UInt4);
         computer->set_query(query.data(), queries);
         const auto stride = computer->code_stride();
-        ASSERT_EQ(stride, (dimension + 63) / 64 * 32);
+        ASSERT_EQ(stride, (dimension + 2 * block - 1) / (2 * block) * block);
+        EXPECT_EQ(selected->code_stride(), stride);
 
         Neighbors::Pool pool;
         pool.initialize(stride, {0, count, 2 * count}, 1 << 20);
@@ -343,8 +348,8 @@ TEST(PackedUInt4CacheTest, MatchesScalarAndCacheFallback) {
                 computer->copy_index(id, row.data(), norm, true);
                 int sum = 0;
                 for (size_t k = 0; k < 2 * stride; ++k) {
-                    const uint8_t byte = row[k / 64 * 32 + k % 32];
-                    const int code = k % 64 < 32 ? byte & 15 : byte >> 4;
+                    const uint8_t byte = row[k / (2 * block) * block + k % block];
+                    const int code = k % (2 * block) < block ? byte & 15 : byte >> 4;
                     const int delta = 8 * code - qcode[k];
                     sum += delta * delta;
                     if (k >= static_cast<size_t>(dimension))

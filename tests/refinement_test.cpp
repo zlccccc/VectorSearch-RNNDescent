@@ -139,12 +139,13 @@ TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
     search.num_initialize = rows;
     search.search_L = 64;
     search.refine_max = 61;
+    search.fp32_refine_max = 32;
     search.num_threads = 1;
     rnndescent::RNNDescent graph(rnndescent::FloatMatrixView::from_vector(projection, graph_dim), false, build, search);
     ASSERT_FALSE(std::is_sorted(graph.search_from_ids.begin(), graph.search_from_ids.end()));
     const auto base_view = rnndescent::FloatMatrixView::from_vector(base, dim);
-    rnndescent::CandidateReranker original(base_view, graph_dim, search.refine_max, 32);
-    rnndescent::CandidateReranker bfs(base_view, graph_dim, search.refine_max, 32, graph.search_from_ids.data());
+    rnndescent::CandidateReranker original(base_view, graph_dim, search.refine_max, search);
+    rnndescent::CandidateReranker bfs(base_view, graph_dim, search.refine_max, search, graph.search_from_ids.data());
 
     constexpr int query_id = 19;
     const auto query = rnndescent::FloatMatrixView::from_buffer(base.data() + query_id * dim, 1, dim);
@@ -167,10 +168,56 @@ TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
     }
 }
 
-#if defined(RNNDESCENT_FORCE_AVX_VNNI)
-TEST(RefinementTest, PackedUInt4ScoresBfsRowsAndCandidateTail) {
+TEST(RefinementTest, DirectFp32UsesEveryGraphCandidate) {
+    const std::vector<float> base{0, 0, 1, 0, 2, 0, 3, 0};
+    const std::vector<float> query{0, 0};
+    const int original_ids[]{3, 2, 1, 0};
+    rnndescent::RNNDescent::SearchConfig search;
+    search.fp32_refine_max = 1;
+    search.rerank_quantization.reset();
+    rnndescent::CandidateReranker reranker(rnndescent::FloatMatrixView::from_vector(base, 2), 1, 4, search, original_ids);
+    reranker.set_queries(rnndescent::FloatMatrixView::from_vector(query, 2));
+    std::vector<rnndescent::SingleNeighbor> candidates{{0, 0}, {1, 1}, {2, 2}, {3, 3}};
+    int id = -1;
+    float distance = -1;
+    reranker.rerank(0, candidates, search.fp32_refine_max, {&id, &distance, 1}, original_ids);
+    EXPECT_EQ(candidates.size(), 4);
+    EXPECT_EQ(id, 0);
+    EXPECT_EQ(distance, 0);
+}
+
+TEST(RefinementTest, GraphCandidateCountIsBoundedBySearchPool) {
+    constexpr int rows = 32, dim = 1;
+    std::vector<float> base(rows);
+    std::iota(base.begin(), base.end(), 0.0f);
+    rnndescent::RNNDescent::BuildConfig build;
+    build.T1 = build.T2 = build.num_threads = 1;
+    build.S = build.K0 = 8;
+    rnndescent::RNNDescent::SearchConfig search;
+    search.num_initialize = search.refine_max = rows;
+    search.search_L = 12;
+    search.fp32_refine_max = 0;
+    search.num_threads = 1;
+    rnndescent::RNNDescent graph(rnndescent::FloatMatrixView::from_vector(base, dim), false, build, search);
+    graph.graph_distance_computer->set_query(base.data(), 1);
+
+    auto fp32 = std::make_unique<TrackedDistances>(base, dim);
+    auto &tracked = *fp32;
+    rnndescent::CandidateReranker reranker(std::move(fp32), dim);
+    int id = -1;
+    float distance = -1;
+    graph.searchSingle(0, 0, reranker, search, build.K0, {&id, &distance, 1});
+    EXPECT_EQ(tracked.evaluated.size(), search.search_L);
+    EXPECT_EQ(id, 0);
+}
+
+#if defined(RNNDESCENT_HAS_UINT4_KERNEL)
+class PackedUInt4RefinementTest : public ::testing::TestWithParam<int> {};
+
+TEST_P(PackedUInt4RefinementTest, ScoresBfsRowsAndCandidateTail) {
     using Factory = rnndescent::SelectedDistanceComputerFactory;
-    constexpr int rows = 46, dim = Factory::uint4_refine_dimension, keep = Factory::uint4_refine_min_fp32;
+    constexpr int rows = 46, keep = 16;
+    const int dim = GetParam();
     std::vector<float> base(rows * dim), query(dim);
     std::vector<int> row_order(rows);
     for (int i = 0; i < rows / 2; ++i) {
@@ -189,7 +236,7 @@ TEST(RefinementTest, PackedUInt4ScoresBfsRowsAndCandidateTail) {
     // 4-bit grid and query values fit exactly in a signed byte.
     const auto base_view = rnndescent::FloatMatrixView::from_vector(base, dim);
     const auto query_view = rnndescent::FloatMatrixView::from_vector(query, dim);
-    auto packed = Factory::create_quantized_refine(base.data(), rows, dim, row_order.data(), keep);
+    auto packed = Factory::create_quantized_refine(base.data(), rows, dim, row_order.data(), rnndescent::QuantizedFormat::UInt4);
     packed->set_query(query.data(), 1);
     std::vector<rnndescent::SingleNeighbor> candidates;
     for (int i = 0; i < rows; ++i)
@@ -214,7 +261,10 @@ TEST(RefinementTest, PackedUInt4ScoresBfsRowsAndCandidateTail) {
         }
     }
 
-    rnndescent::CandidateReranker reranker(base_view, 64, rows, keep, row_order.data());
+    rnndescent::RNNDescent::SearchConfig search;
+    search.fp32_refine_max = keep;
+    search.rerank_quantization = rnndescent::QuantizedFormat::UInt4;
+    rnndescent::CandidateReranker reranker(base_view, 64, rows, search, row_order.data());
     reranker.set_queries(query_view);
     int id = -1;
     float distance = 0;
@@ -224,6 +274,8 @@ TEST(RefinementTest, PackedUInt4ScoresBfsRowsAndCandidateTail) {
     EXPECT_EQ(id, nearest);
     EXPECT_FLOAT_EQ(distance, nearest_distance);
 }
+
+INSTANTIATE_TEST_SUITE_P(Dimensions, PackedUInt4RefinementTest, ::testing::Values(65, 960));
 #endif
 
 } // namespace

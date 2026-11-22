@@ -8,7 +8,6 @@ endif()
 set(RNNDESCENT_SIMD "native" CACHE STRING "SIMD target: native, avx2, avx2-uint8, avx-vnni, avx512, or neon")
 set_property(CACHE RNNDESCENT_SIMD PROPERTY STRINGS native avx2 avx2-uint8 avx-vnni avx512 neon)
 option(RNNDESCENT_PROFILE_SEARCH "Enable detailed graph search timing and counters" OFF)
-option(RNNDESCENT_PCA_UINT4 "Use experimental packed UINT4 graph codes for AVX-VNNI PCA64" OFF)
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
 find_package(OpenBLAS CONFIG QUIET)
@@ -56,13 +55,6 @@ else()
     message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
-if(RNNDESCENT_PCA_UINT4)
-    if(NOT RNNDESCENT_SIMD STREQUAL "avx-vnni")
-        message(FATAL_ERROR "RNNDESCENT_PCA_UINT4 requires RNNDESCENT_SIMD=avx-vnni")
-    endif()
-    target_compile_definitions(rnndescent_build_options INTERFACE RNNDESCENT_ENABLE_PCA_UINT4)
-endif()
-
 set(RNNDESCENT_INDEX_SOURCES
     solution/solution.cpp
     solution/rnndescent/build/GraphBuilder.cpp
@@ -76,6 +68,7 @@ set(RNNDESCENT_INDEX_HEADERS
     solution/rnndescent/common/Assertions.h
     solution/rnndescent/common/HugePages.h
     solution/rnndescent/common/Logger.h
+    solution/rnndescent/common/QuantizedFormat.h
     solution/rnndescent/common/Views.h
     solution/rnndescent/build/GraphBuilder.h
     solution/rnndescent/build/GraphConfig.h
@@ -84,7 +77,9 @@ set(RNNDESCENT_INDEX_HEADERS
     solution/rnndescent/search/GraphSearcher.h
     solution/rnndescent/build/GraphTypes.h
     solution/rnndescent/discomputer/quantized/AvxVnniUInt4Kernel.h
-    solution/rnndescent/discomputer/quantized/UInt4DistanceComputer.h
+    solution/rnndescent/discomputer/quantized/Avx512UInt4Kernel.h
+    solution/rnndescent/discomputer/quantized/NeonUInt4Kernel.h
+    solution/rnndescent/discomputer/quantized/UInt4Quantization.h
     solution/rnndescent/IndexRNNDescent.h
     solution/rnndescent/RNNDescent.h
     solution/rnndescent/search/CandidateReranker.h

@@ -1,14 +1,14 @@
 # 测距实现
 
-共用接口由 [MyDistanceComputer.h](MyDistanceComputer.h) 定义，[PlatformSimdDistanceComputer.h](PlatformSimdDistanceComputer.h) 在编译期选择建图、查图、邻居容器与精排内核。上层索引流程见 [算法与数据流](../../../docs/architecture.md)。
+共用接口由 [MyDistanceComputer.h](MyDistanceComputer.h) 定义。[PlatformSimdDistanceComputer.h](PlatformSimdDistanceComputer.h) 在编译期选择可用的 SIMD 内核，在创建索引时按阶段配置创建对应的 DistanceComputer。上层索引流程见 [算法与数据流](../../../docs/architecture.md)。
 
 | 位置 | 职责 |
 |---|---|
 | [flat/FlatDistanceComputer.h](flat/FlatDistanceComputer.h) | 管理原始行或编码行、底库与查询平方范数，并组装平方距离 |
 | `flat/` 下的平台内核 | FP32 点积、四路点积、NEON FP16 与 INT16 运算 |
 | [flat/NeonDotProduct.h](flat/NeonDotProduct.h) | NEON FP32、FP16 和 INT16 共用的分块与尾部循环 |
-| [quantized/QuantizedDistanceComputer.h](quantized/QuantizedDistanceComputer.h) | 训练 8 位量化参数、编码底库与查询，并计算码空间平方距离 |
-| [quantized/UInt4DistanceComputer.h](quantized/UInt4DistanceComputer.h) | 4 位查图和粗排的量化、行内打包和分数组装 |
+| [quantized/QuantizedDistanceComputer.h](quantized/QuantizedDistanceComputer.h) | 共用的底库和查询存储、单条与批量算距、邻居缓存接口，以及 8 位编码策略 |
+| [quantized/UInt4Quantization.h](quantized/UInt4Quantization.h) | 4 位查图和粗排的量化、半字节布局和分数换算 |
 | [quantized/QuantizedKernelBase.h](quantized/QuantizedKernelBase.h) | 共用的分块打包、缓存遍历和平方 L2 写回 |
 | `quantized/` 下的平台内核 | 连续读和缓存读的点积 |
 | [quantized/NeonInt8Kernel.h](quantized/NeonInt8Kernel.h) | NEON INT8 点积与四路邻居缓存算距 |
@@ -23,11 +23,13 @@
 
 默认精排使用当前平台的 FP32 内核，引用调用方的原始底库。底库范数用 `Kernel::dot(row, row, d)` 计算，查询范数由 `Kernel::query_norm` 计算。距离按照 `norm(query) + norm(base) - 2 * dot(query, base)` 组装。
 
-默认对原始维度量化排序留下的 Top32 做 FP32 算距。启用 PCA 时，按 BFS 图 ID 编码原始维度底库，选出 FP32 候选后再映射到原始行号。不开 PCA 时直接复用查图已有的原始维度分数。`fp32_refine_max=0` 对全部精排候选做 FP32 算距。
+默认对原始维度 8 位粗排留下的 Top32 做 FP32 算距。粗排底库按 BFS 顺序编码，保留的候选在 FP32 精排前映射回原始行号。查图在原始维度且两阶段均用 8 位时可直接复用查图分数。`--rerank-quantization fp32` 或 `--fp32-refine-max 0` 将全部图候选直接交给 FP32。
 
-AVX-VNNI 在原始维度为 960 且 FP32 保留数至少为 40 时使用 4 位粗排。先减去底库逐维均值，再为每行计算偏移和步长。每行保存 480 字节量化码和 12 字节参数及范数。查询按向量量化到有符号 8 位，四路内核在寄存器里解包底库码并执行字节点积。粗排按重建的平方 L2 排序，省略对同一查询恒定的查询平方范数。
+`--rerank-quantization uint4` 显式启用 4 位粗排。编码先减去底库逐维均值，再为每行计算偏移和步长。每行保存按 SIMD 块补齐的半字节码以及 12 字节参数及范数。查询按向量量化到有符号 8 位，四路内核在寄存器里解包底库码并执行字节点积。粗排按重建的平方 L2 排序，省略对同一查询恒定的查询平方范数。
 
-可选的 PCA64 4 位查图用采样误差选择底库共享步长，按行保存 32 字节量化码和 4 字节平方范数。查询以更细的步长量化到有符号字节。查图和粗排共用 `PackedUInt4Layout`。同一个字节的低、高半字节分别存储两个连续特征块的同一位置，由内核指定特征块宽度。逐行编码和分数组装在公共层，[AVX-VNNI 内核](quantized/AvxVnniUInt4Kernel.h) 提供点积和邻居缓存分块。16 路主块交错存储，剩余邻居走四路块，未缓存的邻居按 ID 从 4 位底库读码。
+`--graph-quantization uint4` 显式启用 4 位查图。该编码用采样误差选择底库共享步长。每行保存按 SIMD 块补齐的量化码和 4 字节平方范数。查询以更细的步长量化到有符号字节。查图和粗排共用 `PackedUInt4Layout`。同一个字节的低、高半字节分别存储两个连续特征块的同一位置，由内核指定特征块宽度。逐行编码和分数组装在公共层，内核负责点积和邻居缓存分块。AVX-VNNI 和 AVX-512 按邻居数划分 16 路主块和四路尾块，各块按实际码长遍历。AVX-512 的四路内核每次将一块 32 字节码展开到 64 字节执行点积。NEON 使用四路成组加载和 `SDOT`。未缓存的邻居按 ID 从 4 位底库读码。[AVX-VNNI](quantized/AvxVnniUInt4Kernel.h) · [AVX-512](quantized/Avx512UInt4Kernel.h) · [NEON](quantized/NeonUInt4Kernel.h)
+
+UINT4 的 DistanceComputer 在初始化时确定统一的补齐码长。AVX-VNNI 和 AVX-512 每个特征块覆盖 64 维，NEON 每块覆盖 32 维。底库及查询都以零码补齐，邻居缓存复制完整码块。点积循环按整块推进，x86 的 16 路缓存主块也按固定步长顺序读取查询和缓存码。
 
 NEON FP16 把行转换为半精度，并用 FP32 累加。NEON INT16 保存编码行，用 64 位整数累加并乘量化步长的平方。CBLAS FP32 变体使用 `cblas_sdot`，测试中用于单条与批量距离校验。默认精排由平台工厂选择 SIMD FP32。
 
@@ -89,13 +91,12 @@ NEON INT8 的邻居缓存按四行交错。每步用 `vld1q_s8_x4` 成组加载�
 
 | 内核成员 | 约定 |
 |---|---|
-| `Quantization` | 提供 `Code`、`max_scale` 和 `encode` |
 | `block_bytes` | 单条码的 SIMD 块宽，用于连续读、补齐和默认缓存布局 |
-| `dot(a, b, stride)` | 返回两条码的整数点积 |
-| `dot4(q, x0, x1, x2, x3, stride)` | 返回同一查询与四条码的点积 |
+| `dot(q, x, stride)` | 按传入的码长返回整数点积 |
+| `dot4(q, x0, x1, x2, x3, stride)` | 按传入的码长返回同一查询与四条码的整数点积 |
 | `pack_neighbor_cache(...)` | 可选的建图打包入口，提供时由内核决定缓存布局 |
 | `cached_distances(...)` | 按对应的缓存布局写入每个邻居的码空间平方 L2 |
 
-用内核实例化量化 DistanceComputer，邻居容器通过它调用缓存打包、缓存算距和四路回退。Flat 内核提供 `Code`、`Dot`、`dot`、`dot4`，FP32 内核还提供 `query_norm`，编码行内核提供其转换和缩放字段。
+用内核和编码策略实例化 `QuantizedDistanceComputer<Kernel, Encoding>`。策略提供底库和查询的行宽、行参数、训练和编码方法，以及整数点积到分数的换算。8 位默认使用 `ByteQuantization`，4 位查图使用共享步长，4 位粗排使用逐行仿射参数。邻居容器通过 DistanceComputer 调用缓存打包、缓存算距和四路回退。Flat 内核提供 `Code`、`Dot`、`dot`、`dot4`，FP32 内核还提供 `query_norm`，编码行内核提供其转换和缩放字段。
 
 现有 [SIMD 测试](../../../tests/simd_test.cpp) 对照标量结果，覆盖单条、四路、非对齐维度、极端码、BFS 行重排和缓存回退。修改计算或布局后，在对应指令集机器上运行这些用例，并通过相同 Recall 的 Benchmark 检查查询速度。构建和测试命令见 [开发与验证](../../../docs/development.md)。

@@ -1,6 +1,6 @@
 # RNNDescent 向量检索算法
 
-本项目实现了基于 RNNDescent 的近似最近邻检索，使用平方 L2 距离。构建阶段迭代生成近邻图并重排节点。查询阶段用 8 位量化向量在图中筛选候选，再按原始维度的量化距离选出少量候选，最后用原始 FP32 向量精排并返回 Top K。FP32 精排数量默认 32，可用 `--fp32-refine-max` 调整，设为 0 时对全部精排候选计算 FP32 距离。启用 PCA 的 GIST benchmark 在 AVX-VNNI 下默认使用 4 位粗排底库和 Top40。
+本项目实现了基于 RNNDescent 的近似最近邻检索，使用平方 L2 距离。构建阶段迭代生成近邻图并按 BFS 重排节点。查询依次经过图搜索初排、可选的原始维度量化粗排和原始 FP32 精排，返回 Top K。查图和粗排可分别选择 8 位或 4 位编码，默认均为 8 位。启用量化粗排时默认保留 32 个候选做 FP32 精排。
 
 后续优化优先减少数据读取和搬运，向量及邻居向量缓存尽量使用 INT8/UINT8 存储。计算按速度选择精度，在目标 Recall 下以端到端性能决定取舍。具体约定见 [开发与验证](docs/development.md)。
 
@@ -12,6 +12,7 @@
 | 建图、PCA、搜索、候选合并和内存组成 | [算法与数据流](docs/architecture.md) |
 | 距离公式、SIMD 内核和邻居缓存扩展 | [测距实现](solution/rnndescent/discomputer/README.md) |
 | 本地测试、GitHub Actions、构建问题定位 | [开发与验证](docs/development.md) |
+| 当前 QPS、Recall 与复测方法 | [Benchmark 性能基准](benchmark/README.md) |
 | 数据格式、下载、SIFT 与 GIST 测量方法 | [Benchmark 使用](benches/README.md) |
 
 ## 许可声明
@@ -52,11 +53,11 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
 
 指令集在编译时选定。运行测试的机器也需要支持所选指令集。
 
-AVX-VNNI 构建可加 `-DRNNDESCENT_PCA_UINT4=ON`，为 PCA64 查图启用实验性的 4 位底库和邻居缓存。详见 [参数配置](docs/configuration.md)。
+AVX-VNNI、AVX-512 VNNI 和支持点积的 NEON 构建可用 `--graph-quantization uint4` 选择 4 位查图，用 `--rerank-quantization uint4` 选择 4 位粗排。用 `--rerank-quantization fp32` 可以直接对图搜索送出的候选做 FP32 精排。详见 [参数配置](docs/configuration.md)。
 
 ### 量化算距
 
-[QuantizedDistanceComputer.h](solution/rnndescent/discomputer/quantized/QuantizedDistanceComputer.h) 中的 `QuantizedDistanceComputer<Kernel>` 负责训练量化参数、按 BFS 顺序写入底库码、量化查询，并把点积转成距离分数。邻居池交由所绑定的 DistanceComputer 打包和算距，未缓存的邻居通过四路算距接口读取底库码。
+[QuantizedDistanceComputer.h](solution/rnndescent/discomputer/quantized/QuantizedDistanceComputer.h) 中的 `QuantizedDistanceComputer<Kernel, Encoding>` 为 8 位和 4 位量化共用。编码策略负责参数训练、码布局和分数换算，SIMD 内核负责点积和邻居缓存块。DistanceComputer 按 BFS 顺序编码底库，管理查询缓冲并提供统一算距入口。未缓存的邻居通过四路算距接口读取底库码。
 
 | 构建目标 | 量化码 | 每块读取字节数 | 点积内核 |
 |---|---|---:|---|

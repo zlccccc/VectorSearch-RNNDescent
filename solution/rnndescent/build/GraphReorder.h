@@ -26,8 +26,7 @@ struct GraphIndexStorage {
 class GraphReorder {
   public:
     static void materialize(const FloatMatrixView &data_view, bool verbose, const config::BuildConfig &build_config,
-                            const config::SearchConfig &search_config, GraphBuildResult result, GraphIndexStorage &storage,
-                            bool pca_projection = false);
+                            const config::SearchConfig &search_config, GraphBuildResult result, GraphIndexStorage &storage);
 
   private:
     static std::vector<int> reorder_by_bfs(const std::vector<int> &edges, const std::vector<size_t> &edge_offsets,

@@ -19,7 +19,7 @@ GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search
     const int beam_size = std::min(search_config.beam_size, search_config.search_L);
     const size_t beam_capacity = padded_degree(max_degree) * beam_size;
     for (int i = 0; i < num_threads_; ++i) {
-        candidate_ids_[i].initialize(static_cast<int>(storage_.search_from_ids.size()));
+        candidate_ids_[i].initialize(static_cast<int>(storage_.final_graph_neighbors.size()));
         retset_[i].reserve(std::max(search_config.num_initialize, search_config.search_L));
         neighbor_distance_[i].reserve(beam_capacity);
         neighbor_ids_[i].reserve(beam_capacity);
@@ -28,13 +28,11 @@ GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search
     }
 }
 
-void GraphSearcher::search_single(int threadid, int queryid, const CandidateReranker &reranker, const config::SearchConfig &search_config, int max_degree,
-                      const SearchResultView &result) {
-        result.validate();
+std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int queryid,
+    const config::SearchConfig &search_config, int max_degree, int topk) {
         RNNDESCENT_ASSERT_MSG(max_degree > 0, "search max_degree must be positive");
-        const int topk = result.topk();
 
-        const int available_points = static_cast<int>(storage_.search_from_ids.size());
+        const int available_points = static_cast<int>(storage_.final_graph_neighbors.size());
         if (available_points <= 0)
             throw std::runtime_error("search entry points are not initialized");
         if (topk > available_points)
@@ -45,7 +43,7 @@ void GraphSearcher::search_single(int threadid, int queryid, const CandidateRera
         const int beam_size = std::min(safe_search_config.beam_size, search_L);
         const int num_initialize = safe_search_config.num_initialize;
         const int refine_max = safe_search_config.refine_max;
-        if (!(0 <= threadid && threadid < num_threads))
+        if (!(0 <= threadid && threadid < num_threads && threadid < num_threads_))
             throw std::runtime_error("thread id out of range");
 #ifdef INTERNAL_CLOCK_TEST
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = prevtime;
@@ -210,28 +208,13 @@ void GraphSearcher::search_single(int threadid, int queryid, const CandidateRera
 #ifdef INTERNAL_CLOCK_TEST
         nowtime = std::chrono::high_resolution_clock::now();
         getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-        prevtime = nowtime;
 #endif
 
-        int refinemax = std::min(refine_max, (int)retset.size());
-        retset.resize(refinemax);
-
-        const int *original_ids = nullptr;
-        if (reranker.uses_graph_ordered_codes()) {
-            // The coarse ranker reads BFS-ordered rows by graph ID.
-            for (auto &candidate : retset)
-                candidate.id &= 0x7fffffff;
-            original_ids = storage_.search_from_ids.data();
-        } else {
-            for (auto &candidate : retset)
-                candidate.id = storage_.search_from_ids[candidate.id & 0x7fffffff];
-        }
-
-        reranker.rerank(queryid, retset, safe_search_config.fp32_refine_max, result, original_ids);
+        retset.resize(std::min(refine_max, search_L));
+        for (auto &candidate : retset)
+            candidate.id &= 0x7fffffff;
 
 #ifdef INTERNAL_CLOCK_TEST
-        nowtime = std::chrono::high_resolution_clock::now();
-        float recalculate_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             perf_stats_.query_count++;
@@ -239,14 +222,22 @@ void GraphSearcher::search_single(int threadid, int queryid, const CandidateRera
             perf_stats_.getneighbor_time += getneighbor_time;
             perf_stats_.update_time += update_time;
             perf_stats_.calculate_time += calculate_time;
-            perf_stats_.recalculate_time += recalculate_time;
             perf_stats_.bfs_length += bfs_length;
             perf_stats_.bfs_items += bfs_items;
             perf_stats_.calculate_distance_count += calculate_distance_count;
             perf_stats_.useful_count += useful_count;
         }
 #endif
+        return retset;
     }
+
+#ifdef INTERNAL_CLOCK_TEST
+void GraphSearcher::record_refinement_time(float elapsed_ms) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    perf_stats_.recalculate_time += elapsed_ms;
+}
+#endif
+
 void GraphSearcher::flush_perf_stats() {
 #ifdef INTERNAL_CLOCK_TEST
         if (perf_stats_.query_count == 0) {

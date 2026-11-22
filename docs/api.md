@@ -15,7 +15,7 @@
 
 默认 FP32 精排引用调用方的底库内存。保留 `base` 的内容与地址，直到索引重置或销毁，随后可以替换底库并重建。量化数据、图结构、PCA 和每线程搜索缓冲由索引管理。查询调用同步完成，返回后可以复用查询缓冲。距离结果在下一次查询时更新，对象销毁时失效。
 
-默认先用原始维度的 INT8/UINT8 距离选择 Top32，再计算这些候选的原始 FP32 距离并返回 Top K。`SearchConfig::refine_max` 控制参与原始维度排序的候选量，`fp32_refine_max` 默认 32，设为 0 时对全部候选做 FP32 精排。Top K 超过该数量时，实际 FP32 数量提高到 Top K。该筛选会影响 Recall，返回距离仍为原始 FP32 空间的平方 L2。
+`SearchConfig::graph_quantization` 选择图搜索的编码。`SearchConfig::rerank_quantization` 独立选择原始维度粗排的编码。两者均默认 `QuantizedFormat::Byte`，有对应 SIMD 内核时可设为 `QuantizedFormat::UInt4`。`rerank_quantization = std::nullopt` 将所有图候选直接交给 FP32。图搜索从候选池中至多取 `refine_max` 项，进入量化粗排时按分数保留 `fp32_refine_max` 项，默认 32，至少保留 Top K。将 `fp32_refine_max` 设为 0 也可对送入重排的全部候选做 FP32 精排。返回距离为原始 FP32 空间的平方 L2。
 
 `search` 会更新量化查询、PCA 查询缓冲和每线程候选去重表。同一 `Solution` 实例按顺序调用批量查询，在批次内使用配置的 OpenMP 线程。不同实例分别管理自己的索引和邻居池。外层需要并发访问同一实例时，由调用方串行化这些入口。
 

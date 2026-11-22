@@ -38,6 +38,8 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 | `--beam-size` | `SearchConfig::beam_size` | 收集一批新候选前最多展开的节点数 |
 | `--refine-max` | `SearchConfig::refine_max` | 查询结束时从候选池中取出、参与原始维度排序的数量 |
 | `--fp32-refine-max` | `SearchConfig::fp32_refine_max` | 按原始维度量化距离选择后，做 FP32 精排的数量。默认 32，0 表示全部候选都做 FP32 精排 |
+| `--graph-quantization` | `SearchConfig::graph_quantization` | 查图底库及邻居缓存的编码，支持 `8bit`（默认）和 `uint4` |
+| `--rerank-quantization` | `SearchConfig::rerank_quantization` | 原始维度粗排的编码，支持 `8bit`（默认）、`uint4` 和 `fp32`（跳过量化粗排） |
 | `--neighbor-pool-gb` | `BuildConfig::neighbor_pool_size_limit_bytes` | 邻接 ID 与可选邻居向量缓存的池预算，CLI 单位为整数 GiB |
 | `--pca-out` | `PCAConfig::out_dim` | 开启 PCA 并指定查图维度 |
 | `--disable-pca` | `PCAConfig::enabled` | 使用原始维度建图和查图 |
@@ -49,11 +51,11 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 
 局部三跳筛边在最终裁剪前替换有替代路径的边，保持每个节点的出度。启用后可用 ground truth 重新选择达到目标 Recall 的 `search_L`。
 
-启用 PCA 时，先对候选计算原始维度的量化距离，再保留 FP32 精排候选。AVX-VNNI 下，原始 960 维且 FP32 保留数至少为 40 时，粗排底库使用 4 位编码，其余配置使用 INT8/UINT8。不开 PCA 时直接复用查图的量化距离。`--fp32-refine-max 0` 跳过量化筛选，恢复完整 FP32 精排。调整这个数量会影响 Recall，比较性能时需要分别调参到相同目标精度。
+查图和原始维度粗排分别选择编码。选择 `8bit` 时使用平台的 INT8 或 UINT8 内核。仅当查图已在原始维度且两阶段均选 `8bit` 时，粗排可复用查图分数。选择 `--rerank-quantization fp32` 或 `--fp32-refine-max 0`，会让所有送入重排的候选直接做 FP32 排序。比较不同方案的速度时，分别调到相同的目标 Recall。
 
 PCA 在 `enabled=true` 且 `0 < out_dim < 输入维度` 时启用，训练要求 `out_dim <= 底库条数`。`--pca-out 64` 同时设置开关与维度。`--enable-pca` 只设置开关，需要配合有效的输出维度。精排使用原始向量与原始维度。
 
-使用 `-DRNNDESCENT_SIMD=avx-vnni -DRNNDESCENT_PCA_UINT4=ON` 构建后，`--pca-out 64` 会按 4 位编码查图底库和邻居向量。查询仍以有符号字节参与点积。建边、其他 PCA 维度和关闭 PCA 的索引沿用 UINT8。这个构建选项默认关闭。
+4 位编码由运行参数选择，与 PCA 开关、输出维度和 FP32 保留数独立。支持 AVX-VNNI、AVX-512 VNNI 和支持点积的 NEON 构建，活动阶段在缺少 4 位内核时会报错。4 位阶段的查询用有符号字节参与点积。RNN-Descent 建边使用平台的 8 位距离计算器。
 
 邻居池为 0 GiB 时仍分配邻接 ID。正数预算用于邻接 ID 和缓存数据，邻接 ID 的必要空间优先保证，因此实际池大小可超过很小的预算。程序还会读取系统可用内存，并为系统预留 2 GiB 后限制可选缓存。日志里的缓存覆盖率和池大小反映实际分配情况。完整内存组成见 [算法与数据流](architecture.md)。
 
@@ -66,7 +68,7 @@ PCA 在 `enabled=true` 且 `0 < out_dim < 输入维度` 时启用，训练要求
 | sift100k | 64 | 96 | 24 | 80 | 72 | 4 | 24 |
 | gist | 320 | 256 | 64 | 3072 | 1152 | 8 | 1024 |
 
-表中的入口数为归一化前的配置值。所有预设的 `T1=4`、`T2=15`，FP32 精排数量默认 32，PCA 默认关闭，邻居池预算默认 0 GiB。在 AVX-VNNI 构建中，为 GIST 启用 PCA 后，FP32 精排默认保留 40 个候选，显式设置 `--fp32-refine-max` 时以命令行的值为准。名称按小写匹配，例如目录名为 `gist1m` 时可加 `--dataset-name gist`。预设值用于启动测量，目标 Recall 由实际数据与 ground truth 校验。
+表中的入口数为归一化前的配置值。所有预设的 `T1=4`、`T2=15`，查图和粗排默认用 8 位，FP32 精排数量默认 32，PCA 默认关闭，邻居池预算默认 0 GiB。名称按小写匹配，例如目录名为 `gist1m` 时可加 `--dataset-name gist`。预设值用于启动测量，目标 Recall 由实际数据与 ground truth 校验。
 
 `BuildConfig` 的 `T1`、`T2`、`random_seed`、`save_neighbor`、`random_init` 可通过 C++ 设置。CLI 提供上表列出的建图和搜索覆盖项。
 
