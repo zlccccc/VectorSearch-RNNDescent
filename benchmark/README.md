@@ -1,21 +1,24 @@
 # Benchmark 性能基准
 
-2026-11-22，Release 构建，目标 Recall@10 ≥ 99%。表中是每个平台和编码测得的最佳配置，QPS 取批次中位数。
+2026-11-22，Release 构建，各档 Recall@10 均超过 99%。QPS 取 24 个查询批次的中位数。
 
 ## 跨平台对照
 
-每台机器用 2 个查询线程。同一数据集的底库、查询、ground truth 和图在三台机器上相同。所有结果的邻居缓存覆盖率为 100%。x86 的 8 位列使用 UINT8，NEON 使用 INT8。
+每格为 **1 线程 / 2 线程 QPS**。同一数据集在三台机器上共用底库、查询、ground truth 和图。同组的两种线程数交替测，使用同一组搜索参数，邻居缓存覆盖率均为 100%。
 
-| 数据集 | CPU | 指令集 | 8 位查图 QPS / Recall / 维度 | UINT4 查图 QPS / Recall / 维度 |
-|---|---|---|---|---|
-| SIFT100K | Core i7-12700KF | AVX-VNNI | 55,065 / 99.030% / PCA64 | 52,667 / 99.020% / PCA64 |
-| SIFT100K | Intel 云机（family 6，model 106） | AVX-512 VNNI | 48,784 / 99.010% / PCA64 | 47,428 / 99.055% / PCA64 |
-| SIFT100K | Huawei AArch64（0x48 / 0xd02） | NEON Dot Product | 43,541 / 99.001% / PCA64 | 42,055 / 99.005% / 原始 128 维 |
-| GIST100K | Core i7-12700KF | AVX-VNNI | 14,057 / 99.02% / PCA128 | 15,329 / 99.02% / PCA128 |
-| GIST100K | Intel 云机（family 6，model 106） | AVX-512 VNNI | 12,184 / 99.02% / PCA128 | 12,641 / 99.05% / PCA128 |
-| GIST100K | Huawei AArch64（0x48 / 0xd02） | NEON Dot Product | 11,396 / 99.02% / PCA128 | 11,285 / 99.01% / PCA128 |
+| CPU | 指令集 | SIFT100K 8 位 | SIFT100K UINT4 | GIST100K 8 位 | GIST100K UINT4 |
+|---|---|---:|---:|---:|---:|
+| Core i7-12700KF | AVX2（INT8） | 21,019 / 42,867 | — | 5,674 / 10,851 | — |
+| Core i7-12700KF | AVX2（UINT8） | 26,642 / 55,258 | — | 6,599 / 12,575 | — |
+| Core i7-12700KF | AVX-VNNI | 26,739 / 54,455 | 24,420 / 49,488 | 7,022 / 13,524 | 7,548 / 14,828 |
+| Intel 云机（family 6，model 106） | AVX2（INT8） | 20,058 / 39,723 | — | 5,155 / 10,131 | — |
+| Intel 云机（family 6，model 106） | AVX2（UINT8） | 24,364 / 48,299 | — | 6,003 / 11,554 | — |
+| Intel 云机（family 6，model 106） | AVX-512 VNNI | 24,433 / 48,069 | 22,747 / 44,870 | 6,283 / 12,171 | 6,608 / 12,664 |
+| Huawei AArch64（0x48 / 0xd02） | NEON Dot Product | 21,745 / 43,608 | 21,607 / 42,362 | 6,251 / 11,306 | 6,079 / 11,301 |
 
-SIFT100K 使用 10,000 条查询和原始 128 维 FP32 直排。GIST100K 取 GIST1M 的前 10 万条底库，沿用 1,000 条查询并重新计算 ground truth，统一用原始 960 维 UINT4 粗排和 FP32 Top40。每组交替测 24 轮。ARM 的 GIST100K PCA128 复测在双索引测试进程中使用 1.75 GiB 系统内存预留。
+AVX-VNNI 和 AVX-512 VNNI 的 8 位列使用 UINT8，NEON 使用 INT8。本机把 OpenMP 线程绑定到两个不同的核。ARM 的双索引测试进程使用 1.75 GiB 系统内存预留。
+
+SIFT100K 用 10,000 条查询、PCA64 查图和原始 128 维 FP32 直排，NEON 的 UINT4 档使用原始 128 维查图。GIST100K 取 GIST1M 的前 10 万条底库，沿用 1,000 条查询并重算 ground truth。各档使用 PCA128 查图及原始 960 维粗排后 FP32 Top40，AVX2 用 8 位粗排，其余用 UINT4 粗排。
 
 ## 本机百万级数据
 
@@ -28,7 +31,7 @@ Core i7-12700KF，AVX-VNNI，16 个查询线程，邻居缓存覆盖率 100%。
 
 ## 复测
 
-按 [构建说明](../README.md#构建) 选择 `avx-vnni`、`avx512` 或 `neon`。准备数据后，在仓库根目录运行以下 GIST100K 示例。
+按 [构建说明](../README.md#构建) 选择指令集。设 `OMP_NUM_THREADS=1` 或 `2`，然后在仓库根目录运行以下 GIST100K 示例。
 
 ```bash
 OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE OMP_WAIT_POLICY=PASSIVE \
@@ -39,4 +42,4 @@ OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE OMP_WAIT_POLICY=PASSI
   --topk 10 --repeat 28 --warmup-topk 0 --output-iter 0
 ```
 
-将 `--graph-quantization` 改为 `8bit` 可测 8 位查图。示例会重新建图，按实测 Recall@10 调整搜索预算，比较时去掉前 4 批。数据格式见 [数据集说明](../benches/README.md)。
+将 `--graph-quantization` 改为 `8bit` 可测 8 位查图。AVX2 同时使用 `--rerank-quantization 8bit`。示例会重新建图，按实测 Recall@10 调整搜索预算，去掉前 4 批再取中位数。数据格式见 [数据集说明](../benches/README.md)。
