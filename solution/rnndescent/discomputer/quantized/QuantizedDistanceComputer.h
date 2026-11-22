@@ -40,6 +40,12 @@ struct UInt8Quantization {
     }
 };
 
+template <class Kernel, class = void>
+inline constexpr bool has_neighbor_cache_packer = false;
+
+template <class Kernel>
+inline constexpr bool has_neighbor_cache_packer<Kernel, std::void_t<decltype(&Kernel::pack_neighbor_cache)>> = true;
+
 // A kernel selects the byte format, SIMD block width and dot products. Both the
 // distance computer and the neighbor cache use that same kernel and row stride.
 template <class Kernel> class QuantizedDistanceComputer final : public MyDistanceComputer {
@@ -132,6 +138,20 @@ template <class Kernel> class QuantizedDistanceComputer final : public MyDistanc
         return {query.data() + idq * stride, query_norms[idq]};
     }
 
+    void pack_neighbor_cache(const int *ids, int count, void *codes, int *norms, uint8_t *scratch) override {
+        if constexpr (has_neighbor_cache_packer<Kernel>) {
+            Kernel::pack_neighbor_cache(*this, ids, count, code_stride(), static_cast<Code *>(codes), norms, scratch);
+        } else {
+            QuantizedKernelBase<Quantization, Kernel::block_bytes, 4>::pack_tiles(
+                *this, ids, count, code_stride(), static_cast<Code *>(codes), norms, scratch);
+        }
+    }
+
+    void compute_cached_distances(int idq, int count, const void *codes, const int *norms, float *result) const override {
+        Kernel::cached_distances(query.data() + idq * stride, query_norms[idq], count, code_stride(),
+                                 static_cast<const Code *>(codes), norms, result);
+    }
+
   private:
     const int n;
     const size_t d, stride;
@@ -150,12 +170,6 @@ template <class Kernel> class QuantizedDistanceComputer final : public MyDistanc
     }
 };
 
-template <class Kernel, class = void>
-inline constexpr bool has_neighbor_cache_packer = false;
-
-template <class Kernel>
-inline constexpr bool has_neighbor_cache_packer<Kernel, std::void_t<decltype(&Kernel::pack_neighbor_cache)>> = true;
-
 template <class Kernel>
 struct QuantizedNeighbors : NeighborsStorageBase<QuantizedNeighbors<Kernel>, typename Kernel::Quantization::Code, int> {
     using Code = typename Kernel::Quantization::Code;
@@ -164,16 +178,8 @@ struct QuantizedNeighbors : NeighborsStorageBase<QuantizedNeighbors<Kernel>, typ
     static constexpr size_t cache_lane_width = Kernel::block_bytes;
 
     void populate_cache(uint8_t *scratch) {
-        if (!this->pool)
-            return;
-
-        if constexpr (has_neighbor_cache_packer<Kernel>) {
-            Kernel::pack_neighbor_cache(*this->dis, this->edges, this->size, this->code_stride,
-                                        this->pool, this->l2norms, scratch);
-        } else {
-            QuantizedKernelBase<typename Kernel::Quantization, Kernel::block_bytes, 4>::pack_tiles(
-                *this->dis, this->edges, this->size, this->code_stride, this->pool, this->l2norms, scratch);
-        }
+        if (this->pool)
+            this->dis->pack_neighbor_cache(this->edges, this->size, this->pool, this->l2norms, scratch);
     }
 
     template <typename Allocator>
@@ -184,10 +190,7 @@ struct QuantizedNeighbors : NeighborsStorageBase<QuantizedNeighbors<Kernel>, typ
 
     void compute_distance(int idq, float *result) {
         if (this->pool != nullptr) {
-            // Score the prepacked neighborhood and combine the dots with the squared norms.
-            const auto query = this->dis->get_quantized_query(idq);
-            Kernel::cached_distances(static_cast<const Code *>(query.code), query.squared_norm, this->size, this->code_stride,
-                                     this->pool, this->l2norms, result);
+            this->dis->compute_cached_distances(idq, this->size, this->pool, this->l2norms, result);
         } else {
             // Uncached neighborhoods fetch quantized rows by ID and score four at a time.
             // Time spent in this fallback limits the end-to-end gain from the cached kernel.

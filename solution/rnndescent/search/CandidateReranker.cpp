@@ -7,27 +7,14 @@
 #include "../discomputer/PlatformSimdDistanceComputer.h"
 
 namespace rnndescent {
-namespace {
-
-void score_candidates(MyDistanceComputer &distance, int query_id, std::vector<SingleNeighbor> &candidates) {
-    const size_t end4 = candidates.size() / 4 * 4;
-    for (size_t i = 0; i < end4; i += 4) {
-        auto *group = candidates.data() + i;
-        distance.distances_batch_4(query_id, group[0].id, group[1].id, group[2].id, group[3].id,
-                                   group[0].distance, group[1].distance, group[2].distance, group[3].distance);
-    }
-    for (size_t i = end4; i < candidates.size(); ++i)
-        candidates[i].distance = distance(query_id, candidates[i].id);
-}
-
-} // namespace
 
 CandidateReranker::CandidateReranker(const FloatMatrixView &base, int graph_dimension, int candidate_count, int fp32_limit,
                                      const int *graph_row_order)
     : CandidateReranker(SelectedDistanceComputerFactory::create_refine_search(base.data_ptr(), base.row_count(), base.dimension()), graph_dimension) {
     if (graph_dimension != base.dimension() && fp32_limit > 0 && fp32_limit < candidate_count) {
-        quantized_ = SelectedDistanceComputerFactory::create_quantized_refine(base.data_ptr(), base.row_count(), base.dimension(), graph_row_order);
         graph_ordered_codes_ = graph_row_order != nullptr;
+        quantized_ = SelectedDistanceComputerFactory::create_quantized_refine(base.data_ptr(), base.row_count(),
+                                                                             base.dimension(), graph_row_order, fp32_limit);
     }
 }
 
@@ -47,7 +34,7 @@ void CandidateReranker::rerank(int query_id, std::vector<SingleNeighbor> &candid
     const int fp32_count = std::max(fp32_limit, topk);
     if (fp32_limit > 0 && static_cast<size_t>(fp32_count) < candidates.size()) {
         if (quantized_) {
-            score_candidates(*quantized_, query_id, candidates);
+            quantized_->score_candidates(query_id, candidates);
         } else {
             // The graph already scored the original-dimensional codes when PCA is off.
             RNNDESCENT_ASSERT_MSG(fp32_->dimension() == graph_dimension_,
@@ -61,7 +48,7 @@ void CandidateReranker::rerank(int query_id, std::vector<SingleNeighbor> &candid
         for (auto &candidate : candidates)
             candidate.id = original_ids[candidate.id];
     }
-    score_candidates(*fp32_, query_id, candidates);
+    fp32_->score_candidates(query_id, candidates);
     const auto top_end = candidates.begin() + topk;
     if (top_end != candidates.end())
         std::nth_element(candidates.begin(), top_end, candidates.end());

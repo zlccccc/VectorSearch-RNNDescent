@@ -124,8 +124,9 @@ TEST(BenchmarkCliTest, AppliesSift100kPresetByDatasetName) {
 }
 
 TEST(BenchmarkCliTest, ConfiguresFp32ShortlistAndFullRefinement) {
-    for (const int limit : {0, 16, 32, 64}) {
-        auto config = parse({"--mode", "dataset", "--dataset-name", "gist", "--fp32-refine-max", std::to_string(limit)});
+    for (const int limit : {0, 16, 32, 40, 64}) {
+        auto config = parse({"--mode", "dataset", "--dataset-name", "gist", "--pca-out", "64",
+                             "--fp32-refine-max", std::to_string(limit)});
         benchmark::apply_solution_preset(config);
         EXPECT_EQ(config.search_config.fp32_refine_max, limit);
         EXPECT_EQ(config.search_config.refine_max, 1024);
@@ -133,6 +134,13 @@ TEST(BenchmarkCliTest, ConfiguresFp32ShortlistAndFullRefinement) {
     auto defaults = parse({});
     benchmark::apply_solution_preset(defaults);
     EXPECT_EQ(defaults.search_config.fp32_refine_max, 32);
+    auto gist_pca = parse({"--mode", "dataset", "--dataset-name", "gist", "--pca-out", "64"});
+    benchmark::apply_solution_preset(gist_pca);
+#if defined(RNNDESCENT_FORCE_AVX_VNNI)
+    EXPECT_EQ(gist_pca.search_config.fp32_refine_max, 40);
+#else
+    EXPECT_EQ(gist_pca.search_config.fp32_refine_max, 32);
+#endif
     EXPECT_THAT([] { parse({"--fp32-refine-max", "-1"}); },
                 ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
     EXPECT_THAT([] { parse({"--fp32-refine-max", "32.5"}); },

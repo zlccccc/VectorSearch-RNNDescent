@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <numeric>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -304,6 +305,59 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
     empty.compute_distance(0, from_cache);
     EXPECT_TRUE(from_cache.empty());
 }
+
+#if defined(RNNDESCENT_ENABLE_PCA_UINT4)
+TEST(PackedUInt4CacheTest, MatchesScalarAndCacheFallback) {
+    using PackedGraph = rnndescent::UInt4GraphDistanceComputer<rnndescent::AvxVnniUInt4Kernel>;
+    constexpr int count = 28;
+    std::array<int, count> edges;
+    std::vector<int> row_order(count);
+    std::iota(edges.begin(), edges.end(), 0);
+    std::iota(row_order.rbegin(), row_order.rend(), 0);
+    for (int dimension : {64, 65}) {
+        SCOPED_TRACE(dimension);
+        const auto base = make_vectors(count, dimension, 5);
+        const auto query = make_vectors(queries, dimension, 17);
+        auto computer = std::make_unique<PackedGraph>(base.data(), count, dimension, row_order.data());
+        computer->set_query(query.data(), queries);
+        const auto stride = computer->code_stride();
+        ASSERT_EQ(stride, (dimension + 63) / 64 * 32);
+
+        Neighbors::Pool pool;
+        pool.initialize(stride, {0, count, 2 * count}, 1 << 20);
+        Neighbors cached(pool, edges.data(), count, computer.get(), row_order, true);
+        Neighbors uncached(pool, edges.data(), count, computer.get(), row_order, false);
+        ASSERT_NE(cached.pool, nullptr);
+        ASSERT_EQ(uncached.pool, nullptr);
+        std::vector<uint8_t> row(stride);
+        cached.populate_cache(row.data());
+
+        for (int q = 0; q < queries; ++q) {
+            const auto *qcode = computer->get_query_ptr_int8(q);
+            std::array<float, count> cached_distances, uncached_distances;
+            cached.compute_distance(q, cached_distances.data());
+            uncached.compute_distance(q, uncached_distances.data());
+            for (int i = 0; i < count; ++i) {
+                const int id = cached.edges[i];
+                int norm;
+                computer->copy_index(id, row.data(), norm, true);
+                int sum = 0;
+                for (size_t k = 0; k < 2 * stride; ++k) {
+                    const uint8_t byte = row[k / 64 * 32 + k % 32];
+                    const int code = k % 64 < 32 ? byte & 15 : byte >> 4;
+                    const int delta = 8 * code - qcode[k];
+                    sum += delta * delta;
+                    if (k >= static_cast<size_t>(dimension))
+                        EXPECT_EQ(delta, 0);
+                }
+                EXPECT_EQ((*computer)(q, id), sum);
+                EXPECT_EQ(cached_distances[i], sum);
+                EXPECT_EQ(uncached_distances[i], sum);
+            }
+        }
+    }
+}
+#endif
 
 TEST(QuantizedKernelBaseTest, PacksAndScoresEightRowTiles) {
     using Format = std::conditional_t<std::is_signed_v<Code>, rnndescent::SignedInt8Quantization, rnndescent::UInt8Quantization>;

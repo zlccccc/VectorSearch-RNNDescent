@@ -176,6 +176,12 @@ inline void apply_solution_preset(BenchmarkConfig &config) {
     if (config.mode == "dataset")
         apply_dataset_preset(config);
     apply_config_overrides(config);
+#if defined(RNNDESCENT_FORCE_AVX_VNNI)
+    if (config.mode == "dataset" && normalize_dataset_name(config.dataset_name) == "gist" &&
+        config.pca_config.applies_to(rnndescent::SelectedDistanceComputerFactory::uint4_refine_dimension) &&
+        config.override_fp32_refine_max < 0)
+        config.search_config.fp32_refine_max = rnndescent::SelectedDistanceComputerFactory::uint4_refine_min_fp32;
+#endif
 }
 
 inline void print_solution_config(const BenchmarkConfig &config) {

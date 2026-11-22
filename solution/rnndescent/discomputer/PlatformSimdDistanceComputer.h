@@ -12,6 +12,8 @@
 #if defined(RNNDESCENT_FORCE_AVX_VNNI)
 #include "flat/Avx2SimdDistanceComputerFP32.h"
 #include "quantized/AvxVnniSimdDistanceComputerUInt8.h"
+#include "quantized/AvxVnniUInt4Kernel.h"
+#include "quantized/UInt4DistanceComputer.h"
 #elif defined(RNNDESCENT_FORCE_AVX2_UINT8)
 #include "flat/Avx2SimdDistanceComputerFP32.h"
 #include "quantized/Avx2SimdDistanceComputerUInt8.h"
@@ -54,12 +56,21 @@ using SelectedSaveNeighborDiscomputer = SimdDistanceComputerInt8L2;
 #endif
 
 struct SelectedDistanceComputerFactory {
+    static constexpr int uint4_refine_dimension = 960;
+    static constexpr int uint4_refine_min_fp32 = 40;
+
     static std::unique_ptr<MyDistanceComputer> create_build_graph(const float *data, int n, int d) {
         return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d);
     }
 
-    static std::unique_ptr<MyDistanceComputer> create_cached_graph(const float *data, int n, int d, const int *row_order = nullptr) {
+    static std::unique_ptr<MyDistanceComputer> create_cached_graph(const float *data, int n, int d, const int *row_order = nullptr,
+                                                                  [[maybe_unused]] bool pca_projection = false) {
         // row_order maps graph node IDs to rows in the original matrix.
+#if defined(RNNDESCENT_ENABLE_PCA_UINT4)
+        using PackedGraph = UInt4GraphDistanceComputer<AvxVnniUInt4Kernel>;
+        if (pca_projection && d == PackedGraph::pca_dimension)
+            return std::make_unique<PackedGraph>(data, n, d, row_order);
+#endif
         return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d, row_order);
     }
 
@@ -67,7 +78,14 @@ struct SelectedDistanceComputerFactory {
         return std::make_unique<SimdDistanceComputerFP32L2>(data, n, d);
     }
 
-    static std::unique_ptr<MyDistanceComputer> create_quantized_refine(const float *data, int n, int d, const int *row_order = nullptr) {
+    static std::unique_ptr<MyDistanceComputer> create_quantized_refine(const float *data, int n, int d,
+                                                                      const int *row_order = nullptr,
+                                                                      [[maybe_unused]] int fp32_limit = 0) {
+#if defined(RNNDESCENT_FORCE_AVX_VNNI)
+        // On GIST1M, the rowwise 4-bit codes need a wider FP32 shortlist.
+        if (d == uint4_refine_dimension && fp32_limit >= uint4_refine_min_fp32)
+            return std::make_unique<UInt4RerankDistanceComputer<AvxVnniUInt4Kernel, uint4_refine_dimension>>(data, n, row_order);
+#endif
         return std::make_unique<SelectedSaveNeighborDiscomputer>(data, n, d, row_order);
     }
 };

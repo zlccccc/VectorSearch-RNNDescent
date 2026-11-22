@@ -167,5 +167,64 @@ TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
     }
 }
 
+#if defined(RNNDESCENT_FORCE_AVX_VNNI)
+TEST(RefinementTest, PackedUInt4ScoresBfsRowsAndCandidateTail) {
+    using Factory = rnndescent::SelectedDistanceComputerFactory;
+    constexpr int rows = 46, dim = Factory::uint4_refine_dimension, keep = Factory::uint4_refine_min_fp32;
+    std::vector<float> base(rows * dim), query(dim);
+    std::vector<int> row_order(rows);
+    for (int i = 0; i < rows / 2; ++i) {
+        for (int j = 0; j < dim; ++j) {
+            const float value = (i + 1) * ((j + j / 32 + i) % 16 - 5);
+            base[i * dim + j] = value;
+            base[(rows - 1 - i) * dim + j] = -value;
+        }
+    }
+    for (int j = 0; j < dim; ++j)
+        query[j] = (j * 13) % 255 - 127;
+    for (int i = 0; i < rows; ++i)
+        row_order[i] = (i * 7 + 1) % rows;
+
+    // Every paired row cancels in the mean. Row values lie exactly on their
+    // 4-bit grid and query values fit exactly in a signed byte.
+    const auto base_view = rnndescent::FloatMatrixView::from_vector(base, dim);
+    const auto query_view = rnndescent::FloatMatrixView::from_vector(query, dim);
+    auto packed = Factory::create_quantized_refine(base.data(), rows, dim, row_order.data(), keep);
+    packed->set_query(query.data(), 1);
+    std::vector<rnndescent::SingleNeighbor> candidates;
+    for (int i = 0; i < rows; ++i)
+        candidates.emplace_back(i, 0);
+    packed->score_candidates(0, candidates);
+
+    int nearest = -1;
+    float nearest_distance = std::numeric_limits<float>::max();
+    for (const auto &candidate : candidates) {
+        const int original = row_order[candidate.id];
+        const auto *row = base_view.row_ptr(original);
+        float score = 0, exact_distance = 0;
+        for (int j = 0; j < dim; ++j) {
+            score += row[j] * row[j] - 2 * query[j] * row[j];
+            const float diff = row[j] - query[j];
+            exact_distance += diff * diff;
+        }
+        EXPECT_FLOAT_EQ(candidate.distance, score);
+        if (exact_distance < nearest_distance) {
+            nearest = original;
+            nearest_distance = exact_distance;
+        }
+    }
+
+    rnndescent::CandidateReranker reranker(base_view, 64, rows, keep, row_order.data());
+    reranker.set_queries(query_view);
+    int id = -1;
+    float distance = 0;
+    reranker.rerank(0, candidates, keep, {&id, &distance, 1}, row_order.data());
+    EXPECT_TRUE(reranker.uses_graph_ordered_codes());
+    EXPECT_EQ(candidates.size(), keep);
+    EXPECT_EQ(id, nearest);
+    EXPECT_FLOAT_EQ(distance, nearest_distance);
+}
+#endif
+
 } // namespace
 } // namespace tests

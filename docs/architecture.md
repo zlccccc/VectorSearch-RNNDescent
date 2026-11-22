@@ -13,7 +13,7 @@ flowchart LR
     P --> G
     G["GraphBuilder<br/>建图、裁边"] --> R0["GraphReorder<br/>BFS 编号与索引物化"]
     R0 --> I["图索引<br/>量化底库、邻接表、可选邻居缓存"]
-    B --> R["CandidateReranker<br/>引用原始 FP32 底库<br/>按需用 BFS 顺序编码原始维度 8 位底库"]
+    B --> R["CandidateReranker<br/>引用原始 FP32 底库<br/>按需用 BFS 顺序编码原始维度底库"]
     G -->|BFS 行序| R
 ~~~
 
@@ -30,8 +30,8 @@ flowchart TD
 
     subgraph RERANK["CandidateReranker · 候选重排"]
         U["准备原始维度查询"] --> C{"需要缩小 FP32 精排范围？"}
-        C -->|是| A["使用原始维度 8 位分数<br/>有 PCA 时重算，无 PCA 时复用"]
-        A --> M["保留 Top32<br/>可用 fp32_refine_max 调整"]
+        C -->|是| A["使用原始维度的量化分数<br/>有 PCA 时重算，无 PCA 时复用"]
+        A --> M["按 fp32_refine_max 保留候选"]
         C -->|否| X
         M --> X["精排前映射回原始 ID"]
         X --> E["原始 FP32 算距"]
@@ -79,7 +79,7 @@ x86 比较后剩余的四项走标量尾部。SIFT100K 同图单线程对照中�
 
 建图结束时按底库点数预分配每线程的候选位图，每个 ID 占 1 bit。查询开始时清零并标记保留的入口，后续只标记首次通过阈值的候选。队尾分数只会收紧，落选或淘汰的 ID 以相同分数重现时无法再次通过严格小于队尾的阈值，因此标记可以保留到查询结束。
 
-搜索持续到有序候选池中的节点均已展开，最后取出前 `refine_max` 个候选，原地交给 [CandidateReranker](../solution/rnndescent/search/CandidateReranker.h)。候选重排类管理原始维度的距离计算器和查询编码。启用 PCA 且需要两阶段筛选时，原始维度的 INT8/UINT8 底库直接按 BFS 顺序编码，使用图 ID 算距。用 `nth_element` 保留 `fp32_refine_max` 个候选（默认 32，至少为 Top K），再将保留的候选映射回原始行号，计算 FP32 距离并选择 Top K。不开 PCA 时沿用原始维度的查图分数和原始 ID 路径。
+搜索持续到有序候选池中的节点均已展开，最后取出前 `refine_max` 个候选，原地交给 [CandidateReranker](../solution/rnndescent/search/CandidateReranker.h)。候选重排类管理原始维度的距离计算器和查询编码。启用 PCA 且需要两阶段筛选时，原始维度底库直接按 BFS 顺序编码，使用图 ID 算距。用 `nth_element` 保留 `fp32_refine_max` 个候选（至少为 Top K），再将保留的候选映射回原始行号，计算 FP32 距离并选择 Top K。不开 PCA 时沿用原始维度的查图分数和原始 ID 路径。
 
 `fp32_refine_max=0` 恢复全部候选的 FP32 精排。候选数不超过实际 FP32 数量时也直接做 FP32 精排。只有启用 PCA 且需要两阶段筛选时，才额外保存原始维度的量化码；该计算器和查询编码按索引管理，在重置时释放。
 
@@ -93,7 +93,7 @@ x86 比较后剩余的四项走标量尾部。SIFT100K 同图单线程对照中�
 |---|---|---|
 | 原始 FP32 底库 | `4 * N * D` 字节 | 调用方持有，覆盖索引使用时间 |
 | 量化底库码与范数 | 约 `N * stride + 4 * N` 字节，另有逐维量化中心 | 索引持有 |
-| 原始维度的精排候选量化码 | 约 `N * round_up(D, SIMD块宽) + 4 * N` 字节 | 仅在 PCA 与两阶段精排同时启用时保存 |
+| 原始维度的粗排量化码 | 8 位编码约 `N * round_up(D, SIMD块宽) + 4 * N` 字节，960 维 4 位编码为 `492 * N` 字节 | 仅在 PCA 与两阶段精排同时启用时保存 |
 | 图 ID 映射 | `4 * N` 字节 | 索引持有 |
 | 邻接 ID 池 | 至少 `4 * E` 字节，按节点增加对齐空间 | 索引持有 |
 | 邻接表元数据 | 每节点的指针、跨度和计数，随 `N` 线性增长 | 索引持有 |

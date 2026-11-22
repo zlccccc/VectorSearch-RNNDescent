@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include "utils.h"
+
 namespace rnndescent {
 
 struct QuantizedQuery {
@@ -20,6 +22,18 @@ struct MyDistanceComputer {
 
     // compute four distances
     virtual void distances_batch_4(int idq, int idx0, int idx1, int idx2, int idx3, float &dis0, float &dis1, float &dis2, float &dis3) = 0;
+
+    // Batch-scoring entry point for reranking an entire shortlist.
+    virtual void score_candidates(int query_id, std::vector<SingleNeighbor> &candidates) {
+        const size_t end4 = candidates.size() / 4 * 4;
+        for (size_t i = 0; i < end4; i += 4) {
+            auto *group = candidates.data() + i;
+            distances_batch_4(query_id, group[0].id, group[1].id, group[2].id, group[3].id,
+                              group[0].distance, group[1].distance, group[2].distance, group[3].distance);
+        }
+        for (size_t i = end4; i < candidates.size(); ++i)
+            candidates[i].distance = (*this)(query_id, candidates[i].id);
+    }
 
     virtual int row_count() const {
         throw std::runtime_error("row_count is not implemented for this distance computer");
@@ -45,6 +59,14 @@ struct MyDistanceComputer {
 
     virtual QuantizedQuery get_quantized_query(int) const {
         throw std::runtime_error("get_quantized_query is not implemented for this distance computer");
+    }
+
+    virtual void pack_neighbor_cache(const int *, int, void *, int *, uint8_t *) {
+        throw std::runtime_error("neighbor packing is not implemented for this distance computer");
+    }
+
+    virtual void compute_cached_distances(int, int, const void *, const int *, float *) const {
+        throw std::runtime_error("cached distances are not implemented for this distance computer");
     }
 
     // Copy the logical code bytes by default, or the full stride for the neighbor cache.

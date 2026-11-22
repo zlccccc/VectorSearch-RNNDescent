@@ -71,14 +71,16 @@ std::vector<int> GraphReorder::reorder_by_bfs(const std::vector<int> &edges, con
 }
 
 void GraphReorder::materialize(const FloatMatrixView &data_view, bool verbose, const config::BuildConfig &build_config,
-                               const config::SearchConfig &search_config, GraphBuildResult result, GraphIndexStorage &storage) {
+                               const config::SearchConfig &search_config, GraphBuildResult result, GraphIndexStorage &storage,
+                               bool pca_projection) {
     const int n = data_view.row_count();
     const int dim = data_view.dimension();
     const auto original_to_bfs = reorder_by_bfs(result.edges, result.edge_offsets, search_config.num_initialize, build_config,
                                                 verbose, storage.search_from_ids);
 
     storage.graph_distance_computer =
-        SelectedDistanceComputerFactory::create_cached_graph(data_view.data_ptr(), n, dim, storage.search_from_ids.data());
+        SelectedDistanceComputerFactory::create_cached_graph(data_view.data_ptr(), n, dim, storage.search_from_ids.data(),
+                                                              pca_projection);
     const auto code_stride = storage.graph_distance_computer->code_stride();
     storage.neighbor_pool.initialize(code_stride, result.edge_offsets, build_config.neighbor_pool_size_limit_bytes,
                                      build_config.save_neighbor);

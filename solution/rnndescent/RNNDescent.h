@@ -49,14 +49,14 @@ struct RNNDescent {
     }
 
     RNNDescent(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config,
-               const SearchConfig &search_config) {
-        build(data_view, verbose, build_config, search_config);
+               const SearchConfig &search_config, bool pca_projection = false) {
+        build(data_view, verbose, build_config, search_config, pca_projection);
     }
 
     ~RNNDescent() { reset(); }
 
     void build(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config,
-               const SearchConfig &search_config) {
+               const SearchConfig &search_config, bool pca_projection = false) {
         data_view.validate("build data");
         const BuildConfig safe_build_config = sanitize_build_config(build_config);
         const SearchConfig safe_search_config = sanitize_search_config(search_config, 1, data_view.row_count());
@@ -75,7 +75,7 @@ struct RNNDescent {
 
         GraphIndexStorage reorder_storage{search_from_ids, final_graph_neighbors, graph_distance_computer, neighbor_pool_};
         GraphReorder::materialize(data_view, verbose, safe_build_config, safe_search_config, std::move(graph_result),
-                                  reorder_storage);
+                                  reorder_storage, pca_projection);
 
         search::Storage search_storage{search_from_ids, final_graph_neighbors, graph_distance_computer};
         searcher_ = std::make_unique<search::GraphSearcher>(search_storage, safe_search_config, safe_build_config.K0,

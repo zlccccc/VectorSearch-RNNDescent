@@ -1,6 +1,6 @@
 # RNNDescent 向量检索算法
 
-本项目实现了基于 RNNDescent 的近似最近邻检索，使用平方 L2 距离。构建阶段迭代生成近邻图并重排节点。查询阶段用 8 位量化向量在图中筛选候选，再按原始维度的 8 位距离保留 Top32，最后用原始 FP32 向量精排并返回 Top K。FP32 精排数量可用 `--fp32-refine-max` 调整，设为 0 时对全部精排候选计算 FP32 距离。
+本项目实现了基于 RNNDescent 的近似最近邻检索，使用平方 L2 距离。构建阶段迭代生成近邻图并重排节点。查询阶段用 8 位量化向量在图中筛选候选，再按原始维度的量化距离选出少量候选，最后用原始 FP32 向量精排并返回 Top K。FP32 精排数量默认 32，可用 `--fp32-refine-max` 调整，设为 0 时对全部精排候选计算 FP32 距离。启用 PCA 的 GIST benchmark 在 AVX-VNNI 下默认使用 4 位粗排底库和 Top40。
 
 后续优化优先减少数据读取和搬运，向量及邻居向量缓存尽量使用 INT8/UINT8 存储。计算按速度选择精度，在目标 Recall 下以端到端性能决定取舍。具体约定见 [开发与验证](docs/development.md)。
 
@@ -52,9 +52,11 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
 
 指令集在编译时选定。运行测试的机器也需要支持所选指令集。
 
+AVX-VNNI 构建可加 `-DRNNDESCENT_PCA_UINT4=ON`，为 PCA64 查图启用实验性的 4 位底库和邻居缓存。详见 [参数配置](docs/configuration.md)。
+
 ### 量化算距
 
-[QuantizedDistanceComputer.h](solution/rnndescent/discomputer/quantized/QuantizedDistanceComputer.h) 中的 `QuantizedDistanceComputer<Kernel>` 负责训练量化参数、按 BFS 顺序写入底库码、量化查询，并把点积转成距离分数。`QuantizedNeighbors<Kernel>` 用同一个 `Kernel` 解释邻居缓存，未缓存的邻居通过四路算距接口读取底库码。
+[QuantizedDistanceComputer.h](solution/rnndescent/discomputer/quantized/QuantizedDistanceComputer.h) 中的 `QuantizedDistanceComputer<Kernel>` 负责训练量化参数、按 BFS 顺序写入底库码、量化查询，并把点积转成距离分数。邻居池交由所绑定的 DistanceComputer 打包和算距，未缓存的邻居通过四路算距接口读取底库码。
 
 | 构建目标 | 量化码 | 每块读取字节数 | 点积内核 |
 |---|---|---:|---|

@@ -64,7 +64,7 @@ struct IndexRNNDescent {
                 prevtime = nowtime;
                 Logger::info(verbose, "PCA Process done in %f ms\n", process_time);
             }
-            rnndescent = std::make_unique<RNNDescent>(graph_base, verbose, build_config, search_config);
+            rnndescent = std::make_unique<RNNDescent>(graph_base, verbose, build_config, search_config, pca != nullptr);
         }
 
         nowtime = std::chrono::high_resolution_clock::now();
