@@ -49,7 +49,7 @@ struct IndexRNNDescent {
         build_config = RNNDescent::sanitize_build_config(build_config);
         search_config = RNNDescent::sanitize_search_config(search_config);
         const auto graph_search_config = RNNDescent::sanitize_search_config(search_config, 1, n);
-        const int candidate_count = std::min(graph_search_config.search_L, graph_search_config.refine_max);
+        const int candidate_count = graph_search_config.refine_max;
         SelectedDistanceComputerFactory::validate_quantization(search_config.graph_quantization);
         if (search_config.rerank_quantization && search_config.fp32_refine_max > 0 &&
             search_config.fp32_refine_max < candidate_count)

@@ -164,6 +164,7 @@ TEST(SolutionTest, TwoStageRefinementReturnsOriginalFp32Distances) {
             for (int limit : {0, 32}) {
                 SCOPED_TRACE(::testing::Message() << "PCA=" << pca << ", cache=" << cache << ", FP32 limit=" << limit);
                 build.neighbor_pool_size_limit_bytes = cache ? 1 << 20 : 0;
+                search.search_L = limit == 0 ? rows : 24;
                 search.fp32_refine_max = limit;
                 solution.build(dim, base, warmup, build, search, {pca, pca ? 64 : 0});
                 // Top K above 32 must expand the FP32 shortlist instead of truncating the output.

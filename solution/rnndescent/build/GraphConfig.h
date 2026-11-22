@@ -3,6 +3,7 @@
 #include "../common/QuantizedFormat.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 
 namespace rnndescent {
@@ -49,27 +50,20 @@ inline BuildConfig sanitize_build_config(BuildConfig config) {
 inline SearchConfig sanitize_search_config(SearchConfig config, int topk = 1, int max_points = 0) {
     config.beam_size = std::max(config.beam_size, 1);
     config.num_threads = std::max(config.num_threads, 1);
-    config.search_L = std::max(config.search_L, std::max(1, topk));
-    config.num_initialize = std::max(config.num_initialize, config.search_L);
-    config.refine_max = std::max(config.refine_max, std::max(topk, 1));
+    const int min_candidates = std::max(1, topk);
+    config.search_L = std::max(config.search_L, min_candidates);
+    config.refine_max = std::max(config.refine_max, min_candidates);
+    config.num_initialize = std::max({config.num_initialize, config.search_L, config.refine_max});
     config.fp32_refine_max = std::max(config.fp32_refine_max, 0);
-    if (max_points > 0) {
-        config.search_L = std::min(config.search_L, max_points);
-        config.refine_max = std::min(config.refine_max, max_points);
-        if (max_points >= 4) {
-            const int max_aligned_points = (max_points / 4) * 4;
-            config.num_initialize = std::min(config.num_initialize, max_aligned_points);
-            config.num_initialize = std::max(config.num_initialize, std::max(config.search_L, topk));
-            config.num_initialize = std::min(config.num_initialize, max_aligned_points);
-            config.num_initialize = (config.num_initialize / 4) * 4;
-            config.search_L = std::min(config.search_L, config.num_initialize);
-        } else {
-            config.num_initialize = max_points;
-            config.search_L = std::min(config.search_L, config.num_initialize);
-        }
-    } else if (config.num_initialize % 4 != 0) {
-        config.num_initialize = (config.num_initialize + 3) / 4 * 4;
+    if (max_points > 0 && max_points < 4) {
+        config.num_initialize = max_points;
+    } else {
+        const int available = max_points > 0 ? max_points : std::numeric_limits<int>::max();
+        const int entries = std::min(config.num_initialize, available / 4 * 4);
+        config.num_initialize = (entries + 3) / 4 * 4;
     }
+    config.search_L = std::min(config.search_L, config.num_initialize);
+    config.refine_max = std::min(config.refine_max, config.num_initialize);
     return config;
 }
 

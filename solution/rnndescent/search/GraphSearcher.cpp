@@ -20,7 +20,7 @@ GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search
     const size_t beam_capacity = padded_degree(max_degree) * beam_size;
     for (int i = 0; i < num_threads_; ++i) {
         candidate_ids_[i].initialize(static_cast<int>(storage_.final_graph_neighbors.size()));
-        retset_[i].reserve(std::max(search_config.num_initialize, search_config.search_L));
+        retset_[i].reserve(search_config.num_initialize);
         neighbor_distance_[i].reserve(beam_capacity);
         neighbor_ids_[i].reserve(beam_capacity);
         neighbor_spans_[i].reserve(beam_size);
@@ -43,6 +43,7 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         const int beam_size = std::min(safe_search_config.beam_size, search_L);
         const int num_initialize = safe_search_config.num_initialize;
         const int refine_max = safe_search_config.refine_max;
+        const int pool_size = std::max(search_L, refine_max);
         if (!(0 <= threadid && threadid < num_threads && threadid < num_threads_))
             throw std::runtime_error("thread id out of range");
 #ifdef INTERNAL_CLOCK_TEST
@@ -51,8 +52,6 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
 #endif
         if (num_initialize < topk)
             throw std::runtime_error("num_initialize must be >= topk");
-        if (num_initialize < search_L)
-            throw std::runtime_error("num_initialize must be >= search_L");
         RNNDESCENT_ASSERT_MSG(storage_.graph_distance_computer != nullptr, "The index is not build yet.");
 
         auto &retset = retset_[threadid];
@@ -82,12 +81,12 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
                                                        retset[i + 3].distance);
         }
 
-        std::nth_element(retset.begin(), retset.begin() + search_L, retset.end());
-        // Keep the active candidate pool sorted by distance.
-        std::sort(retset.data(), retset.data() + search_L);
+        std::nth_element(retset.begin(), retset.begin() + pool_size, retset.end());
+        // Keep a sorted tail for reranking when refine_max exceeds the expansion width.
+        std::sort(retset.data(), retset.data() + pool_size);
         // Mark admitted IDs until the query ends. A discarded ID cannot pass the shrinking cutoff again.
         candidate_ids.clear();
-        for (int i = 0; i < search_L; ++i)
+        for (int i = 0; i < pool_size; ++i)
             candidate_ids.insert(retset[i].id);
 
 #ifdef INTERNAL_CLOCK_TEST
@@ -132,7 +131,7 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         };
 
         int smallest_pos = 0;
-        // Continue until every candidate in the active pool has been expanded.
+        // Only the closest search_L candidates are eligible for expansion.
         while (smallest_pos < search_L) {
             size_t score_count = 0;
             int span_count = 0;
@@ -192,10 +191,10 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
             // The cutoff stays fixed during the beam. Keep the adjacency order for deduplication.
             auto *const usefulsetEnd = detail::append_neighbors_below_cutoff(
                 neighbor_scores, neighbor_ids, score_count,
-                retset[search_L - 1].distance, candidate_ids, usefulset.data());
+                retset[pool_size - 1].distance, candidate_ids, usefulset.data());
             if (usefulsetEnd != usefulset.data()) {
                 std::sort(usefulset.data(), usefulsetEnd);
-                const int first_changed = merge_candidates_from_end(retset.data(), search_L, usefulset.data(), usefulsetEnd);
+                const int first_changed = merge_candidates_from_end(retset.data(), pool_size, usefulset.data(), usefulsetEnd);
                 smallest_pos = std::min(smallest_pos, first_changed);
             }
 #ifdef INTERNAL_CLOCK_TEST
@@ -210,7 +209,7 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
 #endif
 
-        retset.resize(std::min(refine_max, search_L));
+        retset.resize(refine_max);
         for (auto &candidate : retset)
             candidate.id &= 0x7fffffff;
 

@@ -186,29 +186,32 @@ TEST(RefinementTest, DirectFp32UsesEveryGraphCandidate) {
     EXPECT_EQ(distance, 0);
 }
 
-TEST(RefinementTest, GraphCandidateCountIsBoundedBySearchPool) {
-    constexpr int rows = 32, dim = 1;
-    std::vector<float> base(rows);
-    std::iota(base.begin(), base.end(), 0.0f);
-    rnndescent::RNNDescent::BuildConfig build;
-    build.T1 = build.T2 = build.num_threads = 1;
-    build.S = build.K0 = 8;
-    rnndescent::RNNDescent::SearchConfig search;
-    search.num_initialize = search.refine_max = rows;
-    search.search_L = 12;
-    search.fp32_refine_max = 0;
-    search.num_threads = 1;
-    rnndescent::RNNDescent graph(rnndescent::FloatMatrixView::from_vector(base, dim), false, build, search);
-    graph.graph_distance_computer->set_query(base.data(), 1);
+TEST(RefinementTest, RetainsDiscoveredCandidatesBeyondExpansionWidth) {
+    auto tracked = std::make_unique<TrackedDistances>(std::vector<float>{0, 1, 2, 3, 10, 11, 12, 13, 4, 0.5f}, 1);
+    auto &distances = *tracked;
+    std::unique_ptr<rnndescent::MyDistanceComputer> computer = std::move(tracked);
+    std::vector<rnndescent::SelectedNeighborsContainerType> neighbors(computer->row_count());
+    int edges_from_entry[]{8, 8, 8, 8};
+    int edges_from_tail[]{9, 9, 9, 9};
+    neighbors[0].edges = edges_from_entry;
+    neighbors[8].edges = edges_from_tail;
+    for (int id : {0, 8}) {
+        neighbors[id].size = 4;
+        neighbors[id].dis = computer.get();
+    }
 
-    auto fp32 = std::make_unique<TrackedDistances>(base, dim);
-    auto &tracked = *fp32;
-    rnndescent::CandidateReranker reranker(std::move(fp32), dim);
-    int id = -1;
-    float distance = -1;
-    graph.searchSingle(0, 0, reranker, search, build.K0, {&id, &distance, 1});
-    EXPECT_EQ(tracked.evaluated.size(), search.search_L);
-    EXPECT_EQ(id, 0);
+    rnndescent::RNNDescent::SearchConfig search;
+    search.num_initialize = search.search_L = 4;
+    search.refine_max = 6;
+    search.num_threads = 1;
+    rnndescent::search::PerfStats perf;
+    rnndescent::search::GraphSearcher searcher({neighbors, computer}, search, 4, perf);
+    auto &candidates = searcher.search_candidates(0, 0, search, 4, 1);
+    std::vector<int> ids;
+    for (const auto &candidate : candidates)
+        ids.push_back(candidate.id);
+    EXPECT_EQ(ids, (std::vector<int>{0, 1, 2, 3, 8, 4}));
+    EXPECT_EQ(std::find(distances.evaluated.begin(), distances.evaluated.end(), 9), distances.evaluated.end());
 }
 
 #if defined(RNNDESCENT_HAS_UINT4_KERNEL)
