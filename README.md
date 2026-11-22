@@ -101,6 +101,8 @@ ctest --test-dir build -R RecallTest --output-on-failure
 
 ## Benchmark
 
+SIFT100K 和 GIST100K 用固定图对照 AVX-VNNI、AVX-512 VNNI 和 NEON Dot Product 的 8 位与 UINT4 查图性能。各平台在 Recall@10 ≥ 99% 时的最佳 QPS、本机百万级结果及复测命令见 [Benchmark 性能基准](benchmark/README.md)。
+
 ### 随机向量
 
 下面在 10 万条归一化随机向量上，分别对 256、512、1024 维跑 1 万条查询。固定建图和搜索参数，方便对比维度或 SIMD 路径。将 `OMP_NUM_THREADS` 设为测量使用的线程数，benchmark 的建图和查图线程数最多为 16。
