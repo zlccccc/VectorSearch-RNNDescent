@@ -101,7 +101,8 @@ ctest --test-dir build -R RecallTest --output-on-failure
 
 ## Benchmark
 
-SIFT100K、GIST100K、SIFT1M 和 GIST1M 均在本机与云机复用固定图和统一的搜索参数，测试 1、2、4、8、16 线程吞吐。各指令集的 QPS/thread、召回率和复测命令见 [Benchmark 性能基准](benchmark/README.md)。
+- SIFT100K、GIST100K、SIFT1M 和 GIST1M 的 1、2、4、8、16 线程吞吐、召回率和复测命令。[跨设备与指令集](benchmark/README.md#跨设备与指令集)
+- 固定数据集和搜索参数，对比邻居缓存、候选去重和线程绑核。[同数据集方案对照](benchmark/experiments/README.md)
 
 ### 随机向量
 
