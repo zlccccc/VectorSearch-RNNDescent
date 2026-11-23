@@ -19,6 +19,7 @@ struct TrackedDistances final : rnndescent::MyDistanceComputer {
     TrackedDistances(std::vector<float> scores, int dim) : scores(std::move(scores)), dim(dim) {}
     int row_count() const override { return static_cast<int>(scores.size()); }
     int dimension() const override { return dim; }
+    uint32_t code_stride() const override { return 0; }
     void set_query(const float *, int) override {}
     float symmetric_dis(int, int) override { return 0; }
     float operator()(int, int id) override {
@@ -197,15 +198,15 @@ TEST(RefinementTest, RetainsDiscoveredCandidatesBeyondExpansionWidth) {
     int edges_from_entry[]{8, 8, 8, 8};
     int edges_from_tail[]{9, 9, 9, 9};
     const std::vector<int> original_to_bfs{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    neighbors[0] = Neighbors(pool, edges_from_entry, 4, original_to_bfs, false);
-    neighbors[8] = Neighbors(pool, edges_from_tail, 4, original_to_bfs, false);
+    neighbors[0] = Neighbors(pool, edges_from_entry, 4, original_to_bfs);
+    neighbors[8] = Neighbors(pool, edges_from_tail, 4, original_to_bfs);
 
     rnndescent::RNNDescent::SearchConfig search;
     search.num_initialize = search.search_L = 4;
     search.refine_max = 6;
     search.num_threads = 1;
     rnndescent::search::PerfStats perf;
-    rnndescent::search::GraphSearcher searcher({neighbors, computer, 0}, search, 4, perf);
+    rnndescent::search::GraphSearcher searcher({neighbors, computer}, search, 4, perf);
     auto &candidates = searcher.search_candidates(0, 0, search, 4, 1);
     std::vector<int> ids;
     for (const auto &candidate : candidates)

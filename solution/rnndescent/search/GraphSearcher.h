@@ -37,7 +37,6 @@ struct PerfStats {
 struct Storage {
     std::vector<SelectedNeighborsContainerType> &final_graph_neighbors;
     std::unique_ptr<MyDistanceComputer> &graph_distance_computer;
-    uint32_t code_stride;
 };
 
 class GraphSearcher {
@@ -53,19 +52,22 @@ class GraphSearcher {
     void flush_perf_stats();
 
   private:
+    struct ThreadScratch {
+        CandidateBitmap candidate_ids;
+        std::vector<SingleNeighbor> retset;
+        std::vector<SingleNeighbor> usefulset;
+        std::vector<float, AlignedAllocator<float>> scores;
+        std::vector<uint32_t, AlignedAllocator<uint32_t>> masks;
+        std::vector<detail::NeighborIdSpan, AlignedAllocator<detail::NeighborIdSpan>> spans;
+    };
+
     static size_t padded_degree(int degree) { return (static_cast<size_t>(degree) + 3) / 4 * 4; }
 
     Storage storage_;
-    const int num_threads_;
+    const uint32_t code_stride_;
     PerfStats &perf_stats_;
     std::mutex mutex_;
-
-    std::vector<std::vector<SingleNeighbor>> retset_;
-    std::vector<std::vector<SingleNeighbor>> usefulset_;
-    std::vector<std::vector<float, AlignedAllocator<float>>> neighbor_distance_;
-    std::vector<std::vector<uint32_t, AlignedAllocator<uint32_t>>> neighbor_masks_;
-    std::vector<CandidateBitmap> candidate_ids_;
-    std::vector<std::vector<detail::NeighborIdSpan, AlignedAllocator<detail::NeighborIdSpan>>> neighbor_spans_;
+    std::vector<ThreadScratch> scratch_;
 };
 
 } // namespace search

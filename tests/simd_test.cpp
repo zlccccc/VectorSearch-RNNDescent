@@ -162,7 +162,7 @@ TEST(SimdQuantizationTest, ExtremeCodesPreserveSquaredDistances) {
         Neighbors::Pool storage;
         const auto stride = quantized->code_stride();
         storage.initialize(stride, {0, 4}, 1 << 20);
-        Neighbors cached(storage, ids, 4, {0, 1}, true);
+        Neighbors cached(storage, ids, 4, {0, 1});
         ASSERT_TRUE(cached.has_cache());
         std::vector<uint8_t> scratch(stride);
         cached.populate_cache(*quantized, stride, scratch.data());
@@ -256,10 +256,12 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
         id_map[i] = (5 * i + 9) % count;
     }
     Neighbors::Pool storage;
-    storage.initialize(stride, {0, count, 2 * count, 2 * count}, 1 << 20);
-    Neighbors uncached(storage, edge_ids.data(), count, id_map, false);
-    Neighbors cached(storage, edge_ids.data(), count, id_map, true);
-    Neighbors empty(storage, nullptr, 0, id_map, true);
+    Neighbors::Pool id_storage;
+    storage.initialize(stride, {0, count, count}, 1 << 20);
+    id_storage.initialize(stride, {0, count});
+    Neighbors uncached(id_storage, edge_ids.data(), count, id_map);
+    Neighbors cached(storage, edge_ids.data(), count, id_map);
+    Neighbors empty(storage, nullptr, 0, id_map);
     ASSERT_TRUE(cached.has_cache());
     ASSERT_FALSE(uncached.has_cache());
     const auto *cached_ids = cached.neighbor_ids(stride);
@@ -335,9 +337,11 @@ TEST(PackedUInt4CacheTest, MatchesScalarAndCacheFallback) {
         EXPECT_EQ(selected->code_stride(), stride);
 
         Neighbors::Pool pool;
-        pool.initialize(stride, {0, count, 2 * count}, 1 << 20);
-        Neighbors cached(pool, edges.data(), count, row_order, true);
-        Neighbors uncached(pool, edges.data(), count, row_order, false);
+        Neighbors::Pool id_pool;
+        pool.initialize(stride, {0, count}, 1 << 20);
+        id_pool.initialize(stride, {0, count});
+        Neighbors cached(pool, edges.data(), count, row_order);
+        Neighbors uncached(id_pool, edges.data(), count, row_order);
         ASSERT_TRUE(cached.has_cache());
         ASSERT_FALSE(uncached.has_cache());
         std::vector<uint8_t> row(stride);
@@ -409,7 +413,7 @@ TEST(NeighborCacheTest, FallsBackWhenBudgetIsExhausted) {
     constexpr size_t stride = (65 + lane_width - 1) / lane_width * lane_width;
     Neighbors::Pool disabled_storage;
     disabled_storage.initialize(stride, {0, rows});
-    Neighbors disabled(disabled_storage, edges, rows, remap, true);
+    Neighbors disabled(disabled_storage, edges, rows, remap);
     EXPECT_NE(disabled.neighbor_ids(stride), nullptr);
     EXPECT_FALSE(disabled.has_cache());
 
@@ -419,8 +423,8 @@ TEST(NeighborCacheTest, FallsBackWhenBudgetIsExhausted) {
     constexpr size_t cached_bytes = code_start + rows * (stride + sizeof(int));
     constexpr size_t budget = cached_bytes + sizeof(int) + rows * sizeof(int);
     storage.initialize(stride, {0, rows, 2 * rows}, budget);
-    Neighbors first(storage, edges, rows, remap, true);
-    Neighbors second(storage, edges, rows, remap, true);
+    Neighbors first(storage, edges, rows, remap);
+    Neighbors second(storage, edges, rows, remap);
     EXPECT_TRUE(first.has_cache());
     EXPECT_FALSE(second.has_cache());
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.neighbor_ids(stride)),

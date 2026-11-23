@@ -4,13 +4,10 @@
 #include "../common/Logger.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <numeric>
 #include <random>
 #include <unordered_map>
-
-#if defined(__GLIBC__)
-#include <malloc.h>
-#endif
 
 namespace rnndescent {
 
@@ -38,9 +35,9 @@ std::vector<int> GraphReorder::reorder_by_bfs(const std::vector<int> &edges, con
         std::iota(search_from_ids.begin(), search_from_ids.end(), 0);
     }
 
-    MyVisitedTable visited(n);
+    std::vector<uint8_t> visited(n);
     for (int root : search_from_ids)
-        visited.set(root);
+        visited[root] = 1;
 
     for (size_t head = 0, depth = 0; head < search_from_ids.size(); ++depth) {
         const size_t layer_end = search_from_ids.size();
@@ -49,8 +46,8 @@ std::vector<int> GraphReorder::reorder_by_bfs(const std::vector<int> &edges, con
             const int u = search_from_ids[head];
             for (size_t i = edge_offsets[u]; i < edge_offsets[u + 1]; ++i) {
                 const int v = edges[i];
-                if (!visited.get(v)) {
-                    visited.set(v);
+                if (!visited[v]) {
+                    visited[v] = 1;
                     search_from_ids.push_back(v);
                 }
             }
@@ -59,7 +56,7 @@ std::vector<int> GraphReorder::reorder_by_bfs(const std::vector<int> &edges, con
 
     const size_t reachable = search_from_ids.size();
     for (int original_id = 0; original_id < n; ++original_id) {
-        if (!visited.get(original_id))
+        if (!visited[original_id])
             search_from_ids.push_back(original_id);
     }
     Logger::info(verbose, "BFS reached %zu of %d nodes; appended %zu unreachable nodes\n", reachable, n,
@@ -83,22 +80,21 @@ void GraphReorder::materialize(const FloatMatrixView &data_view, bool verbose, c
                                                               search_config.graph_quantization);
     auto &distance = *storage.graph_distance_computer;
     const auto code_stride = distance.code_stride();
-    storage.neighbor_pool.initialize(code_stride, result.edge_offsets, build_config.neighbor_pool_size_limit_bytes,
-                                     build_config.save_neighbor, storage.search_from_ids.data());
+    const auto cache_limit = build_config.save_neighbor ? build_config.neighbor_pool_size_limit_bytes : 0;
+    storage.neighbor_pool.initialize(code_stride, result.edge_offsets, cache_limit, storage.search_from_ids.data());
     storage.final_graph_neighbors.reserve(n);
     for (int bfs_id = 0; bfs_id < n; ++bfs_id) {
         const int original_id = storage.search_from_ids[bfs_id];
         const size_t begin = result.edge_offsets[original_id];
         const int count = static_cast<int>(result.edge_offsets[original_id + 1] - begin);
         const int *neighbors = count > 0 ? result.edges.data() + begin : nullptr;
-        storage.final_graph_neighbors.emplace_back(storage.neighbor_pool, neighbors, count, original_to_bfs,
-                                                   build_config.save_neighbor);
+        storage.final_graph_neighbors.emplace_back(storage.neighbor_pool, neighbors, count, original_to_bfs);
     }
     // Traversal reads the node descriptors in graph expansion order.
     detail::try_huge_pages(storage.final_graph_neighbors.data(),
                           storage.final_graph_neighbors.size() * sizeof(SelectedNeighborsContainerType));
 
-    if (build_config.save_neighbor) {
+    if (cache_limit > 0) {
 #pragma omp parallel num_threads(build_config.num_threads)
         {
             std::vector<uint8_t> reorder_scratch(4 * static_cast<size_t>(code_stride));

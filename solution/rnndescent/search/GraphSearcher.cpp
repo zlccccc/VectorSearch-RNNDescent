@@ -6,24 +6,19 @@
 
 namespace rnndescent::search {
 
-
 GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search_config, int max_degree, PerfStats &perf_stats)
-    : storage_(storage), num_threads_(search_config.num_threads), perf_stats_(perf_stats) {
-    candidate_ids_.resize(num_threads_);
-    retset_.resize(num_threads_);
-    neighbor_distance_.resize(num_threads_);
-    neighbor_masks_.resize(num_threads_);
-    neighbor_spans_.resize(num_threads_);
-    usefulset_.resize(num_threads_);
+    : storage_(storage),
+      code_stride_(storage.graph_distance_computer ? storage.graph_distance_computer->code_stride() : 0),
+      perf_stats_(perf_stats), scratch_(search_config.num_threads) {
     const int beam_size = std::min(search_config.beam_size, search_config.search_L);
     const size_t beam_capacity = padded_degree(max_degree) * beam_size;
-    for (int i = 0; i < num_threads_; ++i) {
-        candidate_ids_[i].initialize(static_cast<int>(storage_.final_graph_neighbors.size()));
-        retset_[i].reserve(search_config.num_initialize);
-        neighbor_distance_[i].reserve(beam_capacity);
-        neighbor_masks_[i].reserve(detail::score_mask_count(beam_capacity));
-        neighbor_spans_[i].reserve(beam_size);
-        usefulset_[i].reserve(beam_capacity);
+    for (auto &scratch : scratch_) {
+        scratch.candidate_ids.initialize(storage_.final_graph_neighbors.size());
+        scratch.retset.reserve(search_config.num_initialize);
+        scratch.usefulset.reserve(beam_capacity);
+        scratch.scores.reserve(beam_capacity);
+        scratch.masks.reserve(detail::score_mask_count(beam_capacity));
+        scratch.spans.reserve(beam_size);
     }
 }
 
@@ -43,7 +38,7 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         const int num_initialize = safe_search_config.num_initialize;
         const int refine_max = safe_search_config.refine_max;
         const int pool_size = std::max(search_L, refine_max);
-        if (!(0 <= threadid && threadid < num_threads && threadid < num_threads_))
+        if (!(0 <= threadid && threadid < num_threads && static_cast<size_t>(threadid) < scratch_.size()))
             throw std::runtime_error("thread id out of range");
 #ifdef INTERNAL_CLOCK_TEST
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = prevtime;
@@ -54,25 +49,23 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         RNNDESCENT_ASSERT_MSG(storage_.graph_distance_computer != nullptr, "The index is not build yet.");
 
         auto &distance = *storage_.graph_distance_computer;
-        const auto code_stride = storage_.code_stride;
-        auto &retset = retset_[threadid];
-        auto &usefulset = usefulset_[threadid];
-        auto &candidate_ids = candidate_ids_[threadid];
+        const auto code_stride = code_stride_;
+        auto &scratch = scratch_[threadid];
+        auto &retset = scratch.retset;
+        auto &usefulset = scratch.usefulset;
+        auto &candidate_ids = scratch.candidate_ids;
         // Score the entry points in batches of four.
         if (num_initialize % 4 != 0)
             throw std::runtime_error("num_initialize must be a multiple of 4");
         retset.resize(num_initialize);
         const size_t beam_capacity = padded_degree(max_degree) * beam_size;
         usefulset.resize(beam_capacity);
-        auto &score_buffer = neighbor_distance_[threadid];
-        auto &mask_buffer = neighbor_masks_[threadid];
-        auto &span_buffer = neighbor_spans_[threadid];
-        score_buffer.resize(beam_capacity);
-        mask_buffer.resize(detail::score_mask_count(beam_capacity));
-        span_buffer.resize(beam_size);
-        float *const neighbor_scores = score_buffer.data();
-        auto *const neighbor_masks = mask_buffer.data();
-        auto *const neighbor_spans = span_buffer.data();
+        scratch.scores.resize(beam_capacity);
+        scratch.masks.resize(detail::score_mask_count(beam_capacity));
+        scratch.spans.resize(beam_size);
+        float *const neighbor_scores = scratch.scores.data();
+        auto *const neighbor_masks = scratch.masks.data();
+        auto *const neighbor_spans = scratch.spans.data();
         for (int i = 0; i < num_initialize; i += 4) {
             retset[i + 0].id = i + 0;
             retset[i + 1].id = i + 1;

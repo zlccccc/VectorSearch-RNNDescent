@@ -45,11 +45,11 @@ template <typename CodeType, typename NormType, size_t CodeAlignment> class Neig
         }
 
         void initialize(uint32_t code_stride, const std::vector<size_t> &offsets, long long max_pool_size = 0,
-                        bool save_neighbor = true, const int *row_order = nullptr) {
+                        const int *row_order = nullptr) {
             RNNDESCENT_ASSERT_MSG(bytes_.empty(), "neighbor pool must be reset before initialization");
             RNNDESCENT_ASSERT_MSG(code_stride > 0, "neighbor codes require a positive stride");
             code_stride_ = code_stride;
-            const bool cache_enabled = save_neighbor && max_pool_size > 0;
+            const bool cache_enabled = max_pool_size > 0;
 
             long long required_size = 0;
             long long full_size = 0;
@@ -133,15 +133,14 @@ template <typename CodeType, typename NormType, size_t CodeAlignment> class Neig
     };
 
     NeighborsStorageBase() = default;
-    NeighborsStorageBase(Pool &storage, const int *neighbor, int count, const std::vector<int> &original_to_bfs,
-                         bool save_neighbor) {
+    NeighborsStorageBase(Pool &storage, const int *neighbor, int count, const std::vector<int> &original_to_bfs) {
         if (count == 0)
             return;
         RNNDESCENT_ASSERT_MSG(count > 0 && count % 4 == 0, "neighbor count must be a multiple of four");
 
         long long padding = 0;
         long long payload_bytes = 0;
-        if (save_neighbor && storage.cache_budget_ > 0) {
+        if (storage.cache_budget_ > 0) {
             const auto gap = cache_padding(storage.used_bytes_, count);
             const auto payload = cache_bytes(count, storage.code_stride_);
             if (gap + payload <= storage.cache_budget_) {

@@ -11,8 +11,6 @@
 
 #include <memory>
 #include <chrono>
-#include <random>
-#include <unordered_map>
 #include <vector>
 
 #if defined(__GLIBC__)
@@ -30,24 +28,6 @@ struct RNNDescent {
     static BuildConfig sanitize_build_config(BuildConfig config) { return config::sanitize_build_config(config); }
     static SearchConfig sanitize_search_config(SearchConfig config, int topk = 1, int max_points = 0) {
         return config::sanitize_search_config(config, topk, max_points);
-    }
-
-    static void gen_random(std::mt19937 &rng, std::vector<int> &addr, int n) {
-        const int size = static_cast<int>(addr.size());
-        if (size == 0)
-            return;
-        std::unordered_map<int, int> swapped;
-        swapped.reserve(size * 2);
-        for (int i = 0; i < size; ++i) {
-            std::uniform_int_distribution<int> distribution(i, n - 1);
-            const int j = distribution(rng);
-            const auto it_i = swapped.find(i);
-            const int value_i = it_i == swapped.end() ? i : it_i->second;
-            const auto it_j = swapped.find(j);
-            const int value_j = it_j == swapped.end() ? j : it_j->second;
-            swapped[j] = value_i;
-            addr[i] = value_j;
-        }
     }
 
     RNNDescent(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config,
@@ -80,7 +60,7 @@ struct RNNDescent {
         GraphReorder::materialize(data_view, verbose, safe_build_config, safe_search_config, std::move(graph_result),
                                   reorder_storage);
 
-        search::Storage search_storage{final_graph_neighbors, graph_distance_computer, graph_distance_computer->code_stride()};
+        search::Storage search_storage{final_graph_neighbors, graph_distance_computer};
         searcher_ = std::make_unique<search::GraphSearcher>(search_storage, safe_search_config, safe_build_config.K0,
                                                               perf_stats);
     }
