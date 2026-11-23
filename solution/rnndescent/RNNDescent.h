@@ -80,7 +80,7 @@ struct RNNDescent {
         GraphReorder::materialize(data_view, verbose, safe_build_config, safe_search_config, std::move(graph_result),
                                   reorder_storage);
 
-        search::Storage search_storage{final_graph_neighbors, graph_distance_computer};
+        search::Storage search_storage{final_graph_neighbors, graph_distance_computer, graph_distance_computer->code_stride()};
         searcher_ = std::make_unique<search::GraphSearcher>(search_storage, safe_search_config, safe_build_config.K0,
                                                               perf_stats);
     }

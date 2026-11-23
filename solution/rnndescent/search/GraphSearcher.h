@@ -37,6 +37,7 @@ struct PerfStats {
 struct Storage {
     std::vector<SelectedNeighborsContainerType> &final_graph_neighbors;
     std::unique_ptr<MyDistanceComputer> &graph_distance_computer;
+    uint32_t code_stride;
 };
 
 class GraphSearcher {
@@ -56,20 +57,15 @@ class GraphSearcher {
 
     Storage storage_;
     const int num_threads_;
-    const int max_degree_;
     PerfStats &perf_stats_;
     std::mutex mutex_;
 
     std::vector<std::vector<SingleNeighbor>> retset_;
     std::vector<std::vector<SingleNeighbor>> usefulset_;
     std::vector<std::vector<float, AlignedAllocator<float>>> neighbor_distance_;
+    std::vector<std::vector<uint32_t, AlignedAllocator<uint32_t>>> neighbor_masks_;
     std::vector<CandidateBitmap> candidate_ids_;
-    std::vector<std::vector<int, AlignedAllocator<int>>> neighbor_ids_;
-    struct NeighborIdSpan {
-        const int *ids;
-        int count;
-    };
-    std::vector<std::vector<NeighborIdSpan, AlignedAllocator<NeighborIdSpan>>> neighbor_spans_;
+    std::vector<std::vector<detail::NeighborIdSpan, AlignedAllocator<detail::NeighborIdSpan>>> neighbor_spans_;
 };
 
 } // namespace search

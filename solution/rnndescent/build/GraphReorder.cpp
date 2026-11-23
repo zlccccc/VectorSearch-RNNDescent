@@ -81,17 +81,17 @@ void GraphReorder::materialize(const FloatMatrixView &data_view, bool verbose, c
     storage.graph_distance_computer =
         SelectedDistanceComputerFactory::create_cached_graph(data_view.data_ptr(), n, dim, storage.search_from_ids.data(),
                                                               search_config.graph_quantization);
-    const auto code_stride = storage.graph_distance_computer->code_stride();
+    auto &distance = *storage.graph_distance_computer;
+    const auto code_stride = distance.code_stride();
     storage.neighbor_pool.initialize(code_stride, result.edge_offsets, build_config.neighbor_pool_size_limit_bytes,
-                                     build_config.save_neighbor);
+                                     build_config.save_neighbor, storage.search_from_ids.data());
     storage.final_graph_neighbors.reserve(n);
     for (int bfs_id = 0; bfs_id < n; ++bfs_id) {
         const int original_id = storage.search_from_ids[bfs_id];
         const size_t begin = result.edge_offsets[original_id];
         const int count = static_cast<int>(result.edge_offsets[original_id + 1] - begin);
         const int *neighbors = count > 0 ? result.edges.data() + begin : nullptr;
-        storage.final_graph_neighbors.emplace_back(storage.neighbor_pool, neighbors, count,
-                                                   storage.graph_distance_computer.get(), original_to_bfs,
+        storage.final_graph_neighbors.emplace_back(storage.neighbor_pool, neighbors, count, original_to_bfs,
                                                    build_config.save_neighbor);
     }
     // Traversal reads the node descriptors in graph expansion order.
@@ -104,7 +104,7 @@ void GraphReorder::materialize(const FloatMatrixView &data_view, bool verbose, c
             std::vector<uint8_t> reorder_scratch(4 * static_cast<size_t>(code_stride));
 #pragma omp for
             for (int i = 0; i < n; ++i)
-                storage.final_graph_neighbors[i].populate_cache(reorder_scratch.data());
+                storage.final_graph_neighbors[i].populate_cache(distance, code_stride, reorder_scratch.data());
         }
     }
 }

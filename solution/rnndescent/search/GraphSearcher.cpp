@@ -2,18 +2,17 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstring>
 #include <stdexcept>
 
 namespace rnndescent::search {
 
 
 GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search_config, int max_degree, PerfStats &perf_stats)
-    : storage_(storage), num_threads_(search_config.num_threads), max_degree_(max_degree), perf_stats_(perf_stats) {
+    : storage_(storage), num_threads_(search_config.num_threads), perf_stats_(perf_stats) {
     candidate_ids_.resize(num_threads_);
     retset_.resize(num_threads_);
     neighbor_distance_.resize(num_threads_);
-    neighbor_ids_.resize(num_threads_);
+    neighbor_masks_.resize(num_threads_);
     neighbor_spans_.resize(num_threads_);
     usefulset_.resize(num_threads_);
     const int beam_size = std::min(search_config.beam_size, search_config.search_L);
@@ -22,7 +21,7 @@ GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search
         candidate_ids_[i].initialize(static_cast<int>(storage_.final_graph_neighbors.size()));
         retset_[i].reserve(search_config.num_initialize);
         neighbor_distance_[i].reserve(beam_capacity);
-        neighbor_ids_[i].reserve(beam_capacity);
+        neighbor_masks_[i].reserve(detail::score_mask_count(beam_capacity));
         neighbor_spans_[i].reserve(beam_size);
         usefulset_[i].reserve(beam_capacity);
     }
@@ -54,6 +53,8 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
             throw std::runtime_error("num_initialize must be >= topk");
         RNNDESCENT_ASSERT_MSG(storage_.graph_distance_computer != nullptr, "The index is not build yet.");
 
+        auto &distance = *storage_.graph_distance_computer;
+        const auto code_stride = storage_.code_stride;
         auto &retset = retset_[threadid];
         auto &usefulset = usefulset_[threadid];
         auto &candidate_ids = candidate_ids_[threadid];
@@ -64,21 +65,22 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         const size_t beam_capacity = padded_degree(max_degree) * beam_size;
         usefulset.resize(beam_capacity);
         auto &score_buffer = neighbor_distance_[threadid];
-        auto &id_buffer = neighbor_ids_[threadid];
+        auto &mask_buffer = neighbor_masks_[threadid];
         auto &span_buffer = neighbor_spans_[threadid];
         score_buffer.resize(beam_capacity);
-        id_buffer.resize(beam_capacity);
+        mask_buffer.resize(detail::score_mask_count(beam_capacity));
         span_buffer.resize(beam_size);
         float *const neighbor_scores = score_buffer.data();
-        int *const neighbor_ids = id_buffer.data();
+        auto *const neighbor_masks = mask_buffer.data();
         auto *const neighbor_spans = span_buffer.data();
         for (int i = 0; i < num_initialize; i += 4) {
             retset[i + 0].id = i + 0;
             retset[i + 1].id = i + 1;
             retset[i + 2].id = i + 2;
             retset[i + 3].id = i + 3;
-            storage_.graph_distance_computer->distances_batch_4(queryid, i + 0, i + 1, i + 2, i + 3, retset[i].distance, retset[i + 1].distance, retset[i + 2].distance,
-                                                       retset[i + 3].distance);
+            distance.distances_batch_4(queryid, i + 0, i + 1, i + 2, i + 3,
+                                       retset[i].distance, retset[i + 1].distance, retset[i + 2].distance,
+                                       retset[i + 3].distance);
         }
 
         std::nth_element(retset.begin(), retset.begin() + pool_size, retset.end());
@@ -134,7 +136,7 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         // Only the closest search_L candidates are eligible for expansion.
         while (smallest_pos < search_L) {
             size_t score_count = 0;
-            int span_count = 0;
+            auto *next_span = neighbor_spans;
             for (int beam = 0; smallest_pos < search_L && beam < beam_size; smallest_pos++) {
                 if (retset[smallest_pos].id & 0x80000000)
                     continue;
@@ -148,50 +150,49 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
                 getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
                 prevtime = nowtime;
 #endif
-                auto &neighbors = storage_.final_graph_neighbors[n];
-
+                // Overlap the next record's header load with scoring this neighborhood.
+                if (beam < beam_size && smallest_pos + 1 < search_L) {
+                    const int next = retset[smallest_pos + 1].id;
+                    if (next >= 0)
+                        storage_.final_graph_neighbors[next].prefetch_header();
+                }
                 // Score the full neighborhood before filtering and deduplicating candidates.
                 // GIST1M (AVX2, 64D PCA, 16 threads, L=2560, refine=2048):
                 // With a 0 GiB neighbor pool, bitmap deduplication before four-way scoring
                 // cut INT8 evaluations by 52% and raised QPS by 32% with identical results.
                 // With a full neighbor cache, checking the bitmap to skip fully seen groups
                 // reduced QPS by 2% on the same workload.
-                neighbors.compute_distance(queryid, neighbor_scores + score_count);
+                const auto [ids, count] = storage_.final_graph_neighbors[n].compute_distance(
+                    queryid, distance, code_stride, neighbor_scores + score_count);
 
 #ifdef INTERNAL_CLOCK_TEST
                 nowtime = std::chrono::high_resolution_clock::now();
                 calculate_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
                 prevtime = nowtime;
                 bfs_items++;
-                calculate_distance_count += neighbors.size;
+                calculate_distance_count += count;
 #endif
 
-                if (neighbors.size > 0) {
-                    neighbor_spans[span_count++] = {neighbors.edges, neighbors.size};
-                    score_count += neighbors.size;
-                }
+                score_count += count;
+                *next_span++ = {ids, score_count};
             }
 #ifdef INTERNAL_CLOCK_TEST
             bfs_length++;
 #endif
             if (score_count == 0)
                 continue;
-            // Copy IDs in score order after all neighborhoods in the beam are scored.
-            auto *out = neighbor_ids;
-            for (int i = 0; i < span_count; ++i) {
-                const auto &span = neighbor_spans[i];
-                std::memcpy(out, span.ids, span.count * sizeof(int));
-                out += span.count;
+            // Scan the scores in one pass, then read only the IDs selected by the masks.
+            const float cutoff = retset[pool_size - 1].distance;
+            detail::make_neighbor_score_masks(neighbor_scores, score_count, cutoff, neighbor_masks);
+            const auto *passing_end = detail::collect_neighbors_from_masks(
+                neighbor_scores, score_count, neighbor_masks, neighbor_spans, usefulset.data());
+
+            // Compact in adjacency order before sorting the new candidates.
+            auto *usefulsetEnd = usefulset.data();
+            for (const auto *candidate = usefulset.data(); candidate != passing_end; ++candidate) {
+                if (candidate_ids.insert(candidate->id))
+                    *usefulsetEnd++ = *candidate;
             }
-#ifdef INTERNAL_CLOCK_TEST
-            nowtime = std::chrono::high_resolution_clock::now();
-            getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-            prevtime = nowtime;
-#endif
-            // The cutoff stays fixed during the beam. Keep the adjacency order for deduplication.
-            auto *const usefulsetEnd = detail::append_neighbors_below_cutoff(
-                neighbor_scores, neighbor_ids, score_count,
-                retset[pool_size - 1].distance, candidate_ids, usefulset.data());
             if (usefulsetEnd != usefulset.data()) {
                 std::sort(usefulset.data(), usefulsetEnd);
                 const int first_changed = merge_candidates_from_end(retset.data(), pool_size, usefulset.data(), usefulsetEnd);

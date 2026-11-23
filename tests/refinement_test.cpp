@@ -190,22 +190,22 @@ TEST(RefinementTest, RetainsDiscoveredCandidatesBeyondExpansionWidth) {
     auto tracked = std::make_unique<TrackedDistances>(std::vector<float>{0, 1, 2, 3, 10, 11, 12, 13, 4, 0.5f}, 1);
     auto &distances = *tracked;
     std::unique_ptr<rnndescent::MyDistanceComputer> computer = std::move(tracked);
-    std::vector<rnndescent::SelectedNeighborsContainerType> neighbors(computer->row_count());
+    using Neighbors = rnndescent::SelectedNeighborsContainerType;
+    Neighbors::Pool pool;
+    pool.initialize(Neighbors::cache_lane_width, {0, 4, 8});
+    std::vector<Neighbors> neighbors(computer->row_count());
     int edges_from_entry[]{8, 8, 8, 8};
     int edges_from_tail[]{9, 9, 9, 9};
-    neighbors[0].edges = edges_from_entry;
-    neighbors[8].edges = edges_from_tail;
-    for (int id : {0, 8}) {
-        neighbors[id].size = 4;
-        neighbors[id].dis = computer.get();
-    }
+    const std::vector<int> original_to_bfs{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    neighbors[0] = Neighbors(pool, edges_from_entry, 4, original_to_bfs, false);
+    neighbors[8] = Neighbors(pool, edges_from_tail, 4, original_to_bfs, false);
 
     rnndescent::RNNDescent::SearchConfig search;
     search.num_initialize = search.search_L = 4;
     search.refine_max = 6;
     search.num_threads = 1;
     rnndescent::search::PerfStats perf;
-    rnndescent::search::GraphSearcher searcher({neighbors, computer}, search, 4, perf);
+    rnndescent::search::GraphSearcher searcher({neighbors, computer, 0}, search, 4, perf);
     auto &candidates = searcher.search_candidates(0, 0, search, 4, 1);
     std::vector<int> ids;
     for (const auto &candidate : candidates)

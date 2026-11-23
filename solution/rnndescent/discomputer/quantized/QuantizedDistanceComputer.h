@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace rnndescent {
@@ -247,34 +248,39 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
 };
 
 template <class Kernel>
-struct QuantizedNeighbors : NeighborsStorageBase<QuantizedNeighbors<Kernel>, typename Kernel::Quantization::Code, int> {
+struct QuantizedNeighbors : NeighborsStorageBase<typename Kernel::Quantization::Code, int, Kernel::block_bytes> {
     using Code = typename Kernel::Quantization::Code;
-    using Base = NeighborsStorageBase<QuantizedNeighbors<Kernel>, Code, int>;
+    using Base = NeighborsStorageBase<Code, int, Kernel::block_bytes>;
     using Base::Base;
     static constexpr size_t cache_lane_width = Kernel::block_bytes;
 
-    void populate_cache(uint8_t *scratch) {
-        if (this->pool)
-            this->dis->pack_neighbor_cache(this->edges, this->size, this->pool, this->l2norms, scratch);
-    }
-
-    template <typename Allocator>
-    void compute_distance(int idq, std::vector<float, Allocator> &result) {
-        result.resize(this->size);
-        compute_distance(idq, result.data());
-    }
-
-    void compute_distance(int idq, float *result) {
-        if (this->pool != nullptr) {
-            this->dis->compute_cached_distances(idq, this->size, this->pool, this->l2norms, result);
-        } else {
-            // Uncached neighborhoods fetch quantized rows by ID and score four at a time.
-            // Time spent in this fallback limits the end-to-end gain from the cached kernel.
-            const auto *ids = this->edges;
-            for (int i = 0; i < this->size; i += 4) {
-                this->dis->distances_batch_4(idq, ids[i], ids[i + 1], ids[i + 2], ids[i + 3], result[i], result[i + 1], result[i + 2], result[i + 3]);
-            }
+    void populate_cache(MyDistanceComputer &distance, uint32_t code_stride, uint8_t *scratch) const {
+        const int header = this->read_header();
+        if (header & Base::kCached) {
+            const int count = header & ~Base::kCached;
+            distance.pack_neighbor_cache(this->cached_ids(count, code_stride), count, this->cached_codes(count),
+                                         reinterpret_cast<int *>(this->payload()), scratch);
         }
+    }
+
+    // Return the IDs and count in the same order as the scores written to result.
+    std::pair<const int *, int> compute_distance(int idq, MyDistanceComputer &distance, uint32_t code_stride,
+                                                  float *result) const {
+        const int header = this->read_header();
+        const int count = header & ~Base::kCached;
+        const auto *payload = reinterpret_cast<const int *>(this->payload());
+        if (header & Base::kCached) {
+            const auto *ids = this->cached_ids(count, code_stride);
+            distance.compute_cached_distances(idq, count, this->cached_codes(count), payload, result);
+            return {ids, count};
+        }
+
+        // Uncached neighborhoods fetch quantized rows by ID and score four at a time.
+        for (int i = 0; i < count; i += 4) {
+            distance.distances_batch_4(idq, payload[i], payload[i + 1], payload[i + 2], payload[i + 3],
+                                       result[i], result[i + 1], result[i + 2], result[i + 3]);
+        }
+        return {payload, count};
     }
 };
 

@@ -1,6 +1,7 @@
 #include "solution/rnndescent/search/CandidateBitmap.h"
 #include "solution/rnndescent/search/NeighborScoreFilter.h"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 
@@ -31,47 +32,52 @@ TEST(CandidateBitmapTest, ClearsMarksBetweenQueries) {
     }
 }
 
-TEST(NeighborScoreFilterTest, MatchesScalarOrderAndMarksOnlyPassingIds) {
-    constexpr int point_count = 129;
-    constexpr int score_count = 37;
+TEST(NeighborScoreFilterTest, CollectsPassingScoresInOrderAcrossSpans) {
+    constexpr int score_count = 68;
     const float infinity = std::numeric_limits<float>::infinity();
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const std::array<float, 8> pattern = {-infinity, 0.0f, 1.0f, nan, 0.5f, infinity, 2.0f, -0.0f};
     std::array<float, score_count> scores;
-    std::array<int, score_count> ids;
+    std::array<int, score_count + 2> ids;
+    ids.fill(-1);
+    const auto id_slot = [](std::size_t position) { return position + (position >= 4) + (position >= 28); };
     for (int i = 0; i < score_count; ++i) {
         scores[i] = pattern[i % pattern.size()];
-        ids[i] = (i * 17) % 29 + 59;
+        ids[id_slot(i)] = (i * 17) % 29 + 59;
     }
 
     for (float cutoff : {-infinity, 0.0f, 1.0f, infinity, nan}) {
-        for (int count = 0; count <= score_count; ++count) {
-            rnndescent::CandidateBitmap visited;
-            visited.initialize(point_count);
-            ASSERT_TRUE(visited.insert(59));
-            ASSERT_TRUE(visited.insert(64));
-            std::array<bool, point_count> seen{};
-            seen[59] = seen[64] = true;
+        for (std::size_t count = 0; count <= scores.size(); count += 4) {
+            const auto first_end = std::min<std::size_t>(4, count);
+            const auto second_end = std::min<std::size_t>(28, count);
+            const rnndescent::detail::NeighborIdSpan spans[] = {
+                {nullptr, 0},
+                {ids.data(), first_end},
+                {nullptr, first_end},
+                {ids.data() + id_slot(4), second_end},
+                {ids.data() + id_slot(28), count},
+                {nullptr, count},
+            };
+            std::array<uint32_t, rnndescent::detail::score_mask_count(score_count)> masks;
+            masks.fill(~uint32_t{0});
             std::array<rnndescent::SingleNeighbor, score_count + 1> actual;
             actual[0] = {-1, -1.0f};
             auto *const begin = actual.data() + 1;
-            const auto *end = rnndescent::detail::append_neighbors_below_cutoff(
-                scores.data(), ids.data(), count, cutoff, visited, begin);
+            rnndescent::detail::make_neighbor_score_masks(scores.data(), count, cutoff, masks.data());
+            const auto *end = rnndescent::detail::collect_neighbors_from_masks(
+                scores.data(), count, masks.data(), spans, begin);
 
             int expected_count = 0;
-            for (int i = 0; i < count; ++i) {
-                if (scores[i] < cutoff && !seen[ids[i]]) {
+            for (std::size_t i = 0; i < count; ++i) {
+                if (scores[i] < cutoff) {
                     ASSERT_LT(begin + expected_count, end);
-                    EXPECT_EQ(begin[expected_count].id, ids[i]);
+                    EXPECT_EQ(begin[expected_count].id, ids[id_slot(i)]);
                     EXPECT_EQ(begin[expected_count].distance, scores[i]);
-                    seen[ids[i]] = true;
                     ++expected_count;
                 }
             }
             EXPECT_EQ(end, begin + expected_count);
             EXPECT_EQ(actual[0].id, -1);
-            for (int id = 0; id < point_count; ++id)
-                EXPECT_EQ(visited.insert(id), !seen[id]) << id;
         }
     }
 }

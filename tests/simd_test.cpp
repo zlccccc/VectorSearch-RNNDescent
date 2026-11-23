@@ -15,6 +15,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace tests {
@@ -23,8 +24,8 @@ namespace {
 using rnndescent::SelectedDistanceComputerFactory;
 using rnndescent::SelectedNeighborsContainerType;
 using Neighbors = SelectedNeighborsContainerType;
-using Code = std::remove_pointer_t<decltype(SelectedNeighborsContainerType::pool)>;
-using Norm = std::remove_pointer_t<decltype(SelectedNeighborsContainerType::l2norms)>;
+using Code = Neighbors::Code;
+using Norm = int;
 
 constexpr int rows = 8;
 constexpr int queries = 2;
@@ -34,6 +35,7 @@ constexpr int lane_width = 32;
 constexpr int lane_width = std::is_unsigned_v<Code> ? 64 : 16;
 #endif
 static_assert(Neighbors::cache_lane_width == lane_width);
+static_assert(sizeof(Neighbors) == sizeof(void *));
 constexpr int dimensions[] = {
     1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 125, 128, 129, 256, 384, 385, 512, 960, 961, 1024, 1537,
 };
@@ -158,14 +160,14 @@ TEST(SimdQuantizationTest, ExtremeCodesPreserveSquaredDistances) {
         EXPECT_EQ(batch(*quantized, 1, ids), expected);
 
         Neighbors::Pool storage;
-        const size_t stride = quantized->code_stride();
+        const auto stride = quantized->code_stride();
         storage.initialize(stride, {0, 4}, 1 << 20);
-        Neighbors cached(storage, ids, 4, quantized.get(), {0, 1}, true);
-        ASSERT_NE(cached.pool, nullptr);
+        Neighbors cached(storage, ids, 4, {0, 1}, true);
+        ASSERT_TRUE(cached.has_cache());
         std::vector<uint8_t> scratch(stride);
-        cached.populate_cache(scratch.data());
-        std::vector<float> distances;
-        cached.compute_distance(1, distances);
+        cached.populate_cache(*quantized, stride, scratch.data());
+        std::vector<float> distances(4);
+        EXPECT_EQ(cached.compute_distance(1, *quantized, stride, distances.data()).second, 4);
         EXPECT_EQ(distances, (std::vector<float>{distance, 0.0f, 0.0f, distance}));
     }
 }
@@ -246,7 +248,7 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
     const auto query = make_vectors(queries, d, 17);
     auto computer = SelectedDistanceComputerFactory::create_cached_graph(base.data(), count, d);
     computer->set_query(query.data(), queries);
-    const size_t stride = computer->code_stride();
+    const auto stride = computer->code_stride();
     std::array<int, count> edge_ids{};
     std::vector<int> id_map(count);
     for (int i = 0; i < count; ++i) {
@@ -255,26 +257,31 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
     }
     Neighbors::Pool storage;
     storage.initialize(stride, {0, count, 2 * count, 2 * count}, 1 << 20);
-    Neighbors cached(storage, edge_ids.data(), count, computer.get(), id_map, true);
-    Neighbors uncached(storage, edge_ids.data(), count, computer.get(), id_map, false);
-    Neighbors empty(storage, nullptr, 0, computer.get(), id_map, true);
-    ASSERT_NE(cached.pool, nullptr);
-    ASSERT_NE(cached.l2norms, nullptr);
-    EXPECT_EQ(uncached.pool, nullptr);
-    EXPECT_EQ(uncached.l2norms, nullptr);
+    Neighbors uncached(storage, edge_ids.data(), count, id_map, false);
+    Neighbors cached(storage, edge_ids.data(), count, id_map, true);
+    Neighbors empty(storage, nullptr, 0, id_map, true);
+    ASSERT_TRUE(cached.has_cache());
+    ASSERT_FALSE(uncached.has_cache());
+    const auto *cached_ids = cached.neighbor_ids(stride);
+    const auto *plain_ids = uncached.neighbor_ids(stride);
+    // The packed codes and norms immediately precede the IDs.
+    const auto *code_bytes = reinterpret_cast<const uint8_t *>(cached_ids) - count * stride * sizeof(Code);
+    const auto *cached_codes = reinterpret_cast<const Code *>(code_bytes);
+    const auto *cached_norms = reinterpret_cast<const Norm *>(code_bytes - count * sizeof(Norm));
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(cached_codes) % lane_width, 0u);
     std::vector<uint8_t> scratch(stride);
-    cached.populate_cache(scratch.data());
-    uncached.populate_cache(scratch.data());
-    empty.populate_cache(scratch.data());
+    cached.populate_cache(*computer, stride, scratch.data());
+    uncached.populate_cache(*computer, stride, scratch.data());
+    empty.populate_cache(*computer, stride, scratch.data());
 
     std::vector<std::vector<Code>> codes(count, std::vector<Code>(stride));
     for (int i = 0; i < count; ++i) {
         const int expected_id = id_map[edge_ids[i]];
-        EXPECT_EQ(cached.edges[i], expected_id);
-        EXPECT_EQ(uncached.edges[i], expected_id);
+        EXPECT_EQ(cached_ids[i], expected_id);
+        EXPECT_EQ(plain_ids[i], expected_id);
         Norm norm = 0;
         computer->copy_index(expected_id, codes[i].data(), norm);
-        EXPECT_EQ(cached.l2norms[i], norm);
+        EXPECT_EQ(cached_norms[i], norm);
     }
 #if defined(RNNDESCENT_FORCE_AVX2_UINT8) || defined(RNNDESCENT_FORCE_AVX_VNNI)
     const bool uses_gemv = true;
@@ -288,22 +295,21 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
         for (size_t col = 0; col < stride; col += block_bytes)
             for (int row = 0; row < tile; ++row)
                 for (size_t k = col; k < col + block_bytes; ++k)
-                    EXPECT_EQ(cached.pool[offset++], codes[i + row][k]);
+                    EXPECT_EQ(cached_codes[offset++], codes[i + row][k]);
         i += tile;
     }
 
-    std::vector<float, rnndescent::AlignedAllocator<float>> from_cache;
-    std::vector<float> direct;
+    std::vector<float, rnndescent::AlignedAllocator<float>> from_cache(count);
+    std::vector<float> direct(count);
     for (int q = 0; q < queries; ++q) {
-        cached.compute_distance(q, from_cache);
-        uncached.compute_distance(q, direct);
-        EXPECT_EQ(direct.size(), count);
-        ASSERT_EQ(from_cache.size(), direct.size());
+        EXPECT_EQ(cached.compute_distance(q, *computer, stride, from_cache.data()), std::make_pair(cached_ids, count));
+        EXPECT_EQ(uncached.compute_distance(q, *computer, stride, direct.data()), std::make_pair(plain_ids, count));
         EXPECT_EQ(reinterpret_cast<std::uintptr_t>(from_cache.data()) % rnndescent::alignSize, 0u);
         EXPECT_TRUE(std::equal(from_cache.begin(), from_cache.end(), direct.begin())) << "query " << q;
     }
-    empty.compute_distance(0, from_cache);
-    EXPECT_TRUE(from_cache.empty());
+    float untouched = -1.0f;
+    EXPECT_EQ(empty.compute_distance(0, *computer, stride, &untouched).second, 0);
+    EXPECT_EQ(untouched, -1.0f);
 }
 
 #if defined(RNNDESCENT_HAS_UINT4_KERNEL)
@@ -330,20 +336,21 @@ TEST(PackedUInt4CacheTest, MatchesScalarAndCacheFallback) {
 
         Neighbors::Pool pool;
         pool.initialize(stride, {0, count, 2 * count}, 1 << 20);
-        Neighbors cached(pool, edges.data(), count, computer.get(), row_order, true);
-        Neighbors uncached(pool, edges.data(), count, computer.get(), row_order, false);
-        ASSERT_NE(cached.pool, nullptr);
-        ASSERT_EQ(uncached.pool, nullptr);
+        Neighbors cached(pool, edges.data(), count, row_order, true);
+        Neighbors uncached(pool, edges.data(), count, row_order, false);
+        ASSERT_TRUE(cached.has_cache());
+        ASSERT_FALSE(uncached.has_cache());
         std::vector<uint8_t> row(stride);
-        cached.populate_cache(row.data());
+        cached.populate_cache(*computer, stride, row.data());
 
         for (int q = 0; q < queries; ++q) {
             const auto *qcode = computer->get_query_ptr_int8(q);
             std::array<float, count> cached_distances, uncached_distances;
-            cached.compute_distance(q, cached_distances.data());
-            uncached.compute_distance(q, uncached_distances.data());
+            const auto [ids, cached_count] = cached.compute_distance(q, *computer, stride, cached_distances.data());
+            ASSERT_EQ(cached_count, count);
+            EXPECT_EQ(uncached.compute_distance(q, *computer, stride, uncached_distances.data()).second, count);
             for (int i = 0; i < count; ++i) {
-                const int id = cached.edges[i];
+                const int id = ids[i];
                 int norm;
                 computer->copy_index(id, row.data(), norm, true);
                 int sum = 0;
@@ -402,21 +409,22 @@ TEST(NeighborCacheTest, FallsBackWhenBudgetIsExhausted) {
     constexpr size_t stride = (65 + lane_width - 1) / lane_width * lane_width;
     Neighbors::Pool disabled_storage;
     disabled_storage.initialize(stride, {0, rows});
-    Neighbors disabled(disabled_storage, edges, rows, nullptr, remap, true);
-    EXPECT_NE(disabled.edges, nullptr);
-    EXPECT_EQ(disabled.pool, nullptr);
-    EXPECT_EQ(disabled.l2norms, nullptr);
+    Neighbors disabled(disabled_storage, edges, rows, remap, true);
+    EXPECT_NE(disabled.neighbor_ids(stride), nullptr);
+    EXPECT_FALSE(disabled.has_cache());
 
     Neighbors::Pool storage;
-    constexpr long long cache_bytes = rows * (stride + sizeof(Norm) + sizeof(int));
-    // A cached slice rounded up to pool alignment, plus one aligned ID-only slice.
-    constexpr long long budget = (cache_bytes + 63) / 64 * 64 + 64;
+    constexpr size_t norm_end = sizeof(int) + rows * sizeof(Norm);
+    constexpr size_t code_start = (norm_end + lane_width - 1) / lane_width * lane_width;
+    constexpr size_t cached_bytes = code_start + rows * (stride + sizeof(int));
+    constexpr size_t budget = cached_bytes + sizeof(int) + rows * sizeof(int);
     storage.initialize(stride, {0, rows, 2 * rows}, budget);
-    Neighbors first(storage, edges, rows, nullptr, remap, true);
-    Neighbors second(storage, edges, rows, nullptr, remap, true);
-    EXPECT_NE(first.pool, nullptr);
-    EXPECT_NE(second.edges, nullptr);
-    EXPECT_EQ(second.pool, nullptr);
+    Neighbors first(storage, edges, rows, remap, true);
+    Neighbors second(storage, edges, rows, remap, true);
+    EXPECT_TRUE(first.has_cache());
+    EXPECT_FALSE(second.has_cache());
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.neighbor_ids(stride)),
+              reinterpret_cast<std::uintptr_t>(first.neighbor_ids(stride)) + (rows + 1) * sizeof(int));
 }
 
 INSTANTIATE_TEST_SUITE_P(Dimensions, SimdDistanceTest, ::testing::ValuesIn(dimensions), ::testing::PrintToStringParamName{});
