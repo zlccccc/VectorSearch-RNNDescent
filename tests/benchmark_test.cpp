@@ -73,16 +73,18 @@ using ::testing::HasSubstr;
 using ::testing::ThrowsMessage;
 
 TEST(BenchmarkCliTest, AppliesExplicitSettingsAndCacheDefaults) {
-    auto config = parse({"--dim", "256", "--neighbor-pool-gb", "2", "--pca-out", "65"});
+    auto config = parse({"--dim", "256", "--neighbor-pool-gb", "2", "--pca-out", "65", "--reorder-query-batch"});
     benchmark::apply_solution_preset(config);
     EXPECT_TRUE(config.dim_explicit);
     EXPECT_EQ(config.dim, 256);
     EXPECT_EQ(config.build_config.neighbor_pool_size_limit_bytes, 2LL * 1024 * 1024 * 1024);
     EXPECT_TRUE(config.pca_config.enabled);
     EXPECT_EQ(config.pca_config.out_dim, 65);
+    EXPECT_TRUE(config.search_config.reorder_query_batch);
     auto defaults = parse({});
     benchmark::apply_solution_preset(defaults);
     EXPECT_EQ(defaults.build_config.neighbor_pool_size_limit_bytes, 0);
+    EXPECT_FALSE(defaults.search_config.reorder_query_batch);
 }
 
 TEST(BenchmarkCliTest, RejectsInvalidBudgetsAndMissingValues) {

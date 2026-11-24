@@ -197,6 +197,7 @@ inline void print_solution_config(const BenchmarkConfig &config) {
          << " fp32_refine_max=" << config.search_config.fp32_refine_max
          << " graph_quantization=" << quantization_name(config.search_config.graph_quantization)
          << " rerank_quantization=" << quantization_name(config.search_config.rerank_quantization)
+         << " reorder_query_batch=" << config.search_config.reorder_query_batch
          << " num_threads=" << config.search_config.num_threads << endl;
     cout << "pca config:"
          << " enabled=" << (config.pca_config.enabled ? 1 : 0) << " out_dim=" << config.pca_config.out_dim << endl;

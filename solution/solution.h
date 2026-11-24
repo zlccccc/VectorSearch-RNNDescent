@@ -18,7 +18,8 @@ class Solution {
                const rnndescent::RNNDescent::BuildConfig &build_config,
                const rnndescent::RNNDescent::SearchConfig &search_config,
                const rnndescent::IndexRNNDescent::PCAConfig &pca_config = {});
-    void search(const std::vector<float> &query, std::vector<int> &res, int topk);
+    void search(const std::vector<float> &queries, std::vector<int> &res, int topk);
+    void search_batch(const std::vector<float> &queries, std::vector<int> &res, int topk);
     void reset();
     const std::vector<float> &distance_buffer() const { return distances_; }
     ~Solution() = default;

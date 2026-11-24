@@ -43,6 +43,16 @@ TEST(PCAProjectionTest, ProjectsOntoTheLeadingCenteredAxis) {
     }
 }
 
+TEST(PCAProjectionTest, OrdersTwoProjectedQueries) {
+    constexpr int input_dim = 5, output_dim = 4;
+    const std::vector<float> base(input_dim * input_dim, 0.0f);
+    const rnndescent::PCAProjection pca(rnndescent::FloatMatrixView::from_vector(base, input_dim), output_dim);
+    const std::vector<float> projected{2, 2, 2, 2, -1, -1, -1, -1};
+    EXPECT_EQ(pca.query_order(rnndescent::FloatMatrixView::from_vector(projected, output_dim)),
+              (std::vector<int>{1, 0}));
+    EXPECT_TRUE(pca.query_order(rnndescent::FloatMatrixView::from_buffer(projected.data(), 1, output_dim)).empty());
+}
+
 TEST(PCAProjectionTest, SampledTrainingPreservesTheLeadingAxisAcrossBatches) {
     for (const int dimension : {2, 17}) {
         SCOPED_TRACE(dimension);

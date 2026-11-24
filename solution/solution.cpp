@@ -53,30 +53,34 @@ void Solution::warmup(const std::vector<float> &base, int d, const WarmupConfig 
     }
     std::vector<int> warmup_result(warmup_config.topk * warmup_count);
     for (int i = 0; i < warmup_search_count; i++) {
-        search(query, warmup_result, warmup_config.topk);
+        search_batch(query, warmup_result, warmup_config.topk);
     }
     index_->flush_perf_stats();
     auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - prevtime).count();
     rnndescent::Logger::info("Warmup done in %f ms\n", warmup_time);
 }
 
-void Solution::search(const std::vector<float> &query, std::vector<int> &res, int topk) {
+void Solution::search(const std::vector<float> &queries, std::vector<int> &res, int topk) {
     if (!index_)
         throw std::runtime_error("search called before build");
     if (topk <= 0)
         throw std::runtime_error("search topk must be positive");
-    if (query.empty())
+    if (queries.empty())
         return;
-    if (query.size() % index_->dimension() != 0)
+    if (queries.size() % index_->dimension() != 0)
         throw std::runtime_error("query size must be divisible by index dimension");
-    int n = query.size() / index_->dimension();
+    int n = queries.size() / index_->dimension();
     if ((int)res.size() != n * topk)
         res.resize(n * topk);
     if ((int)distances_.size() != n * topk)
         distances_.resize(n * topk);
-    const auto query_view = rnndescent::FloatMatrixView::from_vector(query, index_->dimension());
+    const auto query_view = rnndescent::FloatMatrixView::from_vector(queries, index_->dimension());
     const auto result_view = rnndescent::SearchResultView::from_vectors(res, distances_, topk);
     index_->search(query_view, result_view);
+}
+
+void Solution::search_batch(const std::vector<float> &queries, std::vector<int> &res, int topk) {
+    search(queries, res, topk);
 }
 
 void Solution::reset() {

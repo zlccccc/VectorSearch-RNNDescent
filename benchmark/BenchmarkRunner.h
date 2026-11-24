@@ -47,7 +47,7 @@ inline void run_random_benchmark(BenchmarkConfig config) {
 
     for (int i = 0; i < config.repeat; i++) {
         const auto before_test = chrono::high_resolution_clock::now();
-        solution.search(query, result, config.topk);
+        solution.search_batch(query, result, config.topk);
         const auto after_test = chrono::high_resolution_clock::now();
         const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / config.test_iter;
         stats.latency_ms.push_back(t);
@@ -102,7 +102,7 @@ inline void run_dataset_benchmark(BenchmarkConfig config) {
 
     for (int i = 0; i < config.repeat; i++) {
         const auto before_test = chrono::high_resolution_clock::now();
-        solution.search(query.values, result, config.topk);
+        solution.search_batch(query.values, result, config.topk);
         const auto after_test = chrono::high_resolution_clock::now();
         const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / query.rows;
         stats.latency_ms.push_back(t);

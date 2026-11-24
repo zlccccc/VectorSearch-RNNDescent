@@ -82,6 +82,68 @@ TEST(SolutionTest, BuildsSearchesAndResetsWithPcaAndCache) {
     }
 }
 
+TEST(SolutionTest, ReorderedQueryBatchReturnsResultsInInputOrder) {
+    constexpr int rows = 64, dimension = 17, query_count = 32, topk = 5;
+    std::mt19937 rng(57);
+    std::vector<float> base(rows * dimension);
+    for (float &value : base)
+        value = static_cast<float>(rng() % 4096) / 2048.0f - 1.0f;
+
+    std::vector<int> source_ids(query_count);
+    std::vector<float> queries;
+    for (int q = 0; q < query_count; ++q) {
+        const int id = (17 * q + 9) % rows;
+        source_ids[q] = id;
+        const auto row = base.begin() + id * dimension;
+        queries.insert(queries.end(), row, row + dimension);
+    }
+
+    Solution::WarmupConfig warmup;
+    warmup.topk = 0;
+    rnndescent::RNNDescent::BuildConfig build;
+    build.T1 = build.T2 = 1;
+    build.S = build.K0 = 8;
+    build.R = 16;
+    build.num_threads = 1;
+    rnndescent::RNNDescent::SearchConfig search;
+    search.search_L = search.refine_max = search.num_initialize = rows;
+    search.fp32_refine_max = 0;
+    search.num_threads = 2;
+
+    Solution baseline, ordered;
+    baseline.build(dimension, base, warmup, build, search, {true, 13});
+    search.reorder_query_batch = true;
+    ordered.build(dimension, base, warmup, build, search, {true, 13});
+
+    std::vector<int> expected, actual;
+    baseline.search(queries, expected, topk);
+    ordered.search_batch(queries, actual, topk);
+    ASSERT_EQ(actual, expected);
+    EXPECT_EQ(ordered.distance_buffer(), baseline.distance_buffer());
+    ASSERT_EQ(actual.size(), query_count * topk);
+    for (int q = 0; q < query_count; ++q)
+        EXPECT_EQ(actual[q * topk], source_ids[q]);
+
+    for (int q : {0, query_count - 1}) {
+        const auto row = queries.begin() + q * dimension;
+        const std::vector<float> single_query(row, row + dimension);
+        ordered.search(single_query, actual, topk);
+        const auto ids = expected.begin() + q * topk;
+        const auto distances = baseline.distance_buffer().begin() + q * topk;
+        EXPECT_EQ(actual, (std::vector<int>(ids, ids + topk)));
+        EXPECT_EQ(ordered.distance_buffer(), (std::vector<float>(distances, distances + topk)));
+    }
+
+    for (int count : {2, 15, 16, 17}) {
+        SCOPED_TRACE(count);
+        const std::vector<float> subset(queries.begin(), queries.begin() + count * dimension);
+        ordered.search(subset, actual, topk);
+        EXPECT_EQ(actual, (std::vector<int>(expected.begin(), expected.begin() + count * topk)));
+        const auto &distances = baseline.distance_buffer();
+        EXPECT_EQ(ordered.distance_buffer(), (std::vector<float>(distances.begin(), distances.begin() + count * topk)));
+    }
+}
+
 TEST(SolutionTest, SeparatelyBuiltIndexesKeepTheirOwnNeighbors) {
     constexpr int first_dim = 65;
     constexpr int second_dim = 33;

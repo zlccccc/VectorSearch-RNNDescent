@@ -5,11 +5,12 @@
 | 方法 | 输入和结果 |
 |---|---|
 | `build(d, base, warmup, build_config, search_config, pca_config)` | 根据底库创建索引，最后一项默认为关闭 PCA |
-| `search(query, ids, topk)` | 查询整批向量，自动将 `ids` 调整为查询条数乘 Top K |
+| `search(queries, ids, topk)` | 按查询条数选择执行方式，自动将 `ids` 调整为查询条数乘 Top K |
+| `search_batch(queries, ids, topk)` | 批量调用入口，使用与 `search` 相同的查询准备与调度 |
 | `distance_buffer()` | 返回最近一次查询距离的常量引用，与 `ids` 按相同顺序排列 |
 | `reset()` | 释放当前图、量化存储、邻居池和 PCA，后续可再次 `build` |
 
-底库行数为 `base.size() / d`，查询条数为 `query.size() / d`。第 `q` 条查询的第 `k` 个结果位于 `ids[q * topk + k]`，对应距离位于 `distance_buffer()[q * topk + k]`。输入要求维度为正、底库非空、元素数能整除维度，并提供有限数值。初始邻居数 `S` 应在底库条数范围内。Top K 需为正并受底库条数约束，入口需要满足四路批量算距的要求，示例使用 64 个入口。
+底库行数为 `base.size() / d`，查询条数为 `queries.size() / d`。第 `q` 条查询的第 `k` 个结果位于 `ids[q * topk + k]`，对应距离位于 `distance_buffer()[q * topk + k]`。输入要求维度为正、底库非空、元素数能整除维度，并提供有限数值。初始邻居数 `S` 应在底库条数范围内。Top K 需为正并受底库条数约束，入口需要满足四路批量算距的要求，示例使用 64 个入口。
 
 **底库的生命周期覆盖索引的使用时间。**
 
@@ -19,7 +20,9 @@
 
 量化粗排按分数保留 `fp32_refine_max` 项，默认 32，至少保留 Top K。设 `rerank_quantization = std::nullopt` 或 `fp32_refine_max = 0` 时，送入重排的候选直接做 FP32 精排。返回距离为原始 FP32 空间的平方 L2。
 
-`search` 会更新量化查询、PCA 查询缓冲和每线程候选去重表。同一 `Solution` 实例按顺序调用批量查询，在批次内使用配置的 OpenMP 线程。不同实例分别管理自己的索引和邻居池。外层需要并发访问同一实例时，由调用方串行化这些入口。
+一次调用传入 1–15 条查询时，调用线程依次完成查图和精排。传入至少 16 条时，OpenMP 按查询分工，每条查询由一个线程完成。可通过 `SearchConfig::reorder_query_batch` 在分流前开启排序，结果始终按输入行写回。
+
+两条路径共用量化查询、PCA 查询缓冲和搜索工作区。同一 `Solution` 实例按顺序调用查询。不同实例分别管理自己的索引和邻居池。外层需要并发访问同一实例时，由调用方串行化这些入口。
 
 `reset()` 之后，查询会报告索引尚未构建。它会保留部分查询工作缓冲的容量以便复用，`distance_buffer()` 可暂时保留上一批结果。对象销毁时释放这些缓冲。
 
@@ -64,7 +67,7 @@ int main() {
     Solution index;
     std::vector<int> ids;
     index.build(dimension, base, warmup, build, search, pca);
-    index.search(queries, ids, topk);
+    index.search_batch(queries, ids, topk);
     const auto &distances = index.distance_buffer();
     for (int q = 0; q < query_count; ++q)
         std::cout << q << " " << ids[q * topk] << " " << distances[q * topk] << '\n';
@@ -77,7 +80,8 @@ int main() {
 ~~~bash
 c++ -O3 -std=c++17 -fopenmp -mavx2 -mfma -DRNNDESCENT_FORCE_AVX2 -I . \
   /tmp/rnndescent-example.cpp solution/solution.cpp solution/rnndescent/PCAProjection.cpp \
-  solution/rnndescent/search/CandidateReranker.cpp \
+  solution/rnndescent/build/GraphBuilder.cpp solution/rnndescent/build/GraphReorder.cpp \
+  solution/rnndescent/search/GraphSearcher.cpp solution/rnndescent/search/CandidateReranker.cpp \
   -lopenblas -o /tmp/rnndescent-example
 OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 /tmp/rnndescent-example
 ~~~

@@ -107,10 +107,17 @@ struct IndexRNNDescent {
         Logger::info(verbose, "search: PCA Process done in %f ms/item\n", process_time / n);
 #endif
 
-#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
-        for (int queryid = 0; queryid < n; queryid++) {
-            int threadid = omp_get_thread_num();
-            rnndescent->searchSingle(threadid, queryid, *reranker, search_config, build_config.K0, result.slice(queryid));
+        const auto ordered_queries = search_config.reorder_query_batch && pca
+                                         ? pca->query_order(graph_queries)
+                                         : std::vector<int>{};
+        constexpr int min_parallel_queries = 16;
+        if (n >= min_parallel_queries) {
+            search_batch(n, ordered_queries, result);
+        } else {
+            for (int i = 0; i < n; ++i) {
+                const int id = ordered_queries.empty() ? i : ordered_queries[i];
+                rnndescent->searchSingle(0, id, *reranker, search_config, build_config.K0, result.slice(id));
+            }
         }
 
 #ifdef INTERNAL_CLOCK_TEST
@@ -132,6 +139,22 @@ struct IndexRNNDescent {
     void flush_perf_stats() {
         if (rnndescent)
             rnndescent->flush_perf_stats();
+    }
+
+  private:
+    void search_batch(int count, const std::vector<int> &ordered_queries, const SearchResultView &result) {
+        const auto search_query = [&](int id) {
+            rnndescent->searchSingle(omp_get_thread_num(), id, *reranker, search_config, build_config.K0, result.slice(id));
+        };
+        if (ordered_queries.empty()) {
+#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
+            for (int id = 0; id < count; ++id)
+                search_query(id);
+        } else {
+#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
+            for (int i = 0; i < count; ++i)
+                search_query(ordered_queries[i]);
+        }
     }
 };
 

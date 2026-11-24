@@ -1,11 +1,13 @@
 #include "PCAProjection.h"
 
 #include <algorithm>
+#include <array>
 #include <cblas.h>
 #include <cmath>
 #include <cstdint>
 #include <numeric>
 #include <random>
+#include <utility>
 
 extern "C" void dsyev_(const char *job, const char *triangle, const blasint *n, double *matrix,
                        const blasint *stride, double *eigenvalues, double *work,
@@ -13,6 +15,20 @@ extern "C" void dsyev_(const char *job, const char *triangle, const blasint *n, 
 
 namespace rnndescent {
 namespace {
+
+int hadamard_block_size(int remaining) {
+    int size = 1;
+    while (size <= remaining / 2)
+        size *= 2;
+    return size;
+}
+
+std::uint32_t spread_coordinate_bits(std::uint32_t bits) {
+    // Insert three zero bits between each pair of bits for a four-axis Morton key.
+    bits = (bits | bits << 12) & 0x000f000f;
+    bits = (bits | bits << 6) & 0x03030303;
+    return (bits | bits << 3) & 0x11111111;
+}
 
 std::vector<float> leading_eigenvectors(const std::vector<float> &symmetric, blasint dimension, int count) {
     std::vector<double> vectors(symmetric.begin(), symmetric.end());
@@ -42,9 +58,7 @@ void rotate_pca_basis(std::vector<float> &components, std::vector<float> &bias, 
     std::mt19937_64 random(64);
     std::uint64_t signs = 0x6d2ed559ca31b498ull;
     for (int start = 0; start < dimension;) {
-        int size = 1;
-        while (size <= (dimension - start) / 2)
-            size *= 2;
+        const int size = hadamard_block_size(dimension - start);
 
         const float normalization = 1.0f / std::sqrt(static_cast<float>(size));
         const int end = start + size;
@@ -191,6 +205,65 @@ FloatMatrixView PCAProjection::project(const FloatMatrixView &input, std::vector
 
 FloatMatrixView PCAProjection::project_queries(const FloatMatrixView &queries) {
     return project(queries, query_buffer_);
+}
+
+std::vector<int> PCAProjection::query_order(const FloatMatrixView &projected) const {
+    constexpr int axes = 4;
+    const int count = projected.row_count();
+    if (count <= 1 || output_dimension_ < axes)
+        return {};
+    projected.validate("projected queries");
+    RNNDESCENT_ASSERT_MSG(projected.dimension() == output_dimension_, "projected query dimension mismatch");
+
+    const int block_size = hadamard_block_size(output_dimension_);
+    std::vector<std::array<float, axes>> coordinates(count);
+    for (int i = 0; i < count; ++i) {
+        const float *row = projected.row_ptr(i);
+        float a = 0, b = 0, c = 0, d = 0;
+        for (int j = 0; j < block_size; j += axes) {
+            a += row[j];
+            b += row[j + 1];
+            c += row[j + 2];
+            d += row[j + 3];
+        }
+        // Recover the leading principal coordinates up to a fixed sign and scale.
+        // The first Hadamard block contains all four when its size is at least four.
+        coordinates[i] = {a + b + c + d, a - b + c - d, a + b - c - d, a - b - c + d};
+    }
+
+    auto minima = coordinates.front();
+    auto maxima = minima;
+    for (const auto &row : coordinates) {
+        for (int j = 0; j < axes; ++j) {
+            if (!std::isfinite(row[j]))
+                return {};
+            minima[j] = std::min(minima[j], row[j]);
+            maxima[j] = std::max(maxima[j], row[j]);
+        }
+    }
+    constexpr double max_coordinate = 255;
+    std::array<double, axes> scales;
+    for (int j = 0; j < axes; ++j) {
+        const double range = static_cast<double>(maxima[j]) - minima[j];
+        scales[j] = range > 0 ? max_coordinate / range : 0;
+    }
+
+    std::vector<std::pair<std::uint32_t, int>> keys(count);
+    for (int i = 0; i < count; ++i) {
+        std::uint32_t key = 0;
+        for (int j = 0; j < axes; ++j) {
+            const double scaled = (static_cast<double>(coordinates[i][j]) - minima[j]) * scales[j];
+            const auto bin = static_cast<std::uint32_t>(std::clamp(scaled, 0.0, max_coordinate));
+            key |= spread_coordinate_bits(bin) << j;
+        }
+        keys[i] = {key, i};
+    }
+    std::sort(keys.begin(), keys.end());
+
+    std::vector<int> order(count);
+    for (int i = 0; i < count; ++i)
+        order[i] = keys[i].second;
+    return order;
 }
 
 } // namespace rnndescent

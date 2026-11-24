@@ -26,6 +26,7 @@ inline void print_usage(const char *prog) {
     cout << "  --S <n> --R <n> --K0 <n>\n";
     cout << "  --local-three-hop-prune  Use three-hop alternatives when selecting final graph edges\n";
     cout << "  --num-initialize <n> --search-L <n> --refine-max <n> [--beam-size <n>]\n";
+    cout << "  --reorder-query-batch  Order queries within a PCA batch for cache locality (off by default)\n";
     cout << "  --fp32-refine-max <n>  FP32 shortlist size (default 32; 0 refines all candidates)\n";
     cout << "  --graph-quantization <8bit|uint4>  Graph navigation encoding\n";
     cout << "  --rerank-quantization <8bit|uint4|fp32>  Original-dimensional shortlist encoding or direct FP32\n";
@@ -125,6 +126,8 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             }
         } else if (arg == "--beam-size") {
             config.override_beam_size = stoi(require_value(arg));
+        } else if (arg == "--reorder-query-batch") {
+            config.search_config.reorder_query_batch = true;
         } else if (arg == "--neighbor-pool-gb") {
             const string input = require_value(arg);
             size_t parsed = 0;

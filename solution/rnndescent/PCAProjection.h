@@ -23,6 +23,8 @@ class PCAProjection {
     FloatMatrixView project(const FloatMatrixView &input, std::vector<float> &buffer) const;
     // Reuses internal storage. The view is valid until the next query projection or destruction.
     FloatMatrixView project_queries(const FloatMatrixView &queries);
+    // Returns query IDs in execution order, or an empty vector for input order.
+    std::vector<int> query_order(const FloatMatrixView &projected) const;
 
   private:
     int input_dimension_;
