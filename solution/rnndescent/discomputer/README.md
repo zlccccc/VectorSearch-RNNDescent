@@ -2,6 +2,8 @@
 
 共用接口由 [MyDistanceComputer.h](MyDistanceComputer.h) 定义。[PlatformSimdDistanceComputer.h](PlatformSimdDistanceComputer.h) 在编译期选择可用的 SIMD 内核，在创建索引时按阶段配置创建对应的 DistanceComputer。上层索引流程见 [算法与数据流](../../../docs/architecture.md)。
 
+入口和精排通过 `score_candidates` 批量写回候选分数，未缓存的邻接表通过 `score_neighbors` 写入连续的分数缓冲。各后端在批量循环中调用自己的四路点积内核。
+
 | 位置 | 职责 |
 |---|---|
 | [flat/FlatDistanceComputer.h](flat/FlatDistanceComputer.h) | 管理原始行或编码行、底库与查询平方范数，并组装平方距离 |
@@ -85,7 +87,7 @@ AVX-512 UINT8 在 64 字节步长展开 16 行 GEMV，四行块用 AVX-512 lane 
 
 NEON INT8 的邻居缓存按四行交错。每步用 `vld1q_s8_x4` 成组加载四条邻居的 16 字节块，用 `SDOT` 累加点积，再用三次成对相加合并归约，并一次写出四个平方 L2。
 
-池预算耗尽时，邻接表保留 ID，算距通过底库码的四路接口完成。缓存内核优化的整体收益取决于查询花在缓存内算距的时间占比。
+未缓存的邻接表只存 ID。`score_neighbors` 一次接收该表的所有 ID，复用查询码和查询参数，从底库读取向量，每四条一组算距。缓存内核优化的整体收益取决于查询花在缓存内算距的时间占比。
 
 **扩展量化内核时沿用同一套量化与缓存协议。**
 
@@ -97,6 +99,6 @@ NEON INT8 的邻居缓存按四行交错。每步用 `vld1q_s8_x4` 成组加载�
 | `pack_neighbor_cache(...)` | 可选的建图打包入口，提供时由内核决定缓存布局 |
 | `cached_distances(...)` | 按对应的缓存布局写入每个邻居的码空间平方 L2 |
 
-用内核和编码策略实例化 `QuantizedDistanceComputer<Kernel, Encoding>`。策略提供底库和查询的行宽、行参数、训练和编码方法，以及整数点积到分数的换算。8 位默认使用 `ByteQuantization`，4 位查图使用共享步长，4 位粗排使用逐行仿射参数。邻居容器通过 DistanceComputer 调用缓存打包、缓存算距和四路回退。Flat 内核提供 `Code`、`Dot`、`dot`、`dot4`，FP32 内核还提供 `query_norm`，编码行内核提供其转换和缩放字段。
+用内核和编码策略实例化 `QuantizedDistanceComputer<Kernel, Encoding>`。策略提供底库和查询的行宽、行参数、训练和编码方法，以及整数点积到分数的换算。8 位默认使用 `ByteQuantization`，4 位查图使用共享步长，4 位粗排使用逐行仿射参数。邻居容器通过 DistanceComputer 调用缓存打包、缓存算距和未缓存邻接表算距。Flat 内核提供 `Code`、`Dot`、`dot`、`dot4`，FP32 内核还提供 `query_norm`，编码行内核提供其转换和缩放字段。
 
 现有 [SIMD 测试](../../../tests/simd_test.cpp) 对照标量结果，覆盖单条、四路、非对齐维度、极端码、BFS 行重排和缓存回退。修改计算或布局后，在对应指令集机器上运行这些用例，并通过相同 Recall 的 Benchmark 检查查询速度。构建和测试命令见 [开发与验证](../../../docs/development.md)。

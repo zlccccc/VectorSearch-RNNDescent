@@ -26,12 +26,6 @@ struct TrackedDistances final : rnndescent::MyDistanceComputer {
         evaluated.push_back(id);
         return scores.at(id);
     }
-    void distances_batch_4(int q, int a, int b, int c, int d, float &da, float &db, float &dc, float &dd) override {
-        da = (*this)(q, a);
-        db = (*this)(q, b);
-        dc = (*this)(q, c);
-        dd = (*this)(q, d);
-    }
 };
 
 TEST(RefinementTest, SelectsInOriginalSpaceAndLimitsFp32Work) {

@@ -58,9 +58,9 @@ float quantized_l2(const Code *a, const Code *b, int dim) {
 }
 
 std::array<float, 4> batch(rnndescent::MyDistanceComputer &computer, int q, const int *ids) {
-    std::array<float, 4> result{};
-    computer.distances_batch_4(q, ids[0], ids[1], ids[2], ids[3], result[0], result[1], result[2], result[3]);
-    return result;
+    std::vector<rnndescent::SingleNeighbor> candidates{{ids[0], 0}, {ids[1], 0}, {ids[2], 0}, {ids[3], 0}};
+    computer.score_candidates(q, candidates);
+    return {candidates[0].distance, candidates[1].distance, candidates[2].distance, candidates[3].distance};
 }
 
 class SimdDistanceTest : public ::testing::TestWithParam<int> {};
@@ -86,7 +86,7 @@ TEST_P(SimdDistanceTest, MatchesScalarReference) {
 
     const int ids[rows] = {7, 1, 3, 4, 2, 5, 0, 6};
     for (int q = 0; q < queries; ++q) {
-        const Code *query_code = reinterpret_cast<const Code *>(quantized->get_query_ptr_int8(q));
+        const auto *query_code = static_cast<const Code *>(quantized->get_quantized_query(q).code);
         SCOPED_TRACE(q);
         EXPECT_TRUE(std::all_of(query_code + d, query_code + stride, [](Code value) { return value == 0; }));
         for (int i = 0; i < rows; i += 4) {
@@ -348,7 +348,7 @@ TEST(PackedUInt4CacheTest, MatchesScalarAndCacheFallback) {
         cached.populate_cache(*computer, stride, row.data());
 
         for (int q = 0; q < queries; ++q) {
-            const auto *qcode = computer->get_query_ptr_int8(q);
+            const auto *qcode = static_cast<const int8_t *>(computer->get_quantized_query(q).code);
             std::array<float, count> cached_distances, uncached_distances;
             const auto [ids, cached_count] = cached.compute_distance(q, *computer, stride, cached_distances.data());
             ASSERT_EQ(cached_count, count);

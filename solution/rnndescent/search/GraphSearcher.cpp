@@ -54,7 +54,6 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         auto &retset = scratch.retset;
         auto &usefulset = scratch.usefulset;
         auto &candidate_ids = scratch.candidate_ids;
-        // Score the entry points in batches of four.
         if (num_initialize % 4 != 0)
             throw std::runtime_error("num_initialize must be a multiple of 4");
         retset.resize(num_initialize);
@@ -66,15 +65,9 @@ std::vector<SingleNeighbor> &GraphSearcher::search_candidates(int threadid, int 
         float *const neighbor_scores = scratch.scores.data();
         auto *const neighbor_masks = scratch.masks.data();
         auto *const neighbor_spans = scratch.spans.data();
-        for (int i = 0; i < num_initialize; i += 4) {
-            retset[i + 0].id = i + 0;
-            retset[i + 1].id = i + 1;
-            retset[i + 2].id = i + 2;
-            retset[i + 3].id = i + 3;
-            distance.distances_batch_4(queryid, i + 0, i + 1, i + 2, i + 3,
-                                       retset[i].distance, retset[i + 1].distance, retset[i + 2].distance,
-                                       retset[i + 3].distance);
-        }
+        for (int i = 0; i < num_initialize; ++i)
+            retset[i].id = i;
+        distance.score_candidates(queryid, retset);
 
         std::nth_element(retset.begin(), retset.begin() + pool_size, retset.end());
         // Keep a sorted tail for reranking when refine_max exceeds the expansion width.

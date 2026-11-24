@@ -162,13 +162,15 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
         }
     }
 
-    void distances_batch_4(int q, int a, int b, int c, int d, float &da, float &db, float &dc, float &dd) override {
-        const auto products = dot4(query(q), a, b, c, d);
+    void score_neighbors(int q, const int *ids, int count, float *scores) override {
+        const auto *code = query(q);
         const auto &params = query_params_[q];
-        da = Encoding::squared_distance(base_params_[a], params, products[0]);
-        db = Encoding::squared_distance(base_params_[b], params, products[1]);
-        dc = Encoding::squared_distance(base_params_[c], params, products[2]);
-        dd = Encoding::squared_distance(base_params_[d], params, products[3]);
+        for (int i = 0; i < count; i += 4) {
+            const auto *group = ids + i;
+            const auto products = dot4(code, group[0], group[1], group[2], group[3]);
+            for (int j = 0; j < 4; ++j)
+                scores[i + j] = Encoding::squared_distance(base_params_[group[j]], params, products[j]);
+        }
     }
 
     void score_candidates(int q, std::vector<SingleNeighbor> &candidates) override {
@@ -187,8 +189,6 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
             candidate.distance = Encoding::ranking_score(base_params_[candidate.id], params, product);
         }
     }
-
-    void *get_query_ptr(int q) override { return queries_.data() + static_cast<size_t>(q) * query_stride_; }
 
     QuantizedQuery get_quantized_query(int q) const override {
         if constexpr (Encoding::supports_cache) {
@@ -275,11 +275,8 @@ struct QuantizedNeighbors : NeighborsStorageBase<typename Kernel::Quantization::
             return {ids, count};
         }
 
-        // Uncached neighborhoods fetch quantized rows by ID and score four at a time.
-        for (int i = 0; i < count; i += 4) {
-            distance.distances_batch_4(idq, payload[i], payload[i + 1], payload[i + 2], payload[i + 3],
-                                       result[i], result[i + 1], result[i + 2], result[i + 3]);
-        }
+        if (count != 0)
+            distance.score_neighbors(idq, payload, count, result);
         return {payload, count};
     }
 };

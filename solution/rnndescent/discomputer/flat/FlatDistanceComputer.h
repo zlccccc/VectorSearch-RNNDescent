@@ -73,14 +73,26 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
         return squared_distance(matrix_norms[i] + matrix_norms[j], Kernel::dot(base + i * d, base + j * d, d));
     }
 
-    void distances_batch_4(int idq, int i0, int i1, int i2, int i3, float &dis0, float &dis1, float &dis2, float &dis3) override {
+    void score_candidates(int idq, std::vector<SingleNeighbor> &candidates) override {
+        if (candidates.empty())
+            return;
+
+        const auto *q = data(query) + idq * d;
         const auto *base = data(matrix);
-        const auto dots = Kernel::dot4(data(query) + idq * d, base + i0 * d, base + i1 * d, base + i2 * d, base + i3 * d, d);
         const auto norm = query_norms[idq];
-        dis0 = squared_distance(norm + matrix_norms[i0], dots[0]);
-        dis1 = squared_distance(norm + matrix_norms[i1], dots[1]);
-        dis2 = squared_distance(norm + matrix_norms[i2], dots[2]);
-        dis3 = squared_distance(norm + matrix_norms[i3], dots[3]);
+        const size_t end4 = candidates.size() / 4 * 4;
+        for (size_t i = 0; i < end4; i += 4) {
+            auto *group = candidates.data() + i;
+            const auto dots = Kernel::dot4(q, base + group[0].id * d, base + group[1].id * d,
+                                          base + group[2].id * d, base + group[3].id * d, d);
+            for (int lane = 0; lane < 4; ++lane)
+                group[lane].distance = squared_distance(norm + matrix_norms[group[lane].id], dots[lane]);
+        }
+        for (size_t i = end4; i < candidates.size(); ++i) {
+            auto &candidate = candidates[i];
+            const auto product = Kernel::dot(q, base + candidate.id * d, d);
+            candidate.distance = squared_distance(norm + matrix_norms[candidate.id], product);
+        }
     }
 
   private:
