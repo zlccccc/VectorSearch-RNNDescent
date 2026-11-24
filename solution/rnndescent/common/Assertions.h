@@ -16,5 +16,3 @@ inline void throw_assertion_error(const char *message) {
             ::rnndescent::detail::throw_assertion_error(message); \
         } \
     } while (false)
-
-#define RNNDESCENT_ASSERT(condition) RNNDESCENT_ASSERT_MSG((condition), #condition)

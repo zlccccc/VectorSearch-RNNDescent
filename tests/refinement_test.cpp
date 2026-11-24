@@ -113,7 +113,7 @@ TEST(RefinementTest, ReusesOriginalDimensionalGraphScores) {
     rnndescent::CandidateReranker reranker(std::move(exact_distance), dim);
     std::vector<int> ids(topk);
     std::vector<float> distances(topk);
-    graph.search_single_thread(0, 0, reranker, search, build.K0,
+    graph.search_single_thread(0, 0, reranker, search,
                                rnndescent::SearchResultView::from_vectors(ids, distances, topk));
     std::sort(exact.evaluated.begin(), exact.evaluated.end());
     EXPECT_EQ(exact.evaluated, expected);
@@ -124,8 +124,8 @@ TEST(RefinementTest, ReusesOriginalDimensionalGraphScores) {
     fp32.set_queries(rnndescent::FloatMatrixView::from_vector(query, dim));
     std::vector<int> parallel_ids(topk);
     std::vector<float> parallel_distances(topk);
-    graph.search_single_thread(0, 0, fp32, search, build.K0, {ids.data(), distances.data(), topk});
-    graph.search_single_parallel(0, fp32, search, build.K0, {parallel_ids.data(), parallel_distances.data(), topk});
+    graph.search_single_thread(0, 0, fp32, search, {ids.data(), distances.data(), topk});
+    graph.search_single_parallel(0, fp32, search, {parallel_ids.data(), parallel_distances.data(), topk});
     EXPECT_EQ(parallel_ids, ids);
     EXPECT_EQ(parallel_distances, distances);
 }
@@ -156,7 +156,7 @@ TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
     rnndescent::CandidateReranker bfs(base_view, graph_dim, search.refine_max, search, graph.search_from_ids.data());
 
     constexpr int query_id = 19;
-    const auto query = rnndescent::FloatMatrixView::from_buffer(base.data() + query_id * dim, 1, dim);
+    const rnndescent::FloatMatrixView query(base.data() + query_id * dim, 1, dim);
     graph.graph_distance_computer->set_query(projection.data() + query_id * graph_dim, 1);
     original.set_queries(query);
     bfs.set_queries(query);
@@ -166,7 +166,7 @@ TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
         const auto collect = [&](const rnndescent::CandidateReranker &reranker) {
             std::vector<int> ids(topk);
             std::vector<float> distances(topk);
-            graph.search_single_thread(0, 0, reranker, search, build.K0,
+            graph.search_single_thread(0, 0, reranker, search,
                                        rnndescent::SearchResultView::from_vectors(ids, distances, topk));
             return std::make_pair(std::move(ids), std::move(distances));
         };
@@ -238,7 +238,7 @@ TEST(RefinementTest, RetainsDiscoveredCandidatesBeyondExpansionWidth) {
     rnndescent::CandidateReranker reranker(std::move(exact), 1);
     int id;
     float distance;
-    searcher.search_single_thread(0, 0, search, 4, reranker, {&id, &distance, 1}, nullptr);
+    searcher.search_single_thread(0, 0, search, reranker, {&id, &distance, 1});
     EXPECT_EQ(refined_ids, (std::vector<int>{0, 1, 2, 3, 8, 4}));
     EXPECT_EQ(std::find(distances.evaluated.begin(), distances.evaluated.end(), 9), distances.evaluated.end());
 }
@@ -270,13 +270,15 @@ TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges)
     search.num_threads = 1;
     search.single_query_threads = requested_workers;
     rnndescent::search::PerfStats perf;
-    rnndescent::search::GraphSearcher searcher({neighbors, computer}, search, 4, perf);
+    std::vector<int> original_ids(entry_count);
+    std::iota(original_ids.rbegin(), original_ids.rend(), 0);
+    rnndescent::search::GraphSearcher searcher({neighbors, computer, &original_ids}, search, 4, perf);
     auto fp32 = std::make_unique<EntryRecorder>();
     const auto &fp32_ids = fp32->scored_ids;
     rnndescent::CandidateReranker exact(std::move(fp32), 1);
     int id;
     float distance;
-    searcher.search_parallel(0, search, 4, exact, {&id, &distance, 1}, nullptr);
+    searcher.search_parallel(0, search, exact, {&id, &distance, 1});
 
     std::vector<int> scored;
     int active_workers = 0;
@@ -294,10 +296,10 @@ TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges)
     for (const auto &ids : fp32_ids)
         scored.insert(scored.end(), ids.begin(), ids.end());
     std::sort(scored.begin(), scored.end());
-    expected.resize(fp32_limit);
+    expected.erase(expected.begin(), expected.end() - fp32_limit);
     EXPECT_EQ(scored, expected);
-    EXPECT_EQ(id, 0);
-    EXPECT_FLOAT_EQ(distance, 0);
+    EXPECT_EQ(id, entry_count - fp32_limit);
+    EXPECT_FLOAT_EQ(distance, entry_count - fp32_limit);
 }
 
 #if defined(RNNDESCENT_HAS_UINT4_KERNEL)
@@ -330,7 +332,7 @@ TEST_P(PackedUInt4RefinementTest, ScoresBfsRowsAndCandidateTail) {
     std::vector<rnndescent::SingleNeighbor> candidates;
     for (int i = 0; i < rows; ++i)
         candidates.emplace_back(i, 0);
-    packed->score_candidates(0, candidates);
+    packed->score_candidates(0, candidates.data(), candidates.size());
 
     int nearest = -1;
     float nearest_distance = std::numeric_limits<float>::max();

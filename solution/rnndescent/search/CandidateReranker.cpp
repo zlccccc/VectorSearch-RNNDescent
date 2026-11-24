@@ -19,7 +19,8 @@ CandidateReranker::CandidateReranker(const FloatMatrixView &base, int graph_dime
     reuse_graph_scores_ = graph_dimension == base.dimension() &&
                          config.graph_quantization == QuantizedFormat::Byte &&
                          config.rerank_quantization == QuantizedFormat::Byte;
-    if (shortlist_enabled_ && !reuse_graph_scores_ && config.fp32_refine_max > 0 && config.fp32_refine_max < candidate_count) {
+    if (shortlist_enabled_ && !reuse_graph_scores_ && config.fp32_refine_max > 0 &&
+        config.fp32_refine_max < candidate_count) {
         graph_ordered_codes_ = graph_row_order != nullptr;
         quantized_ = SelectedDistanceComputerFactory::create_quantized_refine(base.data_ptr(), base.row_count(),
                                                                              base.dimension(), graph_row_order,
@@ -44,11 +45,6 @@ void CandidateReranker::rerank(int query_id, std::vector<SingleNeighbor> &candid
     write_topk(candidates, result);
 }
 
-void CandidateReranker::select_fp32_candidates(std::vector<SingleNeighbor> &candidates, size_t fp32_count) {
-    std::nth_element(candidates.begin(), candidates.begin() + fp32_count, candidates.end());
-    candidates.resize(fp32_count);
-}
-
 size_t CandidateReranker::prepare_shortlist(std::vector<SingleNeighbor> &candidates, int fp32_limit, int topk) const {
     if (!shortlist_enabled_ || fp32_limit <= 0)
         return candidates.size();
@@ -56,7 +52,8 @@ size_t CandidateReranker::prepare_shortlist(std::vector<SingleNeighbor> &candida
     const size_t fp32_count = std::min(candidates.size(), static_cast<size_t>(std::max(fp32_limit, topk)));
     if (fp32_count < candidates.size() && !quantized_) {
         RNNDESCENT_ASSERT_MSG(reuse_graph_scores_, "shortlisting requires compatible original-dimensional scores");
-        select_fp32_candidates(candidates, fp32_count);
+        std::nth_element(candidates.begin(), candidates.begin() + fp32_count, candidates.end());
+        candidates.resize(fp32_count);
     }
     return fp32_count;
 }
@@ -83,11 +80,15 @@ void CandidateReranker::score_for_rerank(int query_id, std::vector<SingleNeighbo
         if (!graph_ordered_codes_)
             original_ids = nullptr;
         if (workers > 1) {
+            // Finish all coarse scores before selecting the FP32 shortlist.
 #pragma omp barrier
         }
-        if (worker == 0)
-            select_fp32_candidates(candidates, fp32_count);
+        if (worker == 0) {
+            std::nth_element(candidates.begin(), candidates.begin() + fp32_count, candidates.end());
+            candidates.resize(fp32_count);
+        }
         if (workers > 1) {
+            // Publish the shortlist and its new size before splitting FP32 work.
 #pragma omp barrier
         }
     }

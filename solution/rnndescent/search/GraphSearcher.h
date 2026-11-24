@@ -50,18 +50,19 @@ struct PerfStats {
 #endif
 
 struct Storage {
-    std::vector<SelectedNeighborsContainerType> &final_graph_neighbors;
-    std::unique_ptr<MyDistanceComputer> &graph_distance_computer;
+    const std::vector<SelectedNeighborsContainerType> &final_graph_neighbors;
+    const std::unique_ptr<MyDistanceComputer> &graph_distance_computer;
+    const std::vector<int> *original_ids = nullptr;
 };
 
 class GraphSearcher {
   public:
     GraphSearcher(Storage storage, const config::SearchConfig &search_config, int max_degree, PerfStats &perf_stats);
 
-    void search_single_thread(int threadid, int queryid, const config::SearchConfig &search_config, int max_degree,
-                              const CandidateReranker &reranker, const SearchResultView &result, const int *original_ids);
-    void search_parallel(int queryid, const config::SearchConfig &search_config, int max_degree,
-                         const CandidateReranker &reranker, const SearchResultView &result, const int *original_ids);
+    void search_single_thread(int threadid, int queryid, const config::SearchConfig &search_config,
+                              const CandidateReranker &reranker, const SearchResultView &result);
+    void search_parallel(int queryid, const config::SearchConfig &search_config,
+                         const CandidateReranker &reranker, const SearchResultView &result);
     void flush_perf_stats();
 
   private:
@@ -85,21 +86,18 @@ class GraphSearcher {
         }
     };
 
-    static size_t padded_degree(int degree) { return (static_cast<size_t>(degree) + 3) / 4 * 4; }
-    config::SearchConfig checked_search_config(const config::SearchConfig &search_config, int max_degree, int topk) const;
+    config::SearchConfig checked_search_config(const config::SearchConfig &search_config, const SearchResultView &result) const;
 
     template <bool SharedVisit>
     std::vector<SingleNeighbor> &search_from_entries(int threadid, int queryid, const config::SearchConfig &config,
-                                                    int max_degree, int entry_begin);
+                                                    int entry_begin);
     void merge_worker_candidates(int workers, int refine_max);
     void rerank_serial(int threadid, int queryid, std::vector<SingleNeighbor> &candidates, int fp32_limit,
-                       const CandidateReranker &reranker, const SearchResultView &result, const int *original_ids);
-#ifdef INTERNAL_CLOCK_TEST
-    void record_refinement_time(int threadid, float elapsed_ms);
-#endif
+                       const CandidateReranker &reranker, const SearchResultView &result);
 
     Storage storage_;
     const uint32_t code_stride_;
+    const size_t padded_max_degree_;
     PerfStats &perf_stats_;
     std::vector<ThreadScratch> scratch_;
     std::unique_ptr<SharedVisitedSet> shared_visited_;

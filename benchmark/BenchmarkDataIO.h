@@ -9,6 +9,8 @@
 #include <ios>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace benchmark {
@@ -28,114 +30,81 @@ inline string get_ext_lower(const string &path) {
     return ext;
 }
 
+namespace detail {
+
+template <class Value>
+struct VectorRecords {
+    vector<Value> values;
+    int rows = 0;
+    int width = 0;
+};
+
+template <class Stored, class Value>
+VectorRecords<Value> read_vector_records(ifstream &input, const string &path, const char *format) {
+    VectorRecords<Value> records;
+    input.read(reinterpret_cast<char *>(&records.width), sizeof(int));
+    if (!input || records.width <= 0) {
+        constexpr auto header = std::is_same_v<Value, int> ? "invalid ivecs header: " : "invalid vector file header: ";
+        throw runtime_error(header + path);
+    }
+    input.seekg(0, ios::end);
+    const auto file_size = static_cast<size_t>(input.tellg());
+    input.seekg(0, ios::beg);
+    const size_t payload_size = static_cast<size_t>(records.width) * sizeof(Stored);
+    const size_t record_size = sizeof(int) + payload_size;
+    if (file_size % record_size != 0)
+        throw runtime_error(string(format) + " file size is not aligned: " + path);
+
+    records.rows = static_cast<int>(file_size / record_size);
+    records.values.resize(static_cast<size_t>(records.rows) * records.width);
+    vector<Stored> buffer;
+    if constexpr (!std::is_same_v<Stored, Value>)
+        buffer.resize(records.width);
+    for (int i = 0; i < records.rows; ++i) {
+        int width = 0;
+        input.read(reinterpret_cast<char *>(&width), sizeof(int));
+        if (!input || width != records.width) {
+            constexpr auto field = std::is_same_v<Value, int> ? " width in: " : " dimension in: ";
+            throw runtime_error("inconsistent " + string(format) + field + path);
+        }
+
+        auto *row = records.values.data() + static_cast<size_t>(i) * records.width;
+        auto *payload = buffer.data();
+        if constexpr (std::is_same_v<Stored, Value>)
+            payload = row;
+        input.read(reinterpret_cast<char *>(payload), payload_size);
+        if (!input)
+            throw runtime_error("failed to read " + string(format) + " payload from: " + path);
+        if constexpr (!std::is_same_v<Stored, Value>)
+            std::copy_n(payload, records.width, row);
+    }
+    return records;
+}
+
+} // namespace detail
+
 inline DenseVectors load_dense_vectors(const string &path) {
     ifstream fin(path, ios::binary);
-    if (!fin) {
+    if (!fin)
         throw runtime_error("failed to open vector file: " + path);
-    }
 
     const string ext = get_ext_lower(path);
-    DenseVectors out;
-    int first_dim = 0;
-    fin.read(reinterpret_cast<char *>(&first_dim), sizeof(int));
-    if (!fin || first_dim <= 0) {
-        throw runtime_error("invalid vector file header: " + path);
-    }
-    fin.seekg(0, ios::end);
-    const size_t file_size = (size_t)fin.tellg();
-    fin.seekg(0, ios::beg);
-
-    if (ext == ".fvecs") {
-        const size_t record_size = sizeof(int) + sizeof(float) * (size_t)first_dim;
-        if (file_size % record_size != 0) {
-            throw runtime_error("fvecs file size is not aligned: " + path);
-        }
-        out.rows = (int)(file_size / record_size);
-        out.dim = first_dim;
-        out.values.resize((size_t)out.rows * out.dim);
-        for (int i = 0; i < out.rows; i++) {
-            int dim = 0;
-            fin.read(reinterpret_cast<char *>(&dim), sizeof(int));
-            if (!fin || dim != out.dim) {
-                throw runtime_error("inconsistent fvecs dimension in: " + path);
-            }
-            fin.read(reinterpret_cast<char *>(out.values.data() + (size_t)i * out.dim), sizeof(float) * out.dim);
-            if (!fin) {
-                throw runtime_error("failed to read fvecs payload from: " + path);
-            }
-        }
-        return out;
-    }
-
-    if (ext == ".bvecs") {
-        const size_t record_size = sizeof(int) + (size_t)first_dim;
-        if (file_size % record_size != 0) {
-            throw runtime_error("bvecs file size is not aligned: " + path);
-        }
-        out.rows = (int)(file_size / record_size);
-        out.dim = first_dim;
-        out.values.resize((size_t)out.rows * out.dim);
-        vector<unsigned char> buffer(out.dim);
-        for (int i = 0; i < out.rows; i++) {
-            int dim = 0;
-            fin.read(reinterpret_cast<char *>(&dim), sizeof(int));
-            if (!fin || dim != out.dim) {
-                throw runtime_error("inconsistent bvecs dimension in: " + path);
-            }
-            fin.read(reinterpret_cast<char *>(buffer.data()), out.dim);
-            if (!fin) {
-                throw runtime_error("failed to read bvecs payload from: " + path);
-            }
-            for (int j = 0; j < out.dim; j++) {
-                out.values[(size_t)i * out.dim + j] = (float)buffer[j];
-            }
-        }
-        return out;
-    }
-
-    throw runtime_error("unsupported dense vector format: " + path);
+    if (ext != ".fvecs" && ext != ".bvecs")
+        throw runtime_error("unsupported dense vector format: " + path);
+    auto records = ext == ".fvecs" ? detail::read_vector_records<float, float>(fin, path, "fvecs")
+                                  : detail::read_vector_records<unsigned char, float>(fin, path, "bvecs");
+    return {std::move(records.values), records.rows, records.width};
 }
 
 inline GroundTruth load_ground_truth(const string &path) {
     ifstream fin(path, ios::binary);
-    if (!fin) {
+    if (!fin)
         throw runtime_error("failed to open ground truth file: " + path);
-    }
-    const string ext = get_ext_lower(path);
-    if (ext != ".ivecs") {
+    if (get_ext_lower(path) != ".ivecs")
         throw runtime_error("unsupported ground truth format: " + path);
-    }
 
-    int first_dim = 0;
-    fin.read(reinterpret_cast<char *>(&first_dim), sizeof(int));
-    if (!fin || first_dim <= 0) {
-        throw runtime_error("invalid ivecs header: " + path);
-    }
-    fin.seekg(0, ios::end);
-    const size_t file_size = (size_t)fin.tellg();
-    fin.seekg(0, ios::beg);
-
-    const size_t record_size = sizeof(int) + sizeof(int) * (size_t)first_dim;
-    if (file_size % record_size != 0) {
-        throw runtime_error("ivecs file size is not aligned: " + path);
-    }
-
-    GroundTruth out;
-    out.rows = (int)(file_size / record_size);
-    out.width = first_dim;
-    out.ids.resize((size_t)out.rows * out.width);
-    for (int i = 0; i < out.rows; i++) {
-        int dim = 0;
-        fin.read(reinterpret_cast<char *>(&dim), sizeof(int));
-        if (!fin || dim != out.width) {
-            throw runtime_error("inconsistent ivecs width in: " + path);
-        }
-        fin.read(reinterpret_cast<char *>(out.ids.data() + (size_t)i * out.width), sizeof(int) * out.width);
-        if (!fin) {
-            throw runtime_error("failed to read ivecs payload from: " + path);
-        }
-    }
-    return out;
+    auto records = detail::read_vector_records<int, int>(fin, path, "ivecs");
+    return {std::move(records.values), records.rows, records.width};
 }
 
 inline bool try_pick_existing(const fs::path &root, const vector<string> &candidates, string &picked) {

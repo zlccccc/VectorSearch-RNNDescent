@@ -82,6 +82,46 @@ TEST(SolutionTest, BuildsSearchesAndResetsWithPcaAndCache) {
     }
 }
 
+TEST(SolutionTest, QuantizedShortlistIsNeededOnlyBelowTheCandidateBudget) {
+    constexpr int rows = 16, dimension = 5;
+    std::vector<float> base(rows * dimension);
+    for (int i = 0; i < rows; ++i)
+        base[i * dimension] = static_cast<float>(i);
+    const auto begin = base.begin() + 7 * dimension;
+    const std::vector<float> query(begin, begin + dimension);
+
+    Solution::WarmupConfig warmup;
+    warmup.topk = 0;
+    rnndescent::RNNDescent::BuildConfig build;
+    build.T1 = build.T2 = 1;
+    build.S = build.K0 = 8;
+    build.num_threads = 1;
+    rnndescent::RNNDescent::SearchConfig search;
+    search.num_initialize = search.search_L = search.refine_max = rows + 4;
+    search.rerank_quantization = rnndescent::QuantizedFormat::UInt4;
+    search.fp32_refine_max = rows;
+
+    Solution solution;
+    solution.build(dimension, base, warmup, build, search);
+    std::vector<int> ids;
+    solution.search(query, ids, 1);
+    EXPECT_EQ(ids, (std::vector<int>{7}));
+    EXPECT_EQ(solution.distance_buffer(), (std::vector<float>{0}));
+
+#ifndef RNNDESCENT_HAS_UINT4_KERNEL
+    const std::vector<float> larger_base((rows + 4) * dimension);
+    rnndescent::IndexRNNDescent index(dimension, false, build, search, {});
+    index.build(rnndescent::FloatMatrixView::from_vector(base, dimension));
+    index.reset();
+    EXPECT_THAT([&] { index.build(rnndescent::FloatMatrixView::from_vector(larger_base, dimension)); },
+                ThrowsMessage<std::invalid_argument>(HasSubstr("uint4 quantization requires")));
+
+    search.fp32_refine_max = rows - 1;
+    EXPECT_THAT([&] { solution.build(dimension, base, warmup, build, search); },
+                ThrowsMessage<std::invalid_argument>(HasSubstr("uint4 quantization requires")));
+#endif
+}
+
 TEST(SolutionTest, ReorderedQueryBatchReturnsResultsInInputOrder) {
     constexpr int rows = 64, dimension = 17, query_count = 32, topk = 5;
     std::mt19937 rng(57);

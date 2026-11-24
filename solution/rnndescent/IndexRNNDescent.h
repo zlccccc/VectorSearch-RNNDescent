@@ -19,10 +19,10 @@ namespace rnndescent {
 struct IndexRNNDescent {
     using PCAConfig = PCAProjection::Config;
 
-    explicit IndexRNNDescent(int d = 0) : verbose(false), input_dimension_(d) {}
-
-    IndexRNNDescent(int d, bool verbose, const RNNDescent::BuildConfig &build_config, const RNNDescent::SearchConfig &search_config, const PCAConfig &pca_config)
-        : verbose(verbose), input_dimension_(d), build_config(build_config), search_config(search_config), pca_config(pca_config) {}
+    IndexRNNDescent(int d, bool verbose, const RNNDescent::BuildConfig &build_config,
+                    const RNNDescent::SearchConfig &search_config, const PCAConfig &pca_config)
+        : verbose(verbose), input_dimension_(d), build_config(build_config),
+          search_config(config::sanitize_search_config(search_config)), pca_config(pca_config) {}
 
     ~IndexRNNDescent() { reset(); }
 
@@ -30,7 +30,7 @@ struct IndexRNNDescent {
 
   private:
     bool verbose;
-    int input_dimension_ = 0;
+    int input_dimension_;
     std::unique_ptr<CandidateReranker> reranker;
     std::unique_ptr<RNNDescent> rnndescent;
     RNNDescent::BuildConfig build_config;
@@ -46,10 +46,7 @@ struct IndexRNNDescent {
         RNNDESCENT_ASSERT_MSG(base.dimension() == dimension(), "add data dimension does not match index dimension");
         const int n = base.row_count();
 
-        build_config = RNNDescent::sanitize_build_config(build_config);
-        search_config = RNNDescent::sanitize_search_config(search_config);
-        const auto graph_search_config = RNNDescent::sanitize_search_config(search_config, 1, n);
-        const int candidate_count = graph_search_config.refine_max;
+        const int candidate_count = config::sanitize_search_config(search_config, 1, n).refine_max;
         SelectedDistanceComputerFactory::validate_quantization(search_config.graph_quantization);
         if (search_config.rerank_quantization && search_config.fp32_refine_max > 0 &&
             search_config.fp32_refine_max < candidate_count)
@@ -78,8 +75,9 @@ struct IndexRNNDescent {
         prevtime = nowtime;
         Logger::info(verbose, "RNN Descent build done in %f ms\n", process_time);
 
-        reranker = std::make_unique<CandidateReranker>(base, rnndescent->graph_distance_computer->dimension(), candidate_count,
-                                                       search_config, rnndescent->search_from_ids.data());
+        const int graph_dimension = pca ? pca->output_dimension() : base.dimension();
+        reranker = std::make_unique<CandidateReranker>(base, graph_dimension, candidate_count, search_config,
+                                                       rnndescent->search_from_ids.data());
     }
 
     void search(const FloatMatrixView &queries, const SearchResultView &result) {
@@ -107,30 +105,26 @@ struct IndexRNNDescent {
         Logger::info(verbose, "search: PCA Process done in %f ms/item\n", process_time / n);
 #endif
 
-        const auto ordered_queries = search_config.reorder_query_batch && pca
+        const auto ordered_queries = n > 1 && search_config.reorder_query_batch && pca
                                          ? pca->query_order(graph_queries)
                                          : std::vector<int>{};
-        const auto search_queries = [&](const auto &query_id_at) {
-            const auto search_query = [&](int worker, int position) {
-                const int id = query_id_at(position);
-                rnndescent->search_single_thread(worker, id, *reranker, search_config, build_config.K0, result.slice(id));
-            };
-            constexpr int min_parallel_queries = 16;
-            if (n >= min_parallel_queries) {
-#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
-                for (int i = 0; i < n; ++i)
-                    search_query(omp_get_thread_num(), i);
+        const int *const query_order = ordered_queries.empty() ? nullptr : ordered_queries.data();
+        if (n < 16) {
+            if (n == 1 && search_config.single_query_threads > 1) {
+                rnndescent->search_single_parallel(0, *reranker, search_config, result);
             } else {
-                for (int i = 0; i < n; ++i)
-                    search_query(0, i);
+                for (int i = 0; i < n; ++i) {
+                    const int id = query_order ? query_order[i] : i;
+                    rnndescent->search_single_thread(0, id, *reranker, search_config, result.slice(id));
+                }
             }
-        };
-        if (n == 1 && search_config.single_query_threads > 1)
-            rnndescent->search_single_parallel(0, *reranker, search_config, build_config.K0, result);
-        else if (ordered_queries.empty())
-            search_queries([](int i) { return i; });
-        else
-            search_queries([&](int i) { return ordered_queries[i]; });
+        } else {
+#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
+            for (int i = 0; i < n; ++i) {
+                const int id = query_order ? query_order[i] : i;
+                rnndescent->search_single_thread(omp_get_thread_num(), id, *reranker, search_config, result.slice(id));
+            }
+        }
 
 #ifdef INTERNAL_CLOCK_TEST
         nowtime = std::chrono::high_resolution_clock::now();

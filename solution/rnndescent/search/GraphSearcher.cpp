@@ -11,30 +11,33 @@ namespace rnndescent::search {
 GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search_config, int max_degree, PerfStats &perf_stats)
     : storage_(storage),
       code_stride_(storage.graph_distance_computer ? storage.graph_distance_computer->code_stride() : 0),
+      padded_max_degree_((static_cast<size_t>(max_degree) + 3) / 4 * 4),
       perf_stats_(perf_stats),
       scratch_(std::max(search_config.num_threads, std::min({search_config.single_query_threads,
                                                            config::SearchConfig::max_single_query_threads,
                                                            search_config.num_initialize / 4}))) {
+    RNNDESCENT_ASSERT_MSG(max_degree > 0, "search max_degree must be positive");
     const int beam_size = std::min(search_config.beam_size, search_config.search_L);
-    const size_t beam_capacity = padded_degree(max_degree) * beam_size;
+    const size_t beam_capacity = padded_max_degree_ * beam_size;
     for (auto &scratch : scratch_) {
         scratch.candidate_ids.initialize(storage_.final_graph_neighbors.size());
         scratch.reserve(search_config.num_initialize, beam_size, beam_capacity);
     }
 }
 
-void GraphSearcher::search_single_thread(int threadid, int queryid, const config::SearchConfig &search_config, int max_degree,
-                                         const CandidateReranker &reranker, const SearchResultView &result, const int *original_ids) {
-    const auto safe_config = checked_search_config(search_config, max_degree, result.topk());
+void GraphSearcher::search_single_thread(int threadid, int queryid, const config::SearchConfig &search_config,
+                                         const CandidateReranker &reranker, const SearchResultView &result) {
+    const auto safe_config = checked_search_config(search_config, result);
     if (!(0 <= threadid && threadid < safe_config.num_threads && static_cast<size_t>(threadid) < scratch_.size()))
         throw std::runtime_error("thread id out of range");
-    auto &candidates = search_from_entries<false>(threadid, queryid, safe_config, max_degree, 0);
-    rerank_serial(threadid, queryid, candidates, safe_config.fp32_refine_max, reranker, result, original_ids);
+    auto &candidates = search_from_entries<false>(threadid, queryid, safe_config, 0);
+    rerank_serial(threadid, queryid, candidates, safe_config.fp32_refine_max, reranker, result);
 }
 
-config::SearchConfig GraphSearcher::checked_search_config(const config::SearchConfig &search_config, int max_degree, int topk) const {
-    RNNDESCENT_ASSERT_MSG(max_degree > 0, "search max_degree must be positive");
-    RNNDESCENT_ASSERT_MSG(topk > 0, "search topk must be positive");
+config::SearchConfig GraphSearcher::checked_search_config(const config::SearchConfig &search_config,
+                                                          const SearchResultView &result) const {
+    result.validate();
+    const int topk = result.topk();
     const int available_points = static_cast<int>(storage_.final_graph_neighbors.size());
     if (available_points <= 0)
         throw std::runtime_error("search entry points are not initialized");
@@ -49,16 +52,16 @@ config::SearchConfig GraphSearcher::checked_search_config(const config::SearchCo
     return safe_config;
 }
 
-void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &search_config, int max_degree,
-                                    const CandidateReranker &reranker, const SearchResultView &result, const int *original_ids) {
+void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &search_config,
+                                    const CandidateReranker &reranker, const SearchResultView &result) {
     const int topk = result.topk();
-    const auto safe_config = checked_search_config(search_config, max_degree, topk);
+    const auto safe_config = checked_search_config(search_config, result);
     const int groups = safe_config.num_initialize / 4;
     const int groups_per_topk = (topk - 1) / 4 + 1;
     const int workers = std::min({safe_config.single_query_threads, static_cast<int>(scratch_.size()), groups / groups_per_topk});
     if (workers <= 1) {
-        auto &candidates = search_from_entries<false>(0, queryid, safe_config, max_degree, 0);
-        rerank_serial(0, queryid, candidates, safe_config.fp32_refine_max, reranker, result, original_ids);
+        auto &candidates = search_from_entries<false>(0, queryid, safe_config, 0);
+        rerank_serial(0, queryid, candidates, safe_config.fp32_refine_max, reranker, result);
         return;
     }
 
@@ -68,7 +71,7 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
 
     // Reserve for the largest shard in case OpenMP runs with fewer workers than requested.
     const int beam = std::min(safe_config.beam_size, safe_config.search_L);
-    const size_t beam_capacity = padded_degree(max_degree) * beam;
+    const size_t beam_capacity = padded_max_degree_ * beam;
     for (int worker = 0; worker < workers; ++worker)
         scratch_[worker].reserve(safe_config.num_initialize, beam, beam_capacity);
     merged_candidates_.reserve(safe_config.refine_max);
@@ -78,6 +81,7 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
 
     int active_workers = 1;
     size_t fp32_count = 0;
+    const int *const row_order = storage_.original_ids ? storage_.original_ids->data() : nullptr;
 #ifdef INTERNAL_CLOCK_TEST
     std::chrono::steady_clock::time_point rerank_start;
 #endif
@@ -85,8 +89,6 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
     {
         const int worker = omp_get_thread_num();
         const int team_size = omp_get_num_threads();
-        if (worker == 0)
-            active_workers = team_size;
         // Give each worker a disjoint entry range made up of whole four-way scoring groups.
         const int groups_per_worker = groups / team_size;
         const int remainder = groups % team_size;
@@ -97,39 +99,44 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
         local_config.search_L = std::clamp(local_width, topk, local_config.num_initialize);
         // A worker can supply most of the global refinement pool when its entries are close to the query.
         local_config.refine_max = std::min(safe_config.refine_max, local_config.num_initialize);
-        search_from_entries<true>(worker, queryid, local_config, max_degree, first_entry);
+        search_from_entries<true>(worker, queryid, local_config, first_entry);
         if (team_size > 1) {
+            // The merge reads every worker's candidate pool.
 #pragma omp barrier
             if (worker == 0) {
+                active_workers = team_size;
                 merge_worker_candidates(team_size, safe_config.refine_max);
 #ifdef INTERNAL_CLOCK_TEST
                 rerank_start = std::chrono::steady_clock::now();
 #endif
                 fp32_count = reranker.prepare_shortlist(merged_candidates_, safe_config.fp32_refine_max, topk);
             }
+            // Workers need the merged pool and FP32 limit before scoring it.
 #pragma omp barrier
-            reranker.score_for_rerank(queryid, merged_candidates_, fp32_count, original_ids, worker, team_size);
+            reranker.score_for_rerank(queryid, merged_candidates_, fp32_count, row_order, worker, team_size);
         }
     }
     if (active_workers == 1) {
-        rerank_serial(0, queryid, scratch_.front().retset, safe_config.fp32_refine_max, reranker, result, original_ids);
+        rerank_serial(0, queryid, scratch_.front().retset, safe_config.fp32_refine_max, reranker, result);
         return;
     }
     CandidateReranker::write_topk(merged_candidates_, result);
 #ifdef INTERNAL_CLOCK_TEST
-    record_refinement_time(0, std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - rerank_start).count());
+    scratch_.front().perf_stats.recalculate_time +=
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - rerank_start).count();
 #endif
 }
 
 void GraphSearcher::rerank_serial([[maybe_unused]] int threadid, int queryid, std::vector<SingleNeighbor> &candidates,
-                                  int fp32_limit, const CandidateReranker &reranker, const SearchResultView &result,
-                                  const int *original_ids) {
+                                  int fp32_limit, const CandidateReranker &reranker, const SearchResultView &result) {
 #ifdef INTERNAL_CLOCK_TEST
     const auto start = std::chrono::steady_clock::now();
 #endif
-    reranker.rerank(queryid, candidates, fp32_limit, result, original_ids);
+    const int *const row_order = storage_.original_ids ? storage_.original_ids->data() : nullptr;
+    reranker.rerank(queryid, candidates, fp32_limit, result, row_order);
 #ifdef INTERNAL_CLOCK_TEST
-    record_refinement_time(threadid, std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count());
+    scratch_[threadid].perf_stats.recalculate_time +=
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
 #endif
 }
 
@@ -154,7 +161,7 @@ void GraphSearcher::merge_worker_candidates(int workers, int refine_max) {
 
 template <bool SharedVisit>
 std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, int queryid, const config::SearchConfig &search_config,
-                                                                int max_degree, int entry_begin) {
+                                                                int entry_begin) {
         const int search_L = search_config.search_L;
         const int beam_size = std::min(search_config.beam_size, search_L);
         const int num_initialize = search_config.num_initialize;
@@ -171,7 +178,7 @@ std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, in
         auto &usefulset = scratch.usefulset;
         auto &candidate_ids = scratch.candidate_ids;
         retset.resize(num_initialize);
-        const size_t beam_capacity = padded_degree(max_degree) * beam_size;
+        const size_t beam_capacity = padded_max_degree_ * beam_size;
         usefulset.resize(beam_capacity);
         scratch.scores.resize(beam_capacity);
         scratch.masks.resize(detail::score_mask_count(beam_capacity));
@@ -181,7 +188,7 @@ std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, in
         auto *const neighbor_spans = scratch.spans.data();
         for (int i = 0; i < num_initialize; ++i)
             retset[i].id = entry_begin + i;
-        distance.score_candidates(queryid, retset);
+        distance.score_candidates(queryid, retset.data(), retset.size());
 
         std::nth_element(retset.begin(), retset.begin() + pool_size, retset.end());
         // Keep a sorted tail for reranking when refine_max exceeds the expansion width.
@@ -336,12 +343,6 @@ std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, in
 #endif
         return retset;
     }
-
-#ifdef INTERNAL_CLOCK_TEST
-void GraphSearcher::record_refinement_time(int threadid, float elapsed_ms) {
-    scratch_[threadid].perf_stats.recalculate_time += elapsed_ms;
-}
-#endif
 
 void GraphSearcher::flush_perf_stats() {
 #ifdef INTERNAL_CLOCK_TEST

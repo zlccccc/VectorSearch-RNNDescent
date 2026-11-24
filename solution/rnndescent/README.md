@@ -19,6 +19,6 @@
 
 ## 兼容边界
 
-`RNNDescent::BuildConfig`、`SearchConfig`、`KNNGraph`、`final_graph_neighbors`、`graph_distance_computer` 和 `search_from_ids` 保持现有访问方式。单线程搜索入口为 `search_single_thread`。模块之间通过引用传递图存储和距离计算器，搜索热循环不引入虚函数或额外拷贝。
+`RNNDescent::BuildConfig`、`SearchConfig`、`KNNGraph`、`final_graph_neighbors`、`graph_distance_computer` 和 `search_from_ids` 保持现有访问方式。`search_single_thread` 和 `search_single_parallel` 使用建图时绑定的邻接度上限和原始 ID 映射。图存储和距离计算器通过引用交给搜索器。
 
 量化和平台 SIMD 实现在 [`discomputer/README.md`](discomputer/README.md)。整体数据流和内存组成见 [`docs/architecture.md`](../../docs/architecture.md)，构建与测试命令见 [`docs/development.md`](../../docs/development.md)。

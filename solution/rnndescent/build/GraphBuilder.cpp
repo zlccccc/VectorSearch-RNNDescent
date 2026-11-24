@@ -15,21 +15,21 @@ namespace rnndescent {
 GraphBuilder::GraphBuilder(const FloatMatrixView &data_view, bool verbose, const config::BuildConfig &build_config)
     : data_view_(data_view), verbose_(verbose), build_config_(build_config) {}
 
-static void sample_unique_ids(std::mt19937 &rng, std::vector<int> &addr, int n) {
-    const int size = static_cast<int>(addr.size());
+void detail::sample_unique_ids(std::mt19937 &rng, std::vector<int> &ids, int row_count) {
+    const int size = static_cast<int>(ids.size());
     if (size == 0)
         return;
     std::unordered_map<int, int> swapped;
-    swapped.reserve(size * 2);
+    swapped.reserve(ids.size() * 2);
     for (int i = 0; i < size; ++i) {
-        std::uniform_int_distribution<int> distribution(i, n - 1);
+        std::uniform_int_distribution<int> distribution(i, row_count - 1);
         const int j = distribution(rng);
         const auto it_i = swapped.find(i);
         const int value_i = it_i == swapped.end() ? i : it_i->second;
         const auto it_j = swapped.find(j);
         const int value_j = it_j == swapped.end() ? j : it_j->second;
         swapped[j] = value_i;
-        addr[i] = value_j;
+        ids[i] = value_j;
     }
 }
 
@@ -45,7 +45,7 @@ void GraphBuilder::init_graph(KNNGraph &graph, MyDistanceComputer &qdis) {
         for (int i = 0; i < n; ++i) {
             auto &neighbors = graph[i];
             neighbors.reserve(build_config_.S);
-            sample_unique_ids(rng, sampled_ids, n);
+            detail::sample_unique_ids(rng, sampled_ids, n);
             for (int id : sampled_ids) {
                 if (id == i)
                     continue;

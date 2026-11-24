@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <random>
 #include <vector>
 
 namespace rnndescent {
@@ -41,6 +42,9 @@ struct GraphBuildResult {
 };
 
 namespace detail {
+
+// Fill sampling slots with unique row IDs without materializing the full permutation.
+void sample_unique_ids(std::mt19937 &rng, std::vector<int> &ids, int row_count);
 
 inline void sort_and_merge_neighbors(std::vector<XNeighbor> &neighbors) {
     std::sort(neighbors.begin(), neighbors.end());

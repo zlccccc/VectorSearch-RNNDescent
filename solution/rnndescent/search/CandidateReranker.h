@@ -32,8 +32,6 @@ class CandidateReranker {
     static void write_topk(std::vector<SingleNeighbor> &candidates, const SearchResultView &result);
 
   private:
-    static void select_fp32_candidates(std::vector<SingleNeighbor> &candidates, size_t fp32_count);
-
     std::unique_ptr<MyDistanceComputer> fp32_;
     std::unique_ptr<MyDistanceComputer> quantized_;
     bool shortlist_enabled_ = true;

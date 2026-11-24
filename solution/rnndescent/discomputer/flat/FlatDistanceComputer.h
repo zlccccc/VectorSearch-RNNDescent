@@ -55,9 +55,13 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
         if constexpr (uses_fp32_rows) {
             query = input;
             query_norms.resize(count);
-#pragma omp parallel for if (count > 1)
-            for (int i = 0; i < count; ++i)
-                query_norms[i] = Kernel::query_norm(input + i * d, d);
+            if (count == 1) {
+                query_norms[0] = Kernel::query_norm(input, d);
+            } else if (count > 1) {
+#pragma omp parallel for
+                for (int i = 0; i < count; ++i)
+                    query_norms[i] = Kernel::query_norm(input + i * d, d);
+            }
         } else {
             encode_rows(input, count, query, query_norms);
         }
@@ -112,13 +116,19 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
     void encode_rows(const float *input, size_t count, std::vector<Code> &rows, std::vector<Dot> &norms) {
         rows.resize(count * d);
         norms.resize(count);
-#pragma omp parallel for if (count > 1)
-        for (size_t i = 0; i < count; ++i) {
+        const auto encode_row = [&](size_t i) {
             const auto *source = input + i * d;
             auto *row = rows.data() + i * d;
             for (size_t k = 0; k < d; ++k)
                 row[k] = kernel.encode(source[k]);
             norms[i] = Kernel::dot(row, row, d);
+        };
+        if (count == 1) {
+            encode_row(0);
+        } else if (count > 1) {
+#pragma omp parallel for
+            for (size_t i = 0; i < count; ++i)
+                encode_row(i);
         }
     }
 

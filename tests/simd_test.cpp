@@ -59,7 +59,7 @@ float quantized_l2(const Code *a, const Code *b, int dim) {
 
 std::array<float, 4> batch(rnndescent::MyDistanceComputer &computer, int q, const int *ids) {
     std::vector<rnndescent::SingleNeighbor> candidates{{ids[0], 0}, {ids[1], 0}, {ids[2], 0}, {ids[3], 0}};
-    computer.score_candidates(q, candidates);
+    computer.score_candidates(q, candidates.data(), candidates.size());
     return {candidates[0].distance, candidates[1].distance, candidates[2].distance, candidates[3].distance};
 }
 

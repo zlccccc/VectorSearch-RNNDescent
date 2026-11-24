@@ -23,11 +23,6 @@ struct RNNDescent {
     using KNNGraph = ::rnndescent::KNNGraph;
     using PerfStats = search::PerfStats;
 
-    static BuildConfig sanitize_build_config(BuildConfig config) { return config::sanitize_build_config(config); }
-    static SearchConfig sanitize_search_config(SearchConfig config, int topk = 1, int max_points = 0) {
-        return config::sanitize_search_config(config, topk, max_points);
-    }
-
     RNNDescent(const FloatMatrixView &data_view, bool verbose, const BuildConfig &build_config,
                const SearchConfig &search_config) {
         build(data_view, verbose, build_config, search_config);
@@ -39,8 +34,8 @@ struct RNNDescent {
                const SearchConfig &search_config) {
         data_view.validate("build data");
         SelectedDistanceComputerFactory::validate_quantization(search_config.graph_quantization);
-        const BuildConfig safe_build_config = sanitize_build_config(build_config);
-        const SearchConfig safe_search_config = sanitize_search_config(search_config, 1, data_view.row_count());
+        const BuildConfig safe_build_config = config::sanitize_build_config(build_config);
+        const SearchConfig safe_search_config = config::sanitize_search_config(search_config, 1, data_view.row_count());
         reset();
 
         if (verbose)
@@ -58,20 +53,21 @@ struct RNNDescent {
         GraphReorder::materialize(data_view, verbose, safe_build_config, safe_search_config, std::move(graph_result),
                                   reorder_storage);
 
-        search::Storage search_storage{final_graph_neighbors, graph_distance_computer};
+        search::Storage search_storage{final_graph_neighbors, graph_distance_computer, &search_from_ids};
         searcher_ = std::make_unique<search::GraphSearcher>(search_storage, safe_search_config, safe_build_config.K0,
                                                               perf_stats);
     }
 
     void search_single_thread(int threadid, int queryid, const CandidateReranker &reranker,
-                              const SearchConfig &search_config, int max_degree, const SearchResultView &result) {
-        checked_searcher(result).search_single_thread(threadid, queryid, search_config, max_degree, reranker, result,
-                                                      search_from_ids.data());
+                              const SearchConfig &search_config, const SearchResultView &result) {
+        RNNDESCENT_ASSERT_MSG(searcher_ != nullptr, "The index is not build yet.");
+        searcher_->search_single_thread(threadid, queryid, search_config, reranker, result);
     }
 
     void search_single_parallel(int queryid, const CandidateReranker &reranker,
-                                const SearchConfig &search_config, int max_degree, const SearchResultView &result) {
-        checked_searcher(result).search_parallel(queryid, search_config, max_degree, reranker, result, search_from_ids.data());
+                                const SearchConfig &search_config, const SearchResultView &result) {
+        RNNDESCENT_ASSERT_MSG(searcher_ != nullptr, "The index is not build yet.");
+        searcher_->search_parallel(queryid, search_config, reranker, result);
     }
 
     void flush_perf_stats() {
@@ -97,12 +93,6 @@ struct RNNDescent {
     PerfStats perf_stats;
 
   private:
-    search::GraphSearcher &checked_searcher(const SearchResultView &result) {
-        RNNDESCENT_ASSERT_MSG(searcher_ != nullptr, "The index is not build yet.");
-        result.validate();
-        return *searcher_;
-    }
-
     std::unique_ptr<search::GraphSearcher> searcher_;
 };
 

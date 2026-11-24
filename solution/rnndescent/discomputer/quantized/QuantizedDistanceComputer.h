@@ -8,7 +8,6 @@
 #include "QuantizedKernelBase.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -143,20 +142,26 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
     void set_query(const float *data, int count) override {
         queries_.resize(static_cast<size_t>(count) * query_stride_);
         query_params_.resize(count);
-#pragma omp parallel for if (count > 1)
-        for (int i = 0; i < count; ++i) {
-            const auto *source = data + static_cast<size_t>(i) * d_;
-            query_params_[i] = encoding_.encode_query(source, queries_.data() + static_cast<size_t>(i) * query_stride_, d_);
+        if (count == 1) {
+            query_params_[0] = encoding_.encode_query(data, queries_.data(), d_);
+        } else if (count > 1) {
+#pragma omp parallel for
+            for (int i = 0; i < count; ++i) {
+                const auto *source = data + static_cast<size_t>(i) * d_;
+                query_params_[i] = encoding_.encode_query(source, queries_.data() + static_cast<size_t>(i) * query_stride_, d_);
+            }
         }
     }
 
     float operator()(int q, int i) override {
-        return Encoding::squared_distance(base_params_[i], query_params_[q], dot(query(q), row(i)));
+        const auto product = Kernel::dot(query(q), row(i), stride_);
+        return Encoding::squared_distance(base_params_[i], query_params_[q], product);
     }
 
     float symmetric_dis(int i, int j) override {
         if constexpr (Encoding::same_base_query_codes) {
-            return Encoding::squared_distance(base_params_[i], base_params_[j], dot(row(i), row(j)));
+            const auto product = Kernel::dot(row(i), row(j), stride_);
+            return Encoding::squared_distance(base_params_[i], base_params_[j], product);
         } else {
             return Encoding::symmetric_distance(row(i), row(j), d_, base_params_[i], base_params_[j]);
         }
@@ -167,7 +172,7 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
         const auto &params = query_params_[q];
         for (int i = 0; i < count; i += 4) {
             const auto *group = ids + i;
-            const auto products = dot4(code, group[0], group[1], group[2], group[3]);
+            const auto products = Kernel::dot4(code, row(group[0]), row(group[1]), row(group[2]), row(group[3]), stride_);
             for (int j = 0; j < 4; ++j)
                 scores[i + j] = Encoding::squared_distance(base_params_[group[j]], params, products[j]);
         }
@@ -179,13 +184,14 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
         size_t i = 0;
         for (; i + 4 <= count; i += 4) {
             auto *group = candidates + i;
-            const auto products = dot4(code, group[0].id, group[1].id, group[2].id, group[3].id);
+            const auto products = Kernel::dot4(code, row(group[0].id), row(group[1].id),
+                                               row(group[2].id), row(group[3].id), stride_);
             for (int j = 0; j < 4; ++j)
                 group[j].distance = Encoding::ranking_score(base_params_[group[j].id], params, products[j]);
         }
         for (; i < count; ++i) {
             auto &candidate = candidates[i];
-            const auto product = dot(code, row(candidate.id));
+            const auto product = Kernel::dot(code, row(candidate.id), stride_);
             candidate.distance = Encoding::ranking_score(base_params_[candidate.id], params, product);
         }
     }
@@ -237,14 +243,6 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
 
     const Code *row(int i) const { return matrix_.data() + static_cast<size_t>(i) * stride_; }
     const Code *query(int i) const { return queries_.data() + static_cast<size_t>(i) * query_stride_; }
-
-    int dot(const Code *q, const Code *x) const {
-        return Kernel::dot(q, x, stride_);
-    }
-
-    std::array<int, 4> dot4(const Code *q, int a, int b, int c, int d) const {
-        return Kernel::dot4(q, row(a), row(b), row(c), row(d), stride_);
-    }
 };
 
 template <class Kernel>

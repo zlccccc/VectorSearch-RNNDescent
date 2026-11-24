@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <numeric>
 #include <random>
-#include <unordered_map>
 
 namespace rnndescent {
 
@@ -19,18 +18,7 @@ static std::vector<int> reorder_by_bfs(const std::vector<int> &edges, const std:
     search_from_ids.resize(entry_count);
     if (build_config.random_init) {
         std::mt19937 rng(build_config.random_seed);
-        std::unordered_map<int, int> swapped;
-        swapped.reserve(entry_count * 2);
-        for (int i = 0; i < entry_count; ++i) {
-            std::uniform_int_distribution<int> distribution(i, n - 1);
-            const int j = distribution(rng);
-            const auto it_i = swapped.find(i);
-            const int value_i = it_i == swapped.end() ? i : it_i->second;
-            const auto it_j = swapped.find(j);
-            const int value_j = it_j == swapped.end() ? j : it_j->second;
-            swapped[j] = value_i;
-            search_from_ids[i] = value_j;
-        }
+        detail::sample_unique_ids(rng, search_from_ids, n);
     } else {
         std::iota(search_from_ids.begin(), search_from_ids.end(), 0);
     }

@@ -8,10 +8,7 @@ namespace rnndescent {
 
 struct FloatMatrixView {
   public:
-    FloatMatrixView() = default;
     FloatMatrixView(const float *data, int rows, int dim) : data_(data), rows(rows), dim(dim) {}
-
-    static FloatMatrixView from_buffer(const float *data, int rows, int dim) { return FloatMatrixView(data, rows, dim); }
 
     static FloatMatrixView from_vector(const std::vector<float> &data, int dim) {
         RNNDESCENT_ASSERT_MSG(dim > 0, "matrix view requires positive dimension");
@@ -33,17 +30,14 @@ struct FloatMatrixView {
     const float *row_ptr(int row) const { return data_ + static_cast<size_t>(row) * dim; }
 
   private:
-    const float *data_ = nullptr;
-    int rows = 0;
-    int dim = 0;
+    const float *data_;
+    int rows;
+    int dim;
 };
 
 struct MutableFloatMatrixView {
   public:
-    MutableFloatMatrixView() = default;
     MutableFloatMatrixView(float *data, int rows, int dim) : data_(data), rows(rows), dim(dim) {}
-
-    static MutableFloatMatrixView from_buffer(float *data, int rows, int dim) { return MutableFloatMatrixView(data, rows, dim); }
 
     static MutableFloatMatrixView from_vector(std::vector<float> &data, int dim) {
         RNNDESCENT_ASSERT_MSG(dim > 0, "mutable matrix view requires positive dimension");
@@ -65,17 +59,14 @@ struct MutableFloatMatrixView {
     float *row_ptr(int row) const { return data_ + static_cast<size_t>(row) * dim; }
 
   private:
-    float *data_ = nullptr;
-    int rows = 0;
-    int dim = 0;
+    float *data_;
+    int rows;
+    int dim;
 };
 
 struct SearchResultView {
   public:
-    SearchResultView() = default;
     SearchResultView(int *indices, float *distances, int topk) : indices_(indices), distances_(distances), topk_(topk) {}
-
-    static SearchResultView from_buffers(int *indices, float *distances, int topk) { return SearchResultView(indices, distances, topk); }
 
     static SearchResultView from_vectors(std::vector<int> &indices, std::vector<float> &distances, int topk) {
         RNNDESCENT_ASSERT_MSG(topk > 0, "search topk must be positive");
@@ -99,9 +90,9 @@ struct SearchResultView {
     }
 
   private:
-    int *indices_ = nullptr;
-    float *distances_ = nullptr;
-    int topk_ = 0;
+    int *indices_;
+    float *distances_;
+    int topk_;
 };
 
 } // namespace rnndescent

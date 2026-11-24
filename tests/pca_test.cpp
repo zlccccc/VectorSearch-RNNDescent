@@ -37,7 +37,7 @@ TEST(PCAProjectionTest, ProjectsOntoTheLeadingCenteredAxis) {
         for (int i = 0; i < batch.row_count(); ++i)
             EXPECT_FLOAT_EQ(batch.row_ptr(i)[0], projected[i]);
 
-        const auto smaller_batch = pca.project_queries(rnndescent::FloatMatrixView::from_buffer(query.data() + dimension, 1, dimension));
+        const auto smaller_batch = pca.project_queries({query.data() + dimension, 1, dimension});
         ASSERT_EQ(smaller_batch.row_count(), 1);
         EXPECT_FLOAT_EQ(smaller_batch.row_ptr(0)[0], projected[1]);
     }
@@ -50,7 +50,7 @@ TEST(PCAProjectionTest, OrdersTwoProjectedQueries) {
     const std::vector<float> projected{2, 2, 2, 2, -1, -1, -1, -1};
     EXPECT_EQ(pca.query_order(rnndescent::FloatMatrixView::from_vector(projected, output_dim)),
               (std::vector<int>{1, 0}));
-    EXPECT_TRUE(pca.query_order(rnndescent::FloatMatrixView::from_buffer(projected.data(), 1, output_dim)).empty());
+    EXPECT_TRUE(pca.query_order({projected.data(), 1, output_dim}).empty());
 }
 
 TEST(PCAProjectionTest, SampledTrainingPreservesTheLeadingAxisAcrossBatches) {
@@ -94,7 +94,7 @@ TEST(PCAProjectionTest, HadamardMixesPcaAxesAndPreservesProjectedDistances) {
         std::vector<float> single(output_dim);
         const auto single_output = rnndescent::MutableFloatMatrixView::from_vector(single, output_dim);
         for (int row = 0; row < projected.row_count(); ++row) {
-            const auto query = rnndescent::FloatMatrixView::from_buffer(queries.data() + row * input_dim, 1, input_dim);
+            const rnndescent::FloatMatrixView query(queries.data() + row * input_dim, 1, input_dim);
             pca.apply(query, single_output);
             for (int i = 0; i < output_dim; ++i)
                 EXPECT_NEAR(single[i], projected.row_ptr(row)[i], 1e-5f);

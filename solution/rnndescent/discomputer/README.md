@@ -2,7 +2,7 @@
 
 共用接口由 [MyDistanceComputer.h](MyDistanceComputer.h) 定义。[PlatformSimdDistanceComputer.h](PlatformSimdDistanceComputer.h) 在编译期选择可用的 SIMD 内核，在创建索引时按阶段配置创建对应的 DistanceComputer。上层索引流程见 [算法与数据流](../../../docs/architecture.md)。
 
-入口和精排通过 `score_candidates` 批量写回候选分数，未缓存的邻接表通过 `score_neighbors` 写入连续的分数缓冲。各后端在批量循环中调用自己的四路点积内核。
+入口和精排通过 `score_candidates` 传入候选指针和数量，原地写回分数。未缓存的邻接表通过 `score_neighbors` 写入连续的分数缓冲。各后端在批量循环中调用自己的四路点积内核。
 
 | 位置 | 职责 |
 |---|---|

@@ -32,10 +32,6 @@ struct MyDistanceComputer {
             candidates[i].distance = (*this)(query_id, candidates[i].id);
     }
 
-    void score_candidates(int query_id, std::vector<SingleNeighbor> &candidates) {
-        score_candidates(query_id, candidates.data(), candidates.size());
-    }
-
     virtual int row_count() const {
         throw std::runtime_error("row_count is not implemented for this distance computer");
     }
