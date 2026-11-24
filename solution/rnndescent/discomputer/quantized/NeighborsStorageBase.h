@@ -91,8 +91,7 @@ template <typename CodeType, typename NormType, size_t CodeAlignment> class Neig
             }
 
             cache_budget_ = target_size - required_size;
-            if (cache_budget_ > 0)
-                detail::try_huge_pages(bytes_.data(), bytes_.size());
+            detail::try_huge_pages(bytes_.data(), bytes_.size());
 
             const long long cached_bytes = cache_enabled ? full_size - required_size : 0;
             const double cache_ratio = cached_bytes > 0 ? (100.0 * cache_budget_ / cached_bytes) : 0.0;
