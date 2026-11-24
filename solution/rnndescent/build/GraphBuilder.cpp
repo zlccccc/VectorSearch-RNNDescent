@@ -2,6 +2,7 @@
 
 #include "GraphPruning.h"
 #include "../common/Logger.h"
+#include "../discomputer/PlatformSimdDistanceComputer.h"
 
 #include <algorithm>
 #include <numeric>
@@ -11,11 +12,10 @@
 
 namespace rnndescent {
 
-GraphBuilder::GraphBuilder(const FloatMatrixView &data_view, bool verbose, const config::BuildConfig &build_config,
-                           std::vector<MutexWarpper> &node_locks)
-    : data_view_(data_view), verbose_(verbose), build_config_(build_config), node_locks_(node_locks) {}
+GraphBuilder::GraphBuilder(const FloatMatrixView &data_view, bool verbose, const config::BuildConfig &build_config)
+    : data_view_(data_view), verbose_(verbose), build_config_(build_config) {}
 
-void GraphBuilder::gen_random(std::mt19937 &rng, std::vector<int> &addr, int n) {
+static void sample_unique_ids(std::mt19937 &rng, std::vector<int> &addr, int n) {
     const int size = static_cast<int>(addr.size());
     if (size == 0)
         return;
@@ -35,18 +35,18 @@ void GraphBuilder::gen_random(std::mt19937 &rng, std::vector<int> &addr, int n) 
 
 void GraphBuilder::init_graph(KNNGraph &graph, MyDistanceComputer &qdis) {
     const int n = data_view_.row_count();
-    node_locks_.resize(n);
+    node_locks_ = std::make_unique<std::mutex[]>(n);
     graph.resize(n);
 #pragma omp parallel num_threads(build_config_.num_threads)
     {
         std::mt19937 rng(build_config_.random_seed * 7741 + omp_get_thread_num());
+        std::vector<int> sampled_ids(build_config_.S);
 #pragma omp for
         for (int i = 0; i < n; ++i) {
             auto &neighbors = graph[i];
             neighbors.reserve(build_config_.S);
-            std::vector<int> tmp(build_config_.S);
-            gen_random(rng, tmp, n);
-            for (int id : tmp) {
+            sample_unique_ids(rng, sampled_ids, n);
+            for (int id : sampled_ids) {
                 if (id == i)
                     continue;
                 neighbors.emplace_back(id, qdis.symmetric_dis(i, id), true);
@@ -198,7 +198,7 @@ GraphBuildResult GraphBuilder::build() {
     auto qdis = SelectedDistanceComputerFactory::create_build_graph(data_view_.data_ptr(), data_view_.row_count(), data_view_.dimension());
     KNNGraph graph;
     generate_graph(graph, *qdis);
-    std::vector<MutexWarpper>().swap(node_locks_);
+    node_locks_.reset();
 
     GraphBuildResult result;
     std::vector<size_t> &edge_offsets = result.edge_offsets;

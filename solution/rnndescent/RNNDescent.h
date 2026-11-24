@@ -2,7 +2,6 @@
 
 #include "build/GraphBuilder.h"
 #include "build/GraphConfig.h"
-#include "build/GraphPruning.h"
 #include "build/GraphReorder.h"
 #include "search/CandidateReranker.h"
 #include "search/GraphSearcher.h"
@@ -50,7 +49,7 @@ struct RNNDescent {
                          safe_build_config.S, safe_build_config.R, safe_build_config.T1, safe_build_config.T2,
                          data_view.row_count(), safe_search_config.num_threads);
 
-        GraphBuilder builder(data_view, verbose, safe_build_config, node_locks_);
+        GraphBuilder builder(data_view, verbose, safe_build_config);
         auto graph_result = builder.build();
 #if defined(__GLIBC__)
         malloc_trim(0);
@@ -92,7 +91,6 @@ struct RNNDescent {
         neighbor_pool_.reset();
         search_from_ids.clear();
         graph_distance_computer.reset();
-        node_locks_.clear();
         perf_stats.reset();
     }
 
@@ -104,7 +102,6 @@ struct RNNDescent {
 
   private:
     std::unique_ptr<search::GraphSearcher> searcher_;
-    std::vector<MutexWarpper> node_locks_;
 };
 
 } // namespace rnndescent

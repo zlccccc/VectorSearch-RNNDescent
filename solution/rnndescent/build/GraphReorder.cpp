@@ -11,9 +11,9 @@
 
 namespace rnndescent {
 
-std::vector<int> GraphReorder::reorder_by_bfs(const std::vector<int> &edges, const std::vector<size_t> &edge_offsets,
-                                              int entry_count, const config::BuildConfig &build_config, bool verbose,
-                                              std::vector<int> &search_from_ids) {
+static std::vector<int> reorder_by_bfs(const std::vector<int> &edges, const std::vector<size_t> &edge_offsets,
+                                       int entry_count, const config::BuildConfig &build_config, bool verbose,
+                                       std::vector<int> &search_from_ids) {
     const int n = static_cast<int>(edge_offsets.size() - 1);
     search_from_ids.reserve(n);
     search_from_ids.resize(entry_count);

@@ -1,16 +1,10 @@
 #pragma once
 
 #include <algorithm>
-#include <mutex>
+#include <cstddef>
 #include <vector>
 
 namespace rnndescent {
-
-struct MutexWarpper : std::mutex {
-    MutexWarpper() = default;
-    MutexWarpper(MutexWarpper const &) noexcept : std::mutex() {}
-    bool operator==(MutexWarpper const &other) noexcept { return this == &other; }
-};
 
 struct XNeighbor {
     int id_;
@@ -40,6 +34,11 @@ struct XNeighbor {
 };
 
 using KNNGraph = std::vector<std::vector<XNeighbor>>;
+
+struct GraphBuildResult {
+    std::vector<int> edges;
+    std::vector<std::size_t> edge_offsets;
+};
 
 namespace detail {
 

@@ -1,4 +1,5 @@
-#include "solution/rnndescent/RNNDescent.h"
+#include "solution/rnndescent/build/GraphPruning.h"
+#include "solution/rnndescent/build/GraphTypes.h"
 
 #include <array>
 #include <gtest/gtest.h>
@@ -35,7 +36,7 @@ TEST(GraphPruningTest, MergesEdgeTagsIndependentlyOfCandidateOrder) {
 }
 
 TEST(GraphPruningTest, ReplacesThreeHopRedundancyAndRetainsTheRoute) {
-    rnndescent::RNNDescent::KNNGraph graph(128);
+    rnndescent::KNNGraph graph(128);
     const auto set_row = [&](int node, std::initializer_list<int> ids) {
         float distance = 0;
         for (int id : ids)

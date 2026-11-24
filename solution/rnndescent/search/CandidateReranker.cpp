@@ -39,32 +39,30 @@ void CandidateReranker::set_queries(const FloatMatrixView &queries) {
 
 void CandidateReranker::rerank(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_limit,
                                const SearchResultView &result, const int *original_ids) const {
-    const int topk = result.topk();
-    const int fp32_count = std::max(fp32_limit, topk);
-    if (shortlist_enabled_ && fp32_limit > 0 && static_cast<size_t>(fp32_count) < candidates.size())
-        shortlist(query_id, candidates, fp32_count, original_ids);
-
-    if (original_ids) {
+    const auto map_ids = [&candidates](const int *row_order) {
         for (auto &candidate : candidates)
-            candidate.id = original_ids[candidate.id];
-    }
-    refine_fp32(query_id, candidates, result);
-}
+            candidate.id = row_order[candidate.id];
+    };
 
-void CandidateReranker::shortlist(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_count,
-                                  const int *&original_ids) const {
-    if (quantized_) {
-        if (original_ids && !graph_ordered_codes_) {
-            for (auto &candidate : candidates)
-                candidate.id = original_ids[candidate.id];
-            original_ids = nullptr;
+    const int fp32_count = std::max(fp32_limit, result.topk());
+    if (shortlist_enabled_ && fp32_limit > 0 && static_cast<size_t>(fp32_count) < candidates.size()) {
+        if (quantized_) {
+            // BFS-ordered codes keep graph IDs until the shortlist is selected.
+            if (original_ids && !graph_ordered_codes_) {
+                map_ids(original_ids);
+                original_ids = nullptr;
+            }
+            quantized_->score_candidates(query_id, candidates);
+        } else {
+            RNNDESCENT_ASSERT_MSG(reuse_graph_scores_, "shortlisting requires compatible original-dimensional scores");
         }
-        quantized_->score_candidates(query_id, candidates);
-    } else {
-        RNNDESCENT_ASSERT_MSG(reuse_graph_scores_, "shortlisting requires compatible original-dimensional scores");
+        std::nth_element(candidates.begin(), candidates.begin() + fp32_count, candidates.end());
+        candidates.resize(fp32_count);
     }
-    std::nth_element(candidates.begin(), candidates.begin() + fp32_count, candidates.end());
-    candidates.resize(fp32_count);
+
+    if (original_ids)
+        map_ids(original_ids);
+    refine_fp32(query_id, candidates, result);
 }
 
 void CandidateReranker::refine_fp32(int query_id, std::vector<SingleNeighbor> &candidates,

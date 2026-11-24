@@ -20,12 +20,11 @@ class CandidateReranker {
     void set_queries(const FloatMatrixView &queries);
     bool uses_graph_ordered_codes() const { return graph_ordered_codes_; }
 
-    // If original_ids is provided, candidates start in graph ID space and are mapped after shortlisting.
+    // original_ids maps graph IDs to original rows when the input candidates use graph IDs.
     void rerank(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_limit,
                 const SearchResultView &result, const int *original_ids = nullptr) const;
 
   private:
-    void shortlist(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_count, const int *&original_ids) const;
     void refine_fp32(int query_id, std::vector<SingleNeighbor> &candidates, const SearchResultView &result) const;
 
     std::unique_ptr<MyDistanceComputer> fp32_;

@@ -6,14 +6,14 @@
 |---|---|---|
 | 公共基础设施 | `common/` | 断言、日志、矩阵视图、输入校验和量化格式 |
 | 图类型与配置 | `build/GraphTypes.h`、`build/GraphConfig.h` | 邻居表示、图别名、建图和查询参数归一化 |
-| 图构建 | `build/GraphBuilder.h/.cpp` | 初始随机图、邻居更新、反向边、裁剪和补齐前的邻接表 |
+| 图构建 | `build/GraphBuilder.h/.cpp` | 初始随机图、邻居更新、反向边、裁剪和补齐后的扁平邻接表 |
 | 图重排 | `build/GraphReorder.h/.cpp` | BFS 编号、原始 ID 映射、量化底库和邻居缓存物化 |
 | 图搜索初排 | `search/GraphSearcher.h/.cpp` | 遍历图、合并并去重候选，返回按查图分数排列的 BFS ID |
 | 候选重排 | `search/CandidateReranker.h/.cpp` | 可选的原始维度量化粗排、原始 ID 映射与最终 FP32 精排 |
 
 ## 数据流
 
-建图阶段由 `GraphBuilder` 生成排序、去重和裁剪后的邻接表。`GraphReorder` 把邻接 ID 展平、补齐到四的倍数，再按 BFS 顺序建立图 ID 到原始行号的映射。量化底库和可选邻居缓存直接按这个顺序写入索引。
+`GraphBuilder` 对邻居排序、去重并裁剪，再将邻接 ID 补齐到四的倍数并展平。`GraphReorder` 按 BFS 顺序建立图 ID 到原始行号的映射。量化底库和可选邻居缓存直接按这个顺序写入索引。
 
 查询阶段由 `GraphSearcher` 为每个 OpenMP 线程复用候选池、分数缓冲、掩码缓冲和 `CandidateBitmap`。整轮邻居分数算完后，根据队尾 cutoff 生成掩码，只从邻接池读取过线的 ID。收集完本轮候选再去重、排序和合并。图候选缓冲按引用传给 `CandidateReranker`，它用独立配置的距离计算器做原始维度粗排。关闭粗排时，直接映射候选 ID 并计算 FP32 距离。编码选项见 [参数配置](../../docs/configuration.md)。
 
