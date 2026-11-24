@@ -119,6 +119,23 @@ TEST(PCAProjectionTest, HadamardMixesPcaAxesAndPreservesProjectedDistances) {
         EXPECT_NEAR(squared_distance(0, 1), 1.0f, 1e-5f);
         EXPECT_NEAR(squared_distance(0, 2), 1.0f, 1e-5f);
         EXPECT_NEAR(squared_distance(1, 2), 2.0f, 1e-5f);
+
+        constexpr int batch_rows = 17;
+        queries.resize(batch_rows * input_dim, center);
+        for (int row = 4; row < batch_rows; ++row)
+            queries[row * input_dim + row % axes] += 0.75f;
+        const auto batch = rnndescent::FloatMatrixView::from_vector(queries, input_dim);
+        std::vector<float> blas_buffer;
+        const auto blas = pca.project(batch, blas_buffer);
+        for (int row = 0; row < projected.row_count(); ++row)
+            for (int i = 0; i < output_dim; ++i)
+                EXPECT_NEAR(blas.row_ptr(row)[i], projected.row_ptr(row)[i], 1e-5f);
+
+        const auto parallel = pca.project_queries(batch, 3);
+        ASSERT_EQ(parallel.row_count(), batch_rows);
+        for (int row = 0; row < parallel.row_count(); ++row)
+            for (int i = 0; i < output_dim; ++i)
+                EXPECT_NEAR(blas.row_ptr(row)[i], parallel.row_ptr(row)[i], 1e-5f);
     }
 }
 

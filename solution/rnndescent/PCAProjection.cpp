@@ -16,6 +16,8 @@ extern "C" void dsyev_(const char *job, const char *triangle, const blasint *n, 
 namespace rnndescent {
 namespace {
 
+constexpr int small_projection_rows = 16;
+
 int hadamard_block_size(int remaining) {
     int size = 1;
     while (size <= remaining / 2)
@@ -187,6 +189,14 @@ void PCAProjection::apply(const FloatMatrixView &input, const MutableFloatMatrix
     RNNDESCENT_ASSERT_MSG(input.dimension() == input_dimension_, "PCA input dimension mismatch");
     RNNDESCENT_ASSERT_MSG(output.dimension() == output_dimension_, "PCA output dimension mismatch");
 
+    // A small projection can reuse each query across four components without starting either thread pool.
+    constexpr size_t max_gemv_products = 2 * 1024 * 1024;
+    const int rows = input.row_count();
+    if (rows <= small_projection_rows && components_.size() <= max_gemv_products / rows) {
+        apply_simd(input, output, 1);
+        return;
+    }
+
     if (input.row_count() == 1) {
         auto *projected = output.data_ptr();
         std::copy(bias_.begin(), bias_.end(), projected);
@@ -203,6 +213,53 @@ void PCAProjection::apply(const FloatMatrixView &input, const MutableFloatMatrix
                 1.0f, output.data_ptr(), output_dimension_);
 }
 
+void PCAProjection::apply_simd(const FloatMatrixView &input, const MutableFloatMatrixView &output, int workers) const {
+    const size_t dimension = input_dimension_;
+    const int rows = input.row_count();
+    const auto apply_row = [&](int row) {
+        const auto *query = input.row_ptr(row);
+        auto *projected = output.row_ptr(row);
+        int i = 0;
+        for (; i + 4 <= output_dimension_; i += 4) {
+            const auto *component0 = components_.data() + i * dimension;
+            const auto *component1 = component0 + dimension;
+            const auto *component2 = component1 + dimension;
+            const auto *component3 = component2 + dimension;
+            float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
+#pragma omp simd reduction(+ : sum0, sum1, sum2, sum3)
+            for (size_t k = 0; k < dimension; ++k) {
+                const float value = query[k];
+                sum0 += value * component0[k];
+                sum1 += value * component1[k];
+                sum2 += value * component2[k];
+                sum3 += value * component3[k];
+            }
+            projected[i] = sum0 + bias_[i];
+            projected[i + 1] = sum1 + bias_[i + 1];
+            projected[i + 2] = sum2 + bias_[i + 2];
+            projected[i + 3] = sum3 + bias_[i + 3];
+        }
+        for (; i < output_dimension_; ++i) {
+            const auto *component = components_.data() + i * dimension;
+            float sum = 0.0f;
+#pragma omp simd reduction(+ : sum)
+            for (size_t k = 0; k < dimension; ++k)
+                sum += query[k] * component[k];
+            projected[i] = sum + bias_[i];
+        }
+    };
+
+    // Keep small requests out of the OpenMP runtime.
+    if (workers == 1) {
+        for (int row = 0; row < rows; ++row)
+            apply_row(row);
+    } else {
+#pragma omp parallel for num_threads(workers) schedule(static)
+        for (int row = 0; row < rows; ++row)
+            apply_row(row);
+    }
+}
+
 FloatMatrixView PCAProjection::project(const FloatMatrixView &input, std::vector<float> &buffer) const {
     input.validate("PCA input");
     RNNDESCENT_ASSERT_MSG(input.dimension() == input_dimension_, "PCA input dimension mismatch");
@@ -211,8 +268,17 @@ FloatMatrixView PCAProjection::project(const FloatMatrixView &input, std::vector
     return FloatMatrixView::from_vector(buffer, output_dimension_);
 }
 
-FloatMatrixView PCAProjection::project_queries(const FloatMatrixView &queries) {
-    return project(queries, query_buffer_);
+FloatMatrixView PCAProjection::project_queries(const FloatMatrixView &queries, int num_threads) {
+    const int rows = queries.row_count();
+    if (num_threads <= 1 || rows <= small_projection_rows)
+        return project(queries, query_buffer_);
+
+    queries.validate("PCA input");
+    RNNDESCENT_ASSERT_MSG(queries.dimension() == input_dimension_, "PCA input dimension mismatch");
+    query_buffer_.resize(static_cast<size_t>(rows) * output_dimension_);
+    const auto output = MutableFloatMatrixView::from_vector(query_buffer_, output_dimension_);
+    apply_simd(queries, output, std::min(num_threads, rows));
+    return FloatMatrixView::from_vector(query_buffer_, output_dimension_);
 }
 
 std::vector<int> PCAProjection::query_order(const FloatMatrixView &projected) const {

@@ -57,7 +57,7 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 
 PCA 在 `enabled=true` 且 `0 < out_dim < 输入维度` 时启用，训练要求 `out_dim <= 底库条数`。`--pca-out 64` 同时设置开关与维度。`--enable-pca` 只设置开关，需要配合有效的输出维度。精排使用原始向量与原始维度。
 
-多条查询按 `SearchConfig::num_threads` 在查询之间分工。每 4 条形成的块数不超过线程数时，均分给各线程。其余批次按每块 4 条动态分工。默认在 PCA 至少输出 4 维且本次至少传入 2 条查询时，索引在分流前按前四个主成分生成排序键。可用 `--no-reorder-query-batch` 按输入顺序执行查询，结果均写回原输入行。
+多条查询按 `SearchConfig::num_threads` 在查询之间分工。至多 16 条且查询数超过线程数时，逐条动态分工。其余批次在每 4 条形成的块数不超过线程数时采用静态分工，块数更多时按每块 4 条动态分工。默认在 PCA 至少输出 4 维且本次至少传入 2 条查询时，索引在分流前按前四个主成分生成排序键。可用 `--no-reorder-query-batch` 按输入顺序执行查询，结果均写回原输入行。
 
 单查询并行按四路算距的粒度给各线程分配互不重叠的入口区间，并分摊 `search_L`。线程共用节点访问标记，合并、去重后由同一线程组分担粗排和 FP32 算距。可用入口不足时会减少实际线程数。并行和单线程的候选池不同，比较延迟时请用 ground truth 重新校验达到目标 Recall 的 `search_L`。
 
@@ -107,4 +107,4 @@ dataset 模式读取文件中的全部底库和查询行，用对应 ground trut
 | `BUILD_DIR` | `run.sh` 使用的 CMake 构建目录 |
 | `RESULT_DIR` | 本次报告的输出目录 |
 
-一般查询测量可以使用 `OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1`。PCA 训练和矩阵投影使用 OpenBLAS，可以另行比较其线程数，并记录配置。C++ 调用时直接设置 `BuildConfig::num_threads` 与 `SearchConfig::num_threads`，Benchmark 的 16 线程限制只作用于其参数预设过程。
+批量查询多于 16 条时，PCA 的并行 GEMV 使用 `SearchConfig::num_threads`。OpenBLAS 线程数仍影响 PCA 训练、底库大批投影和单线程下的整批查询投影。C++ 调用时直接设置 `BuildConfig::num_threads` 与 `SearchConfig::num_threads`，Benchmark 的 16 线程限制只作用于其参数预设过程。

@@ -20,7 +20,7 @@
 
 量化粗排按分数保留 `fp32_refine_max` 项，默认 32，至少保留 Top K。设 `rerank_quantization = std::nullopt` 或 `fp32_refine_max = 0` 时，送入重排的候选直接做 FP32 精排。返回距离为原始 FP32 空间的平方 L2。
 
-只传入一条时，可用 `SearchConfig::single_query_threads` 指定查图和重排算距共用的线程数，最多 8 个。传入多条时，每条查询由一个线程完成，OpenMP 线程组大小由 `SearchConfig::num_threads` 指定。每 4 条形成的块数不超过线程数时，使用静态分工。块数更多时，使用每块 4 条的动态分工。符合 PCA 批内排序条件的查询默认在分流前排序，可将 `SearchConfig::reorder_query_batch` 设为 `false` 以按输入顺序执行。结果始终按输入行写回。
+只传入一条时，可用 `SearchConfig::single_query_threads` 指定查图和重排算距共用的线程数，最多 8 个。传入多条时，每条查询由一个线程完成，OpenMP 线程组大小由 `SearchConfig::num_threads` 指定。至多 16 条且查询数超过线程数时，线程逐条动态领取查询。其余批次在每 4 条形成的块数不超过线程数时用静态分工，块数更多时按每块 4 条动态分工。符合 PCA 批内排序条件的查询默认在分流前排序，可将 `SearchConfig::reorder_query_batch` 设为 `false` 以按输入顺序执行。结果始终按输入行写回。
 
 两条路径共用量化查询、PCA 查询缓冲和搜索工作区。同一 `Solution` 实例按顺序调用查询。不同实例分别管理自己的索引和邻居池。外层需要并发访问同一实例时，由调用方串行化这些入口。
 

@@ -88,6 +88,7 @@ struct IndexRNNDescent {
         result.validate();
         RNNDESCENT_ASSERT_MSG(queries.dimension() == dimension(), "query dimension does not match index dimension");
         const int n = queries.row_count();
+        const int workers = search_config.num_threads;
 #ifdef INTERNAL_CLOCK_TEST
         auto prevtime = std::chrono::high_resolution_clock::now();
         auto nowtime = prevtime, starttime = prevtime;
@@ -95,7 +96,7 @@ struct IndexRNNDescent {
 #endif
 
         reranker->set_queries(queries);
-        const auto graph_queries = pca ? pca->project_queries(queries) : queries;
+        const auto graph_queries = pca ? pca->project_queries(queries, workers) : queries;
         rnndescent->graph_distance_computer->set_query(graph_queries.data_ptr(), n);
 
 #ifdef INTERNAL_CLOCK_TEST
@@ -109,8 +110,9 @@ struct IndexRNNDescent {
                                          ? pca->query_order(graph_queries)
                                          : std::vector<int>{};
         const int *const query_order = ordered_queries.empty() ? nullptr : ordered_queries.data();
-        const int workers = search_config.num_threads;
         constexpr int queries_per_chunk = 4;
+        // With only a few queries per worker, a slow query can dominate a static chunk.
+        const bool balance_small_batch = n > workers && n <= 16;
         if (n == 1 && search_config.single_query_threads > 1) {
             rnndescent->search_single_parallel(0, *reranker, search_config, result);
         } else if (n == 1 || workers == 1) {
@@ -118,7 +120,7 @@ struct IndexRNNDescent {
                 const int id = query_order ? query_order[i] : i;
                 rnndescent->search_single_thread(0, id, *reranker, search_config, result.slice(id));
             }
-        } else if ((n - 1) / queries_per_chunk < workers) {
+        } else if (!balance_small_batch && (n - 1) / queries_per_chunk < workers) {
             // Share short batches evenly when there is at most one chunk per worker.
 #pragma omp parallel for num_threads(workers) schedule(static)
             for (int i = 0; i < n; ++i) {
@@ -126,7 +128,8 @@ struct IndexRNNDescent {
                 rnndescent->search_single_thread(omp_get_thread_num(), id, *reranker, search_config, result.slice(id));
             }
         } else {
-#pragma omp parallel for num_threads(workers) schedule(dynamic, queries_per_chunk)
+            const int chunk = balance_small_batch ? 1 : queries_per_chunk;
+#pragma omp parallel for num_threads(workers) schedule(dynamic, chunk)
             for (int i = 0; i < n; ++i) {
                 const int id = query_order ? query_order[i] : i;
                 rnndescent->search_single_thread(omp_get_thread_num(), id, *reranker, search_config, result.slice(id));

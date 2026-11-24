@@ -101,8 +101,9 @@ ctest --test-dir build -R RecallTest --output-on-failure
 
 ## Benchmark
 
-- V1 归档 SIFT、GIST 的跨设备和多线程结果，以及邻居缓存、候选去重和线程绑核实验。[V1 实验](benchmark/v1experiments/README.md)
-- V2 记录实现改动，并在本机按相同图和查询配置与 V1 对跑。[V2 实验](benchmark/v2experiments/README.md)
+- v1.0 归档 SIFT、GIST 的跨设备和多线程结果，以及邻居缓存、候选去重和线程绑核实验。[v1.0 Experiments](benchmark/v1.0experiments/README.md)
+- v1.1 记录批量调度重构前的性能基线，以及紧凑邻接存储、批量算距和大页的同图对照。[v1.1 Experiments](benchmark/v1.1experiments/README.md)
+- v2.0 对照单查询串行、单查询内并行和批量查询间并行，记录批大小、线程数和查询排序对吞吐的影响。[v2.0 Experiments](benchmark/v2.0experiments/README.md)
 
 ### 随机向量
 
