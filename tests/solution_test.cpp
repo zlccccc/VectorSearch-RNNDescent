@@ -113,6 +113,7 @@ TEST(SolutionTest, ReorderedQueryBatchReturnsResultsInInputOrder) {
     Solution baseline, ordered;
     baseline.build(dimension, base, warmup, build, search, {true, 13});
     search.reorder_query_batch = true;
+    search.single_query_threads = 4;
     ordered.build(dimension, base, warmup, build, search, {true, 13});
 
     std::vector<int> expected, actual;
@@ -141,6 +142,51 @@ TEST(SolutionTest, ReorderedQueryBatchReturnsResultsInInputOrder) {
         EXPECT_EQ(actual, (std::vector<int>(expected.begin(), expected.begin() + count * topk)));
         const auto &distances = baseline.distance_buffer();
         EXPECT_EQ(ordered.distance_buffer(), (std::vector<float>(distances.begin(), distances.begin() + count * topk)));
+    }
+}
+
+TEST(SolutionTest, ParallelSingleQueryMergesUniqueCandidatesAndResetsBetweenQueries) {
+    constexpr int rows = 40, dimension = 17;
+    std::vector<float> base(rows * dimension, 0.0f);
+    for (int row = 0; row < rows; ++row)
+        base[row * dimension] = static_cast<float>(row) / 8.0f;
+
+    Solution::WarmupConfig warmup;
+    warmup.topk = 0;
+    rnndescent::RNNDescent::BuildConfig build;
+    build.T1 = build.T2 = 1;
+    build.S = build.K0 = 12;
+    build.R = 16;
+    build.num_threads = 1;
+    rnndescent::RNNDescent::SearchConfig search;
+    search.num_threads = 1;
+    search.single_query_threads = 4;
+    search.num_initialize = search.search_L = search.refine_max = rows;
+    search.fp32_refine_max = 0;
+
+    Solution solution;
+    solution.build(dimension, base, warmup, build, search);
+    for (int row : {7, 31, 7}) {
+        const auto begin = base.begin() + row * dimension;
+        const std::vector<float> query(begin, begin + dimension);
+        for (int topk : {5, rows}) {
+            SCOPED_TRACE(::testing::Message() << "row=" << row << ", topk=" << topk);
+            std::vector<int> ids;
+            solution.search(query, ids, topk);
+            ASSERT_EQ(ids.size(), topk);
+            EXPECT_EQ(ids[0], row);
+            auto unique = ids;
+            std::sort(unique.begin(), unique.end());
+            EXPECT_EQ(std::adjacent_find(unique.begin(), unique.end()), unique.end());
+            const auto &distances = solution.distance_buffer();
+            ASSERT_EQ(distances.size(), ids.size());
+            EXPECT_TRUE(std::is_sorted(distances.begin(), distances.end()));
+            for (int i = 0; i < topk; ++i) {
+                ASSERT_GE(ids[i], 0);
+                ASSERT_LT(ids[i], rows);
+                EXPECT_EQ(distances[i], scalar_l2(query.data(), base.data() + ids[i] * dimension, dimension));
+            }
+        }
     }
 }
 

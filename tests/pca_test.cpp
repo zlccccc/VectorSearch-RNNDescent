@@ -91,6 +91,14 @@ TEST(PCAProjectionTest, HadamardMixesPcaAxesAndPreservesProjectedDistances) {
         queries[2 * input_dim + output_dim - 1] += 1;
         queries[3 * input_dim + output_dim] += 1;
         const auto projected = pca.project_queries(rnndescent::FloatMatrixView::from_vector(queries, input_dim));
+        std::vector<float> single(output_dim);
+        const auto single_output = rnndescent::MutableFloatMatrixView::from_vector(single, output_dim);
+        for (int row = 0; row < projected.row_count(); ++row) {
+            const auto query = rnndescent::FloatMatrixView::from_buffer(queries.data() + row * input_dim, 1, input_dim);
+            pca.apply(query, single_output);
+            for (int i = 0; i < output_dim; ++i)
+                EXPECT_NEAR(single[i], projected.row_ptr(row)[i], 1e-5f);
+        }
         int first_block = 1;
         while (first_block <= output_dim / 2)
             first_block *= 2;

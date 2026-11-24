@@ -17,6 +17,12 @@ TEST(CandidateBitmapTest, MarksIdsAcrossWordBoundaries) {
         ASSERT_TRUE(ids.insert(id)) << id;
     for (int id : {0, 1, 63, 64, 65, 127, 128})
         EXPECT_FALSE(ids.insert(id)) << id;
+
+    ids.clear();
+    for (int id : {0, 1, 63, 64, 65, 127, 128})
+        ASSERT_TRUE(ids.test_and_set(id)) << id;
+    for (int id : {0, 1, 63, 64, 65, 127, 128})
+        EXPECT_FALSE(ids.test_and_set(id)) << id;
 }
 
 TEST(CandidateBitmapTest, ClearsMarksBetweenQueries) {
@@ -30,6 +36,52 @@ TEST(CandidateBitmapTest, ClearsMarksBetweenQueries) {
         EXPECT_TRUE(ids.insert(id)) << id;
         EXPECT_FALSE(ids.insert(id)) << id;
     }
+}
+
+TEST(CandidateBitmapTest, LazyResetPreservesNewMarksAndClearsStaleBlocks) {
+    rnndescent::CandidateBitmap ids;
+    ids.initialize(1025);
+    ids.begin_lazy_query();
+    EXPECT_TRUE(ids.insert<true>(0));
+    EXPECT_TRUE(ids.insert<true>(511));
+    EXPECT_TRUE(ids.insert<true>(512));
+    EXPECT_TRUE(ids.insert<true>(1024));
+    EXPECT_FALSE(ids.insert<true>(0));
+
+    // Query 1's last block stays untouched until its generation appears again.
+    for (int query = 0; query < 255; ++query) {
+        ids.begin_lazy_query();
+        ASSERT_TRUE(ids.insert<true>(511));
+        EXPECT_FALSE(ids.insert<true>(511));
+    }
+    EXPECT_TRUE(ids.insert<true>(1024));
+
+    // This worker also uses an eagerly cleared bitmap for final cross-worker deduplication.
+    ids.clear();
+    EXPECT_TRUE(ids.test_and_set(512));
+    EXPECT_FALSE(ids.test_and_set(512));
+    ids.begin_lazy_query();
+    EXPECT_TRUE(ids.insert<true>(512));
+    EXPECT_FALSE(ids.insert<true>(512));
+}
+
+TEST(SharedVisitedSetTest, SharesMarksAndClearsStaleGenerations) {
+    constexpr int points = 129;
+    rnndescent::SharedVisitedSet visited(points);
+    visited.begin_query();
+#pragma omp parallel for num_threads(4) schedule(static, 1)
+    for (int i = 0; i < points * 8; ++i)
+        visited.insert(i / 8);
+    for (int i = 0; i < points; ++i)
+        EXPECT_FALSE(visited.insert(i));
+
+    // The last point keeps its first mark until the generation counter wraps.
+    for (int query = 0; query < 255; ++query) {
+        visited.begin_query();
+        ASSERT_TRUE(visited.insert(0));
+        EXPECT_FALSE(visited.insert(0));
+    }
+    EXPECT_TRUE(visited.insert(points - 1));
 }
 
 TEST(NeighborScoreFilterTest, CollectsPassingScoresInOrderAcrossSpans) {

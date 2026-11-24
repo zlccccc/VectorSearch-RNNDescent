@@ -55,7 +55,7 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
         if constexpr (uses_fp32_rows) {
             query = input;
             query_norms.resize(count);
-#pragma omp parallel for
+#pragma omp parallel for if (count > 1)
             for (int i = 0; i < count; ++i)
                 query_norms[i] = Kernel::query_norm(input + i * d, d);
         } else {
@@ -73,22 +73,22 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
         return squared_distance(matrix_norms[i] + matrix_norms[j], Kernel::dot(base + i * d, base + j * d, d));
     }
 
-    void score_candidates(int idq, std::vector<SingleNeighbor> &candidates) override {
-        if (candidates.empty())
+    void score_candidates(int idq, SingleNeighbor *candidates, size_t count) override {
+        if (count == 0)
             return;
 
         const auto *q = data(query) + idq * d;
         const auto *base = data(matrix);
         const auto norm = query_norms[idq];
-        const size_t end4 = candidates.size() / 4 * 4;
+        const size_t end4 = count / 4 * 4;
         for (size_t i = 0; i < end4; i += 4) {
-            auto *group = candidates.data() + i;
+            auto *group = candidates + i;
             const auto dots = Kernel::dot4(q, base + group[0].id * d, base + group[1].id * d,
                                           base + group[2].id * d, base + group[3].id * d, d);
             for (int lane = 0; lane < 4; ++lane)
                 group[lane].distance = squared_distance(norm + matrix_norms[group[lane].id], dots[lane]);
         }
-        for (size_t i = end4; i < candidates.size(); ++i) {
+        for (size_t i = end4; i < count; ++i) {
             auto &candidate = candidates[i];
             const auto product = Kernel::dot(q, base + candidate.id * d, d);
             candidate.distance = squared_distance(norm + matrix_norms[candidate.id], product);
@@ -112,7 +112,7 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
     void encode_rows(const float *input, size_t count, std::vector<Code> &rows, std::vector<Dot> &norms) {
         rows.resize(count * d);
         norms.resize(count);
-#pragma omp parallel for
+#pragma omp parallel for if (count > 1)
         for (size_t i = 0; i < count; ++i) {
             const auto *source = input + i * d;
             auto *row = rows.data() + i * d;

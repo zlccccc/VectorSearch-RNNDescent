@@ -2,9 +2,11 @@
 #include "solution/rnndescent/RNNDescent.h"
 
 #include <algorithm>
+#include <array>
 #include <gtest/gtest.h>
 #include <memory>
 #include <numeric>
+#include <omp.h>
 #include <utility>
 #include <vector>
 
@@ -90,6 +92,7 @@ TEST(RefinementTest, ReusesOriginalDimensionalGraphScores) {
     rnndescent::RNNDescent::SearchConfig search;
     search.num_initialize = search.search_L = search.refine_max = rows;
     search.num_threads = 1;
+    search.single_query_threads = 3;
     rnndescent::RNNDescent graph(rnndescent::FloatMatrixView::from_vector(base, dim), false, build, search);
     graph.graph_distance_computer->set_query(query.data(), 1);
     auto coarse = rnndescent::SelectedDistanceComputerFactory::create_quantized_refine(base.data(), rows, dim);
@@ -110,11 +113,21 @@ TEST(RefinementTest, ReusesOriginalDimensionalGraphScores) {
     rnndescent::CandidateReranker reranker(std::move(exact_distance), dim);
     std::vector<int> ids(topk);
     std::vector<float> distances(topk);
-    graph.searchSingle(0, 0, reranker, search, build.K0, rnndescent::SearchResultView::from_vectors(ids, distances, topk));
+    graph.search_single_thread(0, 0, reranker, search, build.K0,
+                               rnndescent::SearchResultView::from_vectors(ids, distances, topk));
     std::sort(exact.evaluated.begin(), exact.evaluated.end());
     EXPECT_EQ(exact.evaluated, expected);
     expected.resize(topk);
     EXPECT_EQ(ids, expected);
+
+    rnndescent::CandidateReranker fp32(rnndescent::FloatMatrixView::from_vector(base, dim), dim, rows, search);
+    fp32.set_queries(rnndescent::FloatMatrixView::from_vector(query, dim));
+    std::vector<int> parallel_ids(topk);
+    std::vector<float> parallel_distances(topk);
+    graph.search_single_thread(0, 0, fp32, search, build.K0, {ids.data(), distances.data(), topk});
+    graph.search_single_parallel(0, fp32, search, build.K0, {parallel_ids.data(), parallel_distances.data(), topk});
+    EXPECT_EQ(parallel_ids, ids);
+    EXPECT_EQ(parallel_distances, distances);
 }
 
 TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
@@ -153,13 +166,31 @@ TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
         const auto collect = [&](const rnndescent::CandidateReranker &reranker) {
             std::vector<int> ids(topk);
             std::vector<float> distances(topk);
-            graph.searchSingle(0, 0, reranker, search, build.K0,
-                               rnndescent::SearchResultView::from_vectors(ids, distances, topk));
+            graph.search_single_thread(0, 0, reranker, search, build.K0,
+                                       rnndescent::SearchResultView::from_vectors(ids, distances, topk));
             return std::make_pair(std::move(ids), std::move(distances));
         };
         const auto expected = collect(original);
         EXPECT_EQ(expected.first.front(), query_id);
         EXPECT_EQ(collect(bfs), expected);
+
+        for (const auto *reranker : {&original, &bfs}) {
+            std::vector<rnndescent::SingleNeighbor> candidates;
+            for (int i = 0; i < search.refine_max; ++i)
+                candidates.emplace_back((i * 7 + 1) % rows, 0);
+            auto parallel = candidates;
+            std::vector<int> serial_ids(topk), parallel_ids(topk);
+            std::vector<float> serial_distances(topk), parallel_distances(topk);
+            reranker->rerank(0, candidates, limit,
+                             {serial_ids.data(), serial_distances.data(), topk}, graph.search_from_ids.data());
+            const size_t fp32_count = reranker->prepare_shortlist(parallel, limit, topk);
+#pragma omp parallel num_threads(3)
+            reranker->score_for_rerank(0, parallel, fp32_count, graph.search_from_ids.data(), omp_get_thread_num(),
+                                       omp_get_num_threads());
+            rnndescent::CandidateReranker::write_topk(parallel, {parallel_ids.data(), parallel_distances.data(), topk});
+            EXPECT_EQ(parallel_ids, serial_ids);
+            EXPECT_EQ(parallel_distances, serial_distances);
+        }
     }
 }
 
@@ -198,15 +229,75 @@ TEST(RefinementTest, RetainsDiscoveredCandidatesBeyondExpansionWidth) {
     rnndescent::RNNDescent::SearchConfig search;
     search.num_initialize = search.search_L = 4;
     search.refine_max = 6;
+    search.fp32_refine_max = 0;
     search.num_threads = 1;
     rnndescent::search::PerfStats perf;
     rnndescent::search::GraphSearcher searcher({neighbors, computer}, search, 4, perf);
-    auto &candidates = searcher.search_candidates(0, 0, search, 4, 1);
-    std::vector<int> ids;
-    for (const auto &candidate : candidates)
-        ids.push_back(candidate.id);
-    EXPECT_EQ(ids, (std::vector<int>{0, 1, 2, 3, 8, 4}));
+    auto exact = std::make_unique<TrackedDistances>(distances.scores, 1);
+    const auto &refined_ids = exact->evaluated;
+    rnndescent::CandidateReranker reranker(std::move(exact), 1);
+    int id;
+    float distance;
+    searcher.search_single_thread(0, 0, search, 4, reranker, {&id, &distance, 1}, nullptr);
+    EXPECT_EQ(refined_ids, (std::vector<int>{0, 1, 2, 3, 8, 4}));
     EXPECT_EQ(std::find(distances.evaluated.begin(), distances.evaluated.end(), 9), distances.evaluated.end());
+}
+
+TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges) {
+    constexpr int entry_count = 40;
+    constexpr int requested_workers = 16;
+    constexpr int fp32_limit = 13;
+    struct EntryRecorder final : rnndescent::MyDistanceComputer {
+        std::array<std::vector<int>, requested_workers> scored_ids;
+
+        int dimension() const override { return 1; }
+        uint32_t code_stride() const override { return 0; }
+        void set_query(const float *, int) override {}
+        float symmetric_dis(int, int) override { return 0; }
+        float operator()(int, int id) override {
+            scored_ids[omp_get_thread_num()].push_back(id);
+            return static_cast<float>(id);
+        }
+    };
+
+    auto recorder = std::make_unique<EntryRecorder>();
+    const auto &scored_ids = recorder->scored_ids;
+    std::unique_ptr<rnndescent::MyDistanceComputer> computer = std::move(recorder);
+    std::vector<rnndescent::SelectedNeighborsContainerType> neighbors(entry_count);
+    rnndescent::RNNDescent::SearchConfig search;
+    search.num_initialize = search.search_L = search.refine_max = entry_count;
+    search.fp32_refine_max = fp32_limit;
+    search.num_threads = 1;
+    search.single_query_threads = requested_workers;
+    rnndescent::search::PerfStats perf;
+    rnndescent::search::GraphSearcher searcher({neighbors, computer}, search, 4, perf);
+    auto fp32 = std::make_unique<EntryRecorder>();
+    const auto &fp32_ids = fp32->scored_ids;
+    rnndescent::CandidateReranker exact(std::move(fp32), 1);
+    int id;
+    float distance;
+    searcher.search_parallel(0, search, 4, exact, {&id, &distance, 1}, nullptr);
+
+    std::vector<int> scored;
+    int active_workers = 0;
+    for (const auto &ids : scored_ids) {
+        active_workers += !ids.empty();
+        EXPECT_EQ(ids.size() % 4, 0u);
+        scored.insert(scored.end(), ids.begin(), ids.end());
+    }
+    EXPECT_EQ(active_workers, std::min(8, omp_get_thread_limit()));
+    std::vector<int> expected(entry_count);
+    std::iota(expected.begin(), expected.end(), 0);
+    EXPECT_EQ(scored, expected);
+
+    scored.clear();
+    for (const auto &ids : fp32_ids)
+        scored.insert(scored.end(), ids.begin(), ids.end());
+    std::sort(scored.begin(), scored.end());
+    expected.resize(fp32_limit);
+    EXPECT_EQ(scored, expected);
+    EXPECT_EQ(id, 0);
+    EXPECT_FLOAT_EQ(distance, 0);
 }
 
 #if defined(RNNDESCENT_HAS_UINT4_KERNEL)

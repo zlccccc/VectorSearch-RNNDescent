@@ -102,6 +102,7 @@ inline void write_benchmark_report(const BenchmarkConfig &config, const Benchmar
     oss << "search_config.graph_quantization=" << quantization_name(config.search_config.graph_quantization) << char(10);
     oss << "search_config.rerank_quantization=" << quantization_name(config.search_config.rerank_quantization) << char(10);
     oss << "search_config.reorder_query_batch=" << config.search_config.reorder_query_batch << char(10);
+    oss << "search_config.single_query_threads=" << config.search_config.single_query_threads << char(10);
     oss << "search_config.num_threads=" << config.search_config.num_threads << char(10);
     oss << "pca_config.enabled=" << (config.pca_config.enabled ? 1 : 0) << char(10);
     oss << "pca_config.out_dim=" << config.pca_config.out_dim << char(10);

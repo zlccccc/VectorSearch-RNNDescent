@@ -187,6 +187,14 @@ void PCAProjection::apply(const FloatMatrixView &input, const MutableFloatMatrix
     RNNDESCENT_ASSERT_MSG(input.dimension() == input_dimension_, "PCA input dimension mismatch");
     RNNDESCENT_ASSERT_MSG(output.dimension() == output_dimension_, "PCA output dimension mismatch");
 
+    if (input.row_count() == 1) {
+        auto *projected = output.data_ptr();
+        std::copy(bias_.begin(), bias_.end(), projected);
+        cblas_sgemv(CblasColMajor, CblasTrans, input_dimension_, output_dimension_, 1.0f,
+                    components_.data(), input_dimension_, input.data_ptr(), 1, 1.0f, projected, 1);
+        return;
+    }
+
 #pragma omp parallel for
     for (int i = 0; i < input.row_count(); ++i)
         std::copy(bias_.begin(), bias_.end(), output.row_ptr(i));

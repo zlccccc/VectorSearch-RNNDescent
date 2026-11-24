@@ -9,7 +9,6 @@
 #include "common/Logger.h"
 
 #include <memory>
-#include <chrono>
 #include <vector>
 
 #if defined(__GLIBC__)
@@ -64,18 +63,15 @@ struct RNNDescent {
                                                               perf_stats);
     }
 
-    void searchSingle(int threadid, int queryid, const CandidateReranker &reranker,
-                      const SearchConfig &search_config, int max_degree, const SearchResultView &result) {
-        RNNDESCENT_ASSERT_MSG(searcher_ != nullptr, "The index is not build yet.");
-        result.validate();
-        auto &candidates = searcher_->search_candidates(threadid, queryid, search_config, max_degree, result.topk());
-#ifdef INTERNAL_CLOCK_TEST
-        const auto start = std::chrono::steady_clock::now();
-#endif
-        reranker.rerank(queryid, candidates, search_config.fp32_refine_max, result, search_from_ids.data());
-#ifdef INTERNAL_CLOCK_TEST
-        searcher_->record_refinement_time(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count());
-#endif
+    void search_single_thread(int threadid, int queryid, const CandidateReranker &reranker,
+                              const SearchConfig &search_config, int max_degree, const SearchResultView &result) {
+        checked_searcher(result).search_single_thread(threadid, queryid, search_config, max_degree, reranker, result,
+                                                      search_from_ids.data());
+    }
+
+    void search_single_parallel(int queryid, const CandidateReranker &reranker,
+                                const SearchConfig &search_config, int max_degree, const SearchResultView &result) {
+        checked_searcher(result).search_parallel(queryid, search_config, max_degree, reranker, result, search_from_ids.data());
     }
 
     void flush_perf_stats() {
@@ -101,6 +97,12 @@ struct RNNDescent {
     PerfStats perf_stats;
 
   private:
+    search::GraphSearcher &checked_searcher(const SearchResultView &result) {
+        RNNDESCENT_ASSERT_MSG(searcher_ != nullptr, "The index is not build yet.");
+        result.validate();
+        return *searcher_;
+    }
+
     std::unique_ptr<search::GraphSearcher> searcher_;
 };
 

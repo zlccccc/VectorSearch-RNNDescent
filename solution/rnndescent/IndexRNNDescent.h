@@ -110,15 +110,27 @@ struct IndexRNNDescent {
         const auto ordered_queries = search_config.reorder_query_batch && pca
                                          ? pca->query_order(graph_queries)
                                          : std::vector<int>{};
-        constexpr int min_parallel_queries = 16;
-        if (n >= min_parallel_queries) {
-            search_batch(n, ordered_queries, result);
-        } else {
-            for (int i = 0; i < n; ++i) {
-                const int id = ordered_queries.empty() ? i : ordered_queries[i];
-                rnndescent->searchSingle(0, id, *reranker, search_config, build_config.K0, result.slice(id));
+        const auto search_queries = [&](const auto &query_id_at) {
+            const auto search_query = [&](int worker, int position) {
+                const int id = query_id_at(position);
+                rnndescent->search_single_thread(worker, id, *reranker, search_config, build_config.K0, result.slice(id));
+            };
+            constexpr int min_parallel_queries = 16;
+            if (n >= min_parallel_queries) {
+#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
+                for (int i = 0; i < n; ++i)
+                    search_query(omp_get_thread_num(), i);
+            } else {
+                for (int i = 0; i < n; ++i)
+                    search_query(0, i);
             }
-        }
+        };
+        if (n == 1 && search_config.single_query_threads > 1)
+            rnndescent->search_single_parallel(0, *reranker, search_config, build_config.K0, result);
+        else if (ordered_queries.empty())
+            search_queries([](int i) { return i; });
+        else
+            search_queries([&](int i) { return ordered_queries[i]; });
 
 #ifdef INTERNAL_CLOCK_TEST
         nowtime = std::chrono::high_resolution_clock::now();
@@ -139,22 +151,6 @@ struct IndexRNNDescent {
     void flush_perf_stats() {
         if (rnndescent)
             rnndescent->flush_perf_stats();
-    }
-
-  private:
-    void search_batch(int count, const std::vector<int> &ordered_queries, const SearchResultView &result) {
-        const auto search_query = [&](int id) {
-            rnndescent->searchSingle(omp_get_thread_num(), id, *reranker, search_config, build_config.K0, result.slice(id));
-        };
-        if (ordered_queries.empty()) {
-#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
-            for (int id = 0; id < count; ++id)
-                search_query(id);
-        } else {
-#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
-            for (int i = 0; i < count; ++i)
-                search_query(ordered_queries[i]);
-        }
     }
 };
 

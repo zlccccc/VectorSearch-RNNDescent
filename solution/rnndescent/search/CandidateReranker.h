@@ -24,8 +24,15 @@ class CandidateReranker {
     void rerank(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_limit,
                 const SearchResultView &result, const int *original_ids = nullptr) const;
 
+    // The caller prepares the shortlist once and passes the returned FP32 count to each worker.
+    size_t prepare_shortlist(std::vector<SingleNeighbor> &candidates, int fp32_limit, int topk) const;
+    // All workers in the current team call this before the caller writes Top K.
+    void score_for_rerank(int query_id, std::vector<SingleNeighbor> &candidates, size_t fp32_count,
+                          const int *original_ids, int worker, int workers) const;
+    static void write_topk(std::vector<SingleNeighbor> &candidates, const SearchResultView &result);
+
   private:
-    void refine_fp32(int query_id, std::vector<SingleNeighbor> &candidates, const SearchResultView &result) const;
+    static void select_fp32_candidates(std::vector<SingleNeighbor> &candidates, size_t fp32_count);
 
     std::unique_ptr<MyDistanceComputer> fp32_;
     std::unique_ptr<MyDistanceComputer> quantized_;

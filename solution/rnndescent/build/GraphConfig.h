@@ -24,6 +24,8 @@ struct BuildConfig {
 };
 
 struct SearchConfig {
+    static constexpr int max_single_query_threads = 8;
+
     int beam_size = 8;
     int num_threads = 16;
     int search_L = 96;
@@ -34,6 +36,7 @@ struct SearchConfig {
     // A disengaged format sends the graph candidates straight to FP32.
     std::optional<QuantizedFormat> rerank_quantization = QuantizedFormat::Byte;
     bool reorder_query_batch = false;
+    int single_query_threads = 1;
 };
 
 inline BuildConfig sanitize_build_config(BuildConfig config) {
@@ -52,6 +55,7 @@ inline SearchConfig sanitize_search_config(SearchConfig config, int topk = 1, in
     config.beam_size = std::max(config.beam_size, 1);
     config.num_threads = std::max(config.num_threads, 1);
     const int min_candidates = std::max(1, topk);
+    config.single_query_threads = std::clamp(config.single_query_threads, 1, SearchConfig::max_single_query_threads);
     config.search_L = std::max(config.search_L, min_candidates);
     config.refine_max = std::max(config.refine_max, min_candidates);
     config.num_initialize = std::max({config.num_initialize, config.search_L, config.refine_max});

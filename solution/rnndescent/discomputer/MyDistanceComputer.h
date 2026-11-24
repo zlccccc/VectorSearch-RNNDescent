@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 
@@ -25,10 +26,14 @@ struct MyDistanceComputer {
             scores[i] = (*this)(query_id, ids[i]);
     }
 
-    // Score a batch of candidate IDs in place.
-    virtual void score_candidates(int query_id, std::vector<SingleNeighbor> &candidates) {
-        for (auto &candidate : candidates)
-            candidate.distance = (*this)(query_id, candidate.id);
+    // Score a contiguous range of candidate IDs in place.
+    virtual void score_candidates(int query_id, SingleNeighbor *candidates, size_t count) {
+        for (size_t i = 0; i < count; ++i)
+            candidates[i].distance = (*this)(query_id, candidates[i].id);
+    }
+
+    void score_candidates(int query_id, std::vector<SingleNeighbor> &candidates) {
+        score_candidates(query_id, candidates.data(), candidates.size());
     }
 
     virtual int row_count() const {

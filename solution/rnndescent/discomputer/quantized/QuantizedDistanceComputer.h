@@ -143,7 +143,7 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
     void set_query(const float *data, int count) override {
         queries_.resize(static_cast<size_t>(count) * query_stride_);
         query_params_.resize(count);
-#pragma omp parallel for
+#pragma omp parallel for if (count > 1)
         for (int i = 0; i < count; ++i) {
             const auto *source = data + static_cast<size_t>(i) * d_;
             query_params_[i] = encoding_.encode_query(source, queries_.data() + static_cast<size_t>(i) * query_stride_, d_);
@@ -173,17 +173,17 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
         }
     }
 
-    void score_candidates(int q, std::vector<SingleNeighbor> &candidates) override {
+    void score_candidates(int q, SingleNeighbor *candidates, size_t count) override {
         const auto *code = query(q);
         const auto &params = query_params_[q];
         size_t i = 0;
-        for (; i + 4 <= candidates.size(); i += 4) {
-            auto *group = candidates.data() + i;
+        for (; i + 4 <= count; i += 4) {
+            auto *group = candidates + i;
             const auto products = dot4(code, group[0].id, group[1].id, group[2].id, group[3].id);
             for (int j = 0; j < 4; ++j)
                 group[j].distance = Encoding::ranking_score(base_params_[group[j].id], params, products[j]);
         }
-        for (; i < candidates.size(); ++i) {
+        for (; i < count; ++i) {
             auto &candidate = candidates[i];
             const auto product = dot(code, row(candidate.id));
             candidate.distance = Encoding::ranking_score(base_params_[candidate.id], params, product);
