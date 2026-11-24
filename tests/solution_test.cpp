@@ -148,13 +148,14 @@ TEST(SolutionTest, ReorderedQueryBatchReturnsResultsInInputOrder) {
     rnndescent::RNNDescent::SearchConfig search;
     search.search_L = search.refine_max = search.num_initialize = rows;
     search.fp32_refine_max = 0;
-    search.num_threads = 2;
+    search.num_threads = 4;
 
     Solution baseline, ordered;
-    baseline.build(dimension, base, warmup, build, search, {true, 13});
-    search.reorder_query_batch = true;
     search.single_query_threads = 4;
     ordered.build(dimension, base, warmup, build, search, {true, 13});
+    search.reorder_query_batch = false;
+    search.single_query_threads = 1;
+    baseline.build(dimension, base, warmup, build, search, {true, 13});
 
     std::vector<int> expected, actual;
     baseline.search(queries, expected, topk);
@@ -175,7 +176,7 @@ TEST(SolutionTest, ReorderedQueryBatchReturnsResultsInInputOrder) {
         EXPECT_EQ(ordered.distance_buffer(), (std::vector<float>(distances, distances + topk)));
     }
 
-    for (int count : {2, 15, 16, 17}) {
+    for (int count : {2, 6, 15, 16, 17}) {
         SCOPED_TRACE(count);
         const std::vector<float> subset(queries.begin(), queries.begin() + count * dimension);
         ordered.search(subset, actual, topk);

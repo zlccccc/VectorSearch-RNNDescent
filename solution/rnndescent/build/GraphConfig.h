@@ -35,7 +35,7 @@ struct SearchConfig {
     QuantizedFormat graph_quantization = QuantizedFormat::Byte;
     // A disengaged format sends the graph candidates straight to FP32.
     std::optional<QuantizedFormat> rerank_quantization = QuantizedFormat::Byte;
-    bool reorder_query_batch = false;
+    bool reorder_query_batch = true;
     int single_query_threads = 1;
 };
 

@@ -43,7 +43,7 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 | `--neighbor-pool-gb` | `BuildConfig::neighbor_pool_size_limit_bytes` | 邻接 ID 与可选邻居向量缓存的池预算，CLI 单位为整数 GiB |
 | `--pca-out` | `PCAConfig::out_dim` | 开启 PCA 并指定查图维度 |
 | `--disable-pca` | `PCAConfig::enabled` | 使用原始维度建图和查图 |
-| `--reorder-query-batch` | `SearchConfig::reorder_query_batch` | 按 PCA 主成分调整批内查询的执行顺序，默认关闭 |
+| `--reorder-query-batch` / `--no-reorder-query-batch` | `SearchConfig::reorder_query_batch` | 按 PCA 主成分调整批内查询的执行顺序，默认开启 |
 | `--single-query-threads` | `SearchConfig::single_query_threads` | 一次只提交一条查询时，查图和重排算距共用的 OpenMP 线程数，默认 1，超过 8 按 8 使用 |
 | `--warmup-topk` | `WarmupConfig::topk` | 建图结束后的预热 Top K，0 跳过预热 |
 
@@ -57,7 +57,7 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 
 PCA 在 `enabled=true` 且 `0 < out_dim < 输入维度` 时启用，训练要求 `out_dim <= 底库条数`。`--pca-out 64` 同时设置开关与维度。`--enable-pca` 只设置开关，需要配合有效的输出维度。精排使用原始向量与原始维度。
 
-一次调用传入至少 16 条查询时使用批量调度。开启批内排序后，PCA 至少输出 4 维且本次至少传入 2 条查询时，索引在分流前按前四个主成分生成排序键。两条路径都将结果写回原输入行。
+多条查询按 `SearchConfig::num_threads` 在查询之间分工。每 4 条形成的块数不超过线程数时，均分给各线程。其余批次按每块 4 条动态分工。默认在 PCA 至少输出 4 维且本次至少传入 2 条查询时，索引在分流前按前四个主成分生成排序键。可用 `--no-reorder-query-batch` 按输入顺序执行查询，结果均写回原输入行。
 
 单查询并行按四路算距的粒度给各线程分配互不重叠的入口区间，并分摊 `search_L`。线程共用节点访问标记，合并、去重后由同一线程组分担粗排和 FP32 算距。可用入口不足时会减少实际线程数。并行和单线程的候选池不同，比较延迟时请用 ground truth 重新校验达到目标 Recall 的 `search_L`。
 

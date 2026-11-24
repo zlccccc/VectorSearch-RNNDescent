@@ -109,17 +109,24 @@ struct IndexRNNDescent {
                                          ? pca->query_order(graph_queries)
                                          : std::vector<int>{};
         const int *const query_order = ordered_queries.empty() ? nullptr : ordered_queries.data();
-        if (n < 16) {
-            if (n == 1 && search_config.single_query_threads > 1) {
-                rnndescent->search_single_parallel(0, *reranker, search_config, result);
-            } else {
-                for (int i = 0; i < n; ++i) {
-                    const int id = query_order ? query_order[i] : i;
-                    rnndescent->search_single_thread(0, id, *reranker, search_config, result.slice(id));
-                }
+        const int workers = search_config.num_threads;
+        constexpr int queries_per_chunk = 4;
+        if (n == 1 && search_config.single_query_threads > 1) {
+            rnndescent->search_single_parallel(0, *reranker, search_config, result);
+        } else if (n == 1 || workers == 1) {
+            for (int i = 0; i < n; ++i) {
+                const int id = query_order ? query_order[i] : i;
+                rnndescent->search_single_thread(0, id, *reranker, search_config, result.slice(id));
+            }
+        } else if ((n - 1) / queries_per_chunk < workers) {
+            // Share short batches evenly when there is at most one chunk per worker.
+#pragma omp parallel for num_threads(workers) schedule(static)
+            for (int i = 0; i < n; ++i) {
+                const int id = query_order ? query_order[i] : i;
+                rnndescent->search_single_thread(omp_get_thread_num(), id, *reranker, search_config, result.slice(id));
             }
         } else {
-#pragma omp parallel for num_threads(search_config.num_threads) schedule(dynamic, 4)
+#pragma omp parallel for num_threads(workers) schedule(dynamic, queries_per_chunk)
             for (int i = 0; i < n; ++i) {
                 const int id = query_order ? query_order[i] : i;
                 rnndescent->search_single_thread(omp_get_thread_num(), id, *reranker, search_config, result.slice(id));

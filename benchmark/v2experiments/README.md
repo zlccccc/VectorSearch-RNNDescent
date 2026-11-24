@@ -2,6 +2,10 @@
 
 V2 对应 `e78da58`，对照基准为 `v1.0`（`1413447`）。同图对照覆盖 SIFT 和 GIST 的 100K、1M 数据，以及全缓存和零缓存两档。[同图性能对照](fixed-graph-comparison.md)
 
+后续实验在 GIST1M 和 SIFT1M 上对照开启与关闭批内排序，覆盖全缓存和零缓存。[PCA 批内排序](query-batch-reorder.md)
+
+固定批大小后，对比单条内并行、查询间并行和原分流。[Batch 1、6、16 的线程分工对照](batch-thread-dispatch.md)
+
 ## 改动与收益来源
 
 - **未缓存邻居按整张邻接表算距。** V1 每四个邻居调用一次距离计算器。V2 一次传入整张表的 ID，后端复用查询码地址和范数，循环仍以四路 SIMD 处理。64 个邻居的虚调用从 16 次减到 1 次。单项同图对照中，SIFT1M 和 GIST1M 的零缓存 QPS 分别提升 18.3% 和 9.8%。[批量算距实现](../../solution/rnndescent/discomputer/quantized/QuantizedDistanceComputer.h)
