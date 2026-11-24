@@ -101,8 +101,8 @@ ctest --test-dir build -R RecallTest --output-on-failure
 
 ## Benchmark
 
-- SIFT100K、GIST100K、SIFT1M 和 GIST1M 的 1、2、4、8、16 线程吞吐、召回率和复测命令。[跨设备与指令集](benchmark/README.md#跨设备与指令集)
-- 固定数据集和搜索参数，对比邻居缓存、候选去重和线程绑核。[同数据集方案对照](benchmark/experiments/README.md)
+- V1 归档 SIFT、GIST 的跨设备和多线程结果，以及邻居缓存、候选去重和线程绑核实验。[V1 实验](benchmark/v1experiments/README.md)
+- V2 记录实现改动，并在本机按相同图和查询配置与 V1 对跑。[V2 实验](benchmark/v2experiments/README.md)
 
 ### 随机向量
 

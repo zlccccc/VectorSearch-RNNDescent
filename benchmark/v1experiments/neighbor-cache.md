@@ -24,7 +24,7 @@ SIFT100K 用 FP32 直排，GIST100K 用 8 位粗排加 FP32 Top40。对每个线
 
 ## 百万级邻居缓存
 
-SIFT1M 和 GIST1M 在本机及两台 16 vCPU 云机上复用全缓存档的固定图、搜索预算和 UINT4 配置，只把 `--neighbor-pool-gb` 从 5 改为 0。每档取 8 个查询批次的中位 QPS/thread。同一机器上的开关缓存两档 Top10 逐项一致。峰值 RSS 包含底库加载、PCA、固定图装配和查询。[全缓存基线](../README.md#百万级结果)
+SIFT1M 和 GIST1M 在本机及两台 16 vCPU 云机上复用全缓存档的固定图、搜索预算和 UINT4 配置，只把 `--neighbor-pool-gb` 从 5 改为 0。每档取 8 个查询批次的中位 QPS/thread。同一机器上的开关缓存两档 Top10 逐项一致。峰值 RSS 包含底库加载、PCA、固定图装配和查询。[全缓存基线](cross-platform.md#百万级结果)
 
 | 数据集 | CPU / 指令集 | 量化 | 邻居缓存 | 1T | 2T | 4T | 8T | 16T | Recall@10 | 就绪 / 峰值 RSS（MiB） |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -45,4 +45,4 @@ SIFT1M 和 GIST1M 在本机及两台 16 vCPU 云机上复用全缓存档的固�
 
 ## 复测
 
-复测缓存开关时，将查询线程设为 16，分别指定 `--neighbor-pool-gb 1` 和 `--neighbor-pool-gb 0`。[GIST100K 复测命令](../README.md#复测)
+复测缓存开关时，将查询线程设为 16，分别指定 `--neighbor-pool-gb 1` 和 `--neighbor-pool-gb 0`。[GIST100K 复测命令](cross-platform.md#复测)
