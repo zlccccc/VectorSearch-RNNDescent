@@ -6,8 +6,8 @@
 
 ~~~bash
 ./build/algorithm --help
-./build/algorithm --mode dataset --dataset-dir benches/datasets/sift --topk 10 --repeat 5
-./build/algorithm --mode dataset --dataset-name sift \
+./build/algorithm --dataset-dir benches/datasets/sift --repeat 5
+./build/algorithm --dataset-name sift \
   --base benches/datasets/sift/base.fvecs \
   --query benches/datasets/sift/query.fvecs \
   --gt benches/datasets/sift/groundtruth.ivecs --topk 10 --repeat 5
@@ -25,7 +25,20 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
   --test-iter 100 --repeat 3 --exact-check-queries 20 --warmup-topk 0
 ~~~
 
-**建图和搜索参数使用不同的配置。**
+## 常用搜索参数
+
+用数据集预设起跑。调 Recall 时先看 `--search-L`，再按原始维度粗排和 FP32 精排的开销调整后续候选数。
+
+| CLI 参数 | C++ 字段 | 控制哪一步 |
+|---|---|---|
+| `--search-L` | `SearchConfig::search_L` | 查图时，只展开当前排名前 L 的候选。候选池更新后，总展开数可以超过 L |
+| `--rerank-candidates` | `SearchConfig::refine_max` | 查图结束后，送入原始维度重排的候选上限 |
+| `--fp32-candidates` | `SearchConfig::fp32_refine_max` | 量化粗排后，送入 FP32 精排的候选上限，默认 32 |
+| `--topk` | 搜索调用的 `topk` | 最终返回的邻居数，Benchmark 默认 10 |
+
+查图维护 `max(search_L, refine_max)` 个有序候选。搜索宽度和各阶段候选上限至少按 Top K 配置，实际候选数取决于上一步产出的数量。候选已经在 FP32 预算内时直接精排。用 `--rerank-quantization fp32` 可跳过量化粗排，对全部重排候选算原始 FP32 距离。`--fp32-candidates 0` 也可以表达全量 FP32 精排。
+
+## 索引和查图进阶参数
 
 | CLI 参数 | 配置字段 | 含义 |
 |---|---|---|
@@ -33,41 +46,44 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 | `--R` | `BuildConfig::R` | 反向边处理时保留的候选上限 |
 | `--K0` | `BuildConfig::K0` | 最终邻接表的裁剪上限，存储时会补齐到四条一组 |
 | `--local-three-hop-prune` | `BuildConfig::local_three_hop_pruning` | 启用局部三跳筛边，默认关闭 |
-| `--num-initialize` | `SearchConfig::num_initialize` | 建图后选出的查询入口数，也影响 BFS 重排的起点 |
-| `--search-L` | `SearchConfig::search_L` | 允许展开的候选范围，限当前排名前 `search_L` |
-| `--beam-size` | `SearchConfig::beam_size` | 收集一批新候选前最多展开的节点数 |
-| `--refine-max` | `SearchConfig::refine_max` | 查询结束时从候选池中取出、参与原始维度排序的数量 |
-| `--fp32-refine-max` | `SearchConfig::fp32_refine_max` | 按原始维度量化距离选择后，做 FP32 精排的数量。默认 32，0 表示全部候选都做 FP32 精排 |
+| `--num-initialize` | `SearchConfig::num_initialize` | 查询入口数，也决定 BFS 重排从哪些点开始 |
+| `--beam-size` | `SearchConfig::beam_size` | 每次更新候选池前最多展开的节点数 |
 | `--graph-quantization` | `SearchConfig::graph_quantization` | 查图底库及邻居缓存的编码，支持 `8bit`（默认）和 `uint4` |
 | `--rerank-quantization` | `SearchConfig::rerank_quantization` | 原始维度粗排的编码，支持 `8bit`（默认）、`uint4` 和 `fp32`（跳过量化粗排） |
 | `--neighbor-pool-gb` | `BuildConfig::neighbor_pool_size_limit_bytes` | 邻接 ID 与可选邻居向量缓存的池预算，CLI 单位为整数 GiB |
-| `--pca-out` | `PCAConfig::out_dim` | 开启 PCA 并指定查图维度 |
-| `--disable-pca` | `PCAConfig::enabled` | 使用原始维度建图和查图 |
-| `--reorder-query-batch` / `--no-reorder-query-batch` | `SearchConfig::reorder_query_batch` | 按 PCA 主成分调整批内查询的执行顺序，默认开启 |
-| `--single-query-threads` | `SearchConfig::single_query_threads` | 一次只提交一条查询时，查图和重排算距共用的 OpenMP 线程数，默认 1，超过 8 按 8 使用 |
-| `--warmup-topk` | `WarmupConfig::topk` | 建图结束后的预热 Top K，0 跳过预热 |
+| `--pca-out` | `PCAConfig::out_dim` | 建图和查图的 PCA 维度，默认 0 使用原始维度 |
 
-`search_L` 和 `refine_max` 可以分别设置。搜索保留 `max(search_L, refine_max)` 个有序候选，只展开当前排名前 `search_L` 的节点，结束后把前 `refine_max` 个候选交给原始维度重排。
-
-两个预算至少为 Top K。入口数至少为两者中的较大值，并按四路算距对齐，受底库条数限制。预设日志和报告记录输入配置，具体规则见 [GraphConfig.h](../solution/rnndescent/build/GraphConfig.h)。`beam_size` 会影响候选合并频率与搜索顺序，应结合 Recall@10 比较。启用量化粗排时，`fp32_refine_max` 控制最后的 FP32 精排量，至少保留 Top K。候选总数在 FP32 预算内时直接做 FP32 精排。
+入口数至少覆盖 `search_L` 和重排候选上限，并按四路算距对齐，受底库条数限制。日志和报告记录输入值，归一化规则见 [GraphConfig.h](../solution/rnndescent/build/GraphConfig.h)。`beam-size` 会改变合并频率和搜索顺序，调参时同时校验 Recall。
 
 局部三跳筛边在最终裁剪前替换有替代路径的边，保持每个节点的出度。启用后可用 ground truth 重新选择达到目标 Recall 的 `search_L`。
 
-查图和原始维度粗排分别选择编码。选择 `8bit` 时使用平台的 INT8 或 UINT8 内核。仅当查图已在原始维度且两阶段均选 `8bit` 时，粗排可复用查图分数。选择 `--rerank-quantization fp32` 或 `--fp32-refine-max 0`，会让所有送入重排的候选直接做 FP32 排序。比较不同方案的速度时，分别调到相同的目标 Recall。
+`--pca-out 64` 会在输入维度大于 64 时启用 PCA。PCA 输出维度须不超过底库条数，原始维度粗排和 FP32 精排仍使用原始向量。
 
-PCA 在 `enabled=true` 且 `0 < out_dim < 输入维度` 时启用，训练要求 `out_dim <= 底库条数`。`--pca-out 64` 同时设置开关与维度。`--enable-pca` 只设置开关，需要配合有效的输出维度。精排使用原始向量与原始维度。
+查图和粗排独立选编码。`8bit` 使用平台的 INT8 或 UINT8 内核。查图已在原始维度且两阶段均选 `8bit` 时，粗排可复用查图分数。`uint4` 需要 AVX-VNNI、AVX-512 VNNI 或支持点积的 NEON，查询用有符号字节参与点积。RNN-Descent 建边始终使用平台的 8 位距离计算器。
+
+邻居池为 0 GiB 时仍分配邻接 ID。正数预算覆盖邻接 ID 和缓存向量，邻接 ID 优先分配。可选缓存还受可用内存限制，程序为系统预留 2 GiB。实际分配和覆盖率见日志，内存组成见 [算法与数据流](architecture.md)。
+
+## 查询调度
+
+| CLI 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `--query-batch-size` | 0 | 每次请求最多提交多少条查询，0 提交整批 |
+| `--single-query-threads` | 1 | 同一条查询的线程数，最多 8 个 |
+| `--worker-candidates` | 0 | 单查询并行时每线程交给合并的候选上限，至少为 Top K，0 继承全局重排候选上限 |
+| `--worker-expansions` | 0 | 单查询并行时每线程实际展开的图节点数上限，0 不限 |
+| `--no-reorder-query-batch` | 关闭 | 开启该选项时，批量查询按输入顺序执行 |
 
 多条查询按 `SearchConfig::num_threads` 在查询之间分工。至多 16 条且查询数超过线程数时，逐条动态分工。其余批次在每 4 条形成的块数不超过线程数时采用静态分工，块数更多时按每块 4 条动态分工。默认在 PCA 至少输出 4 维且本次至少传入 2 条查询时，索引在分流前按前四个主成分生成排序键。可用 `--no-reorder-query-batch` 按输入顺序执行查询，结果均写回原输入行。
 
 单查询并行按四路算距的粒度给各线程分配互不重叠的入口区间，并分摊 `search_L`。线程共用节点访问标记，合并、去重后由同一线程组分担粗排和 FP32 算距。可用入口不足时会减少实际线程数。并行和单线程的候选池不同，比较延迟时请用 ground truth 重新校验达到目标 Recall 的 `search_L`。
 
-4 位编码由运行参数选择，与 PCA 开关、输出维度和 FP32 保留数独立。支持 AVX-VNNI、AVX-512 VNNI 和支持点积的 NEON 构建，活动阶段在缺少 4 位内核时会报错。4 位阶段的查询用有符号字节参与点积。RNN-Descent 建边使用平台的 8 位距离计算器。
+例如，用 `--query-batch-size 1 --single-query-threads 8` 测单查询延迟。每线程预算只在有多个线程共同处理一条查询时生效。展开上限按实际读到的邻接表计数，访问标记拦下的节点不计入。候选上限作用于合并输入，本地候选池至少保有 `search_L` 分摊后的宽度。
 
-邻居池为 0 GiB 时仍分配邻接 ID。正数预算用于邻接 ID 和缓存数据，邻接 ID 的必要空间优先保证，因此实际池大小可超过很小的预算。程序还会读取系统可用内存，并为系统预留 2 GiB 后限制可选缓存。日志里的缓存覆盖率和池大小反映实际分配情况。完整内存组成见 [算法与数据流](architecture.md)。
+## 数据集预设
 
-**Benchmark 先应用通用配置，再应用数据集预设，最后应用 CLI 覆盖值。**
+Benchmark 先应用通用配置，再应用数据集预设，最后应用命令行覆盖值。报告沿用原有字段名。
 
-| 数据集名称 | S | R | K0 | 入口数 | search_L | beam_size | refine_max |
+| 数据集名称 | S | R | K0 | 入口数 | 查图宽度 | Beam | 重排候选 |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | random / 自定义名称 | 196 | 2048 | 48 | 64 | 96 | 8 | 64 |
 | sift / siftsmall | 196 | 2048 | 32 | 192 | 128 | 8 | 64 |
@@ -76,14 +92,14 @@ PCA 在 `enabled=true` 且 `0 < out_dim < 输入维度` 时启用，训练要求
 
 表中的入口数为归一化前的配置值。所有预设的 `T1=4`、`T2=15`，查图和粗排默认用 8 位，FP32 精排数量默认 32，PCA 默认关闭，邻居池预算默认 0 GiB。名称按小写匹配，例如目录名为 `gist1m` 时可加 `--dataset-name gist`。预设值用于启动测量，目标 Recall 由实际数据与 ground truth 校验。
 
-`BuildConfig` 的 `T1`、`T2`、`random_seed`、`save_neighbor`、`random_init` 可通过 C++ 设置。CLI 提供上表列出的建图和搜索覆盖项。
+`BuildConfig` 的 `T1`、`T2`、`random_seed`、`save_neighbor`、`random_init` 可通过 C++ 设置。旧命令中的 `--refine-max`、`--fp32-refine-max`、`--single-query-refine-max` 和 `--single-query-max-expansions` 仍可使用。`--disable-pca` 等价于 `--pca-out 0`。旧开关 `--enable-pca` 仍需有有效的输出维度才会启用 PCA。
 
-**输入与测量参数决定读取范围和报告内容。**
+## 输入与测量
 
 | CLI 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--topk` | 10 | 每条查询返回的邻居数 |
 | `--repeat` | 10 | 同一索引上的查询批次重复次数 |
+| `--warmup-topk` | 10 | 建图后用于预热的 Top K，0 跳过预热 |
 | `--output-iter` | 5 | 打印结果详情的查询数，0 只保留汇总 |
 | `--exact-check-queries` | 20 | 随机模式中做穷举校验的查询数 |
 | `--data-size` | 100000 | 随机底库条数 |
@@ -103,8 +119,12 @@ dataset 模式读取文件中的全部底库和查询行，用对应 ground trut
 | `OPENBLAS_NUM_THREADS` | 控制 OpenBLAS 自身的线程数 |
 | `OMP_DYNAMIC=FALSE` | 固定 OpenMP 请求的线程配置 |
 | `OMP_PROC_BIND`、`OMP_PLACES` | 由 OpenMP 运行时管理线程亲和性 |
+| `OMP_WAIT_POLICY` | 控制空闲 OpenMP 线程的等待策略，`run.sh` 默认设为 `ACTIVE` |
+| `GOMP_SPINCOUNT` | GCC libgomp 线程休眠前的自旋次数，`run.sh` 在 `ACTIVE` 下默认设为 `16000` |
 | `DATASET` | 默认数据集目录名 |
 | `BUILD_DIR` | `run.sh` 使用的 CMake 构建目录 |
 | `RESULT_DIR` | 本次报告的输出目录 |
 
-批量查询多于 16 条时，PCA 的并行 GEMV 使用 `SearchConfig::num_threads`。OpenBLAS 线程数仍影响 PCA 训练、底库大批投影和单线程下的整批查询投影。C++ 调用时直接设置 `BuildConfig::num_threads` 与 `SearchConfig::num_threads`，Benchmark 的 16 线程限制只作用于其参数预设过程。
+PCA 的并行查询投影使用 `SearchConfig::num_threads` 作为线程预算。OpenBLAS 线程数仍影响 PCA 训练、底库大批投影和单线程下的整批查询投影。C++ 调用时直接设置 `BuildConfig::num_threads` 与 `SearchConfig::num_threads`，Benchmark 的 16 线程限制只作用于其参数预设过程。[PCA 投影规则](architecture.md)
+
+`run.sh` 默认使用 `ACTIVE + 16000`，启动前设置的环境变量优先。可用 `OMP_WAIT_POLICY=PASSIVE ./run.sh` 选择被动等待。直接启动二进制或在宿主程序中使用索引时，由启动进程的环境决定运行时配置。 [原默认与各自旋设置的实测](../benchmark/v2.0experiments/single-query-wait.md)

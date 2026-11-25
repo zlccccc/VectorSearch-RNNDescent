@@ -19,6 +19,29 @@ using std::cout;
 using std::exception;
 using std::vector;
 
+inline vector<float> measure_queries(Solution &solution, const vector<float> &query, vector<int> &result,
+                                     const BenchmarkConfig &config, BenchmarkStats &stats) {
+    const auto queries = rnndescent::FloatMatrixView::from_vector(query, config.dim);
+    const int rows = queries.row_count();
+    const int batch_size = config.query_batch_size > 0 ? config.query_batch_size : rows;
+    vector<float> distances(result.size());
+    const auto output = rnndescent::SearchResultView::from_vectors(result, distances, config.topk);
+
+    for (int i = 0; i < config.repeat; i++) {
+        const auto before_test = chrono::high_resolution_clock::now();
+        for (int offset = 0; offset < rows;) {
+            const int count = std::min(batch_size, rows - offset);
+            solution.search({queries.row_ptr(offset), count, config.dim}, output.slice(offset));
+            offset += count;
+        }
+        const auto after_test = chrono::high_resolution_clock::now();
+        const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / rows;
+        stats.latency_ms.push_back(t);
+        cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " QPS" << endl;
+    }
+    return distances;
+}
+
 inline void run_random_benchmark(BenchmarkConfig config) {
     if (config.dim <= 0 || config.data_size <= 0 || config.test_iter <= 0)
         throw std::runtime_error("random dimension, data size and query count must be positive");
@@ -45,18 +68,10 @@ inline void run_random_benchmark(BenchmarkConfig config) {
     stats.build_seconds = chrono::duration<double>(after_build - before_build).count();
     cout << "build time: " << stats.build_seconds << endl;
 
-    for (int i = 0; i < config.repeat; i++) {
-        const auto before_test = chrono::high_resolution_clock::now();
-        solution.search_batch(query, result, config.topk);
-        const auto after_test = chrono::high_resolution_clock::now();
-        const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / config.test_iter;
-        stats.latency_ms.push_back(t);
-        cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " QPS" << endl;
-    }
-
-    stats.accuracy = evaluate_accuracy_exact(dataset, query, result, solution.distance_buffer(), config.data_size, config.dim, config.topk,
+    const auto distances = measure_queries(solution, query, result, config, stats);
+    stats.accuracy = evaluate_accuracy_exact(dataset, query, result, distances, config.data_size, config.dim, config.topk,
                                              config.exact_check_queries);
-    print_sample_results(dataset, query, result, solution.distance_buffer(), config.dim, config.topk, config.output_iter);
+    print_sample_results(dataset, query, result, distances, config.dim, config.topk, config.output_iter);
     write_benchmark_report(config, stats);
     solution.reset();
 }
@@ -100,19 +115,11 @@ inline void run_dataset_benchmark(BenchmarkConfig config) {
     stats.build_seconds = chrono::duration<double>(after_build - before_build).count();
     cout << "build time: " << stats.build_seconds << endl;
 
-    for (int i = 0; i < config.repeat; i++) {
-        const auto before_test = chrono::high_resolution_clock::now();
-        solution.search_batch(query.values, result, config.topk);
-        const auto after_test = chrono::high_resolution_clock::now();
-        const float t = chrono::duration<double, std::milli>(after_test - before_test).count() / query.rows;
-        stats.latency_ms.push_back(t);
-        cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " QPS" << endl;
-    }
-
+    const auto distances = measure_queries(solution, query.values, result, config, stats);
     if (gt.rows > 0) {
-        stats.accuracy = evaluate_accuracy_with_gt(dataset.values, query.values, gt, result, solution.distance_buffer(), dataset.dim, config.topk);
+        stats.accuracy = evaluate_accuracy_with_gt(dataset.values, query.values, gt, result, distances, dataset.dim, config.topk);
     }
-    print_sample_results(dataset.values, query.values, result, solution.distance_buffer(), dataset.dim, config.topk, config.output_iter);
+    print_sample_results(dataset.values, query.values, result, distances, dataset.dim, config.topk, config.output_iter);
     write_benchmark_report(config, stats);
     solution.reset();
 }

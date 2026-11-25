@@ -202,12 +202,19 @@ TEST(SolutionTest, ParallelSingleQueryMergesUniqueCandidatesAndResetsBetweenQuer
     rnndescent::RNNDescent::SearchConfig search;
     search.num_threads = 1;
     search.single_query_threads = 4;
-    search.num_initialize = search.search_L = search.refine_max = rows;
+    search.num_initialize = rows;
+    search.search_L = rows / 2;
+    search.refine_max = rows / 4;
     search.fp32_refine_max = 0;
 
     Solution solution;
     solution.build(dimension, base, warmup, build, search);
+    EXPECT_THROW(solution.set_single_query_limits(-1, 1), std::runtime_error);
     for (int row : {7, 31, 7}) {
+        if (row == 31)
+            solution.set_single_query_limits(3, 1);
+        else
+            solution.set_single_query_limits(0);
         const auto begin = base.begin() + row * dimension;
         const std::vector<float> query(begin, begin + dimension);
         for (int topk : {5, rows}) {

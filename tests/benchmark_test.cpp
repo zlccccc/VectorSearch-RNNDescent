@@ -74,7 +74,8 @@ using ::testing::ThrowsMessage;
 
 TEST(BenchmarkCliTest, AppliesExplicitSettingsAndCacheDefaults) {
     auto config = parse({"--dim", "256", "--neighbor-pool-gb", "2", "--pca-out", "65", "--no-reorder-query-batch",
-                         "--single-query-threads", "4"});
+                         "--single-query-threads", "4", "--worker-candidates", "24",
+                         "--worker-expansions", "16", "--query-batch-size", "1"});
     benchmark::apply_solution_preset(config);
     EXPECT_TRUE(config.dim_explicit);
     EXPECT_EQ(config.dim, 256);
@@ -84,12 +85,18 @@ TEST(BenchmarkCliTest, AppliesExplicitSettingsAndCacheDefaults) {
     EXPECT_FALSE(config.search_config.reorder_query_batch);
     EXPECT_TRUE(parse({"--no-reorder-query-batch", "--reorder-query-batch"}).search_config.reorder_query_batch);
     EXPECT_EQ(config.search_config.single_query_threads, 4);
+    EXPECT_EQ(config.search_config.single_query_limits.candidates_per_worker, 24);
+    EXPECT_EQ(config.search_config.single_query_limits.expansions_per_worker, 16);
+    EXPECT_EQ(config.query_batch_size, 1);
     EXPECT_EQ(parse({"--single-query-threads", "16"}).search_config.single_query_threads, 8);
     auto defaults = parse({});
     benchmark::apply_solution_preset(defaults);
     EXPECT_EQ(defaults.build_config.neighbor_pool_size_limit_bytes, 0);
     EXPECT_TRUE(defaults.search_config.reorder_query_batch);
     EXPECT_EQ(defaults.search_config.single_query_threads, 1);
+    EXPECT_EQ(defaults.search_config.single_query_limits.candidates_per_worker, 0);
+    EXPECT_EQ(defaults.search_config.single_query_limits.expansions_per_worker, 0);
+    EXPECT_EQ(defaults.query_batch_size, 0);
 }
 
 TEST(BenchmarkCliTest, RejectsInvalidBudgetsAndMissingValues) {
@@ -102,6 +109,30 @@ TEST(BenchmarkCliTest, RejectsInvalidBudgetsAndMissingValues) {
     EXPECT_THAT([] { parse({"--dim"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("missing value")));
     EXPECT_THAT([] { parse({"--single-query-threads", "0"}); },
                 ThrowsMessage<std::runtime_error>(HasSubstr("positive integer")));
+    EXPECT_THAT([] { parse({"--worker-candidates", "-1"}); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
+    EXPECT_THAT([] { parse({"--worker-expansions", "1.5"}); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
+    EXPECT_THAT([] { parse({"--query-batch-size", "-1"}); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
+    EXPECT_THAT([] { parse({"--pca-out", "-1"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
+}
+
+TEST(BenchmarkCliTest, ExistingFlagsAndNewNamesYieldTheSameSettings) {
+    auto current = parse({"--rerank-candidates", "140", "--fp32-candidates", "40", "--pca-out", "64", "--pca-out", "0",
+                          "--worker-candidates", "50", "--worker-expansions", "160"});
+    auto previous = parse({"--refine-max", "140", "--fp32-refine-max", "40", "--pca-out", "64", "--disable-pca",
+                           "--single-query-refine-max", "50", "--single-query-max-expansions", "160"});
+    benchmark::apply_solution_preset(current);
+    benchmark::apply_solution_preset(previous);
+    EXPECT_EQ(current.search_config.refine_max, previous.search_config.refine_max);
+    EXPECT_EQ(current.search_config.fp32_refine_max, previous.search_config.fp32_refine_max);
+    EXPECT_EQ(current.search_config.single_query_limits.candidates_per_worker, previous.search_config.single_query_limits.candidates_per_worker);
+    EXPECT_EQ(current.search_config.single_query_limits.expansions_per_worker, previous.search_config.single_query_limits.expansions_per_worker);
+    EXPECT_FALSE(current.pca_config.enabled);
+    EXPECT_FALSE(previous.pca_config.enabled);
+    EXPECT_EQ(current.pca_config.out_dim, 0);
+    EXPECT_EQ(previous.pca_config.out_dim, 0);
 }
 
 TEST(BenchmarkCliTest, GraphBuildOptionsOverrideDatasetPreset) {

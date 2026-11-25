@@ -6,8 +6,9 @@
 |---|---|
 | `build(d, base, warmup, build_config, search_config, pca_config)` | 根据底库创建索引，最后一项默认为关闭 PCA |
 | `search(queries, ids, topk)` | 按查询条数选择执行方式，自动将 `ids` 调整为查询条数乘 Top K |
+| `search(query_view, result_view)` | 直接写入调用方提供的 ID 和距离缓冲区，每个缓冲区须能容纳查询条数乘 Top K 项 |
 | `search_batch(queries, ids, topk)` | 批量调用入口，使用与 `search` 相同的查询准备与调度 |
-| `distance_buffer()` | 返回最近一次查询距离的常量引用，与 `ids` 按相同顺序排列 |
+| `distance_buffer()` | 返回最近一次向量接口写入的距离，与 `ids` 按相同顺序排列 |
 | `reset()` | 释放当前图、量化存储、邻居池和 PCA，后续可再次 `build` |
 
 底库行数为 `base.size() / d`，查询条数为 `queries.size() / d`。第 `q` 条查询的第 `k` 个结果位于 `ids[q * topk + k]`，对应距离位于 `distance_buffer()[q * topk + k]`。输入要求维度为正、底库非空、元素数能整除维度，并提供有限数值。初始邻居数 `S` 应在底库条数范围内。Top K 需为正并受底库条数约束，入口需要满足四路批量算距的要求，示例使用 64 个入口。
@@ -21,6 +22,8 @@
 量化粗排按分数保留 `fp32_refine_max` 项，默认 32，至少保留 Top K。设 `rerank_quantization = std::nullopt` 或 `fp32_refine_max = 0` 时，送入重排的候选直接做 FP32 精排。返回距离为原始 FP32 空间的平方 L2。
 
 只传入一条时，可用 `SearchConfig::single_query_threads` 指定查图和重排算距共用的线程数，最多 8 个。传入多条时，每条查询由一个线程完成，OpenMP 线程组大小由 `SearchConfig::num_threads` 指定。至多 16 条且查询数超过线程数时，线程逐条动态领取查询。其余批次在每 4 条形成的块数不超过线程数时用静态分工，块数更多时按每块 4 条动态分工。符合 PCA 批内排序条件的查询默认在分流前排序，可将 `SearchConfig::reorder_query_batch` 设为 `false` 以按输入顺序执行。结果始终按输入行写回。
+
+`SearchConfig::single_query_limits` 集中配置单查询并行的两个预算。`candidates_per_worker` 限制每线程交给合并的候选数，默认 0 继承全局 `refine_max`。`expansions_per_worker` 限制每线程实际展开的图节点数，默认 0 不限。索引建好后，可在两次搜索之间调用 `set_single_query_limits(candidates_per_worker, expansions_per_worker)`。只设置候选上限时，可以写成 `set_single_query_limits(170)`。
 
 两条路径共用量化查询、PCA 查询缓冲和搜索工作区。同一 `Solution` 实例按顺序调用查询。不同实例分别管理自己的索引和邻居池。外层需要并发访问同一实例时，由调用方串行化这些入口。
 

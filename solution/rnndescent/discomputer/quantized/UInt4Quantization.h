@@ -13,6 +13,18 @@
 
 namespace rnndescent {
 
+namespace detail {
+
+// Round halves away from zero, matching round() followed by saturation.
+inline int round_signed_query_code(float value) {
+    const float bounded = std::clamp(value, -127.0f, 127.0f);
+    const int integral = static_cast<int>(bounded);
+    const float fraction = bounded - static_cast<float>(integral);
+    return integral + (fraction >= 0.5f) - (fraction <= -0.5f);
+}
+
+} // namespace detail
+
 // One byte stores matching coordinates from two consecutive blocks of
 // features. Each backend selects the block width consumed by its dot kernel.
 template <size_t BlockBytes>
@@ -134,9 +146,10 @@ class PackedUInt4Quantization {
     int encode_query(const float *source, uint8_t *row, size_t d) const {
         int norm = 0;
         // The base reconstructs to 8 * code in signed byte query units.
+#pragma omp simd reduction(+ : norm)
         for (size_t j = 0; j < d; ++j) {
             const float position = (source[j] - centers[j]) / step + center_code;
-            const int code = static_cast<int>(std::clamp(std::round(position * query_multiplier), -127.0f, 127.0f));
+            const int code = detail::round_signed_query_code(position * query_multiplier);
             row[j] = static_cast<uint8_t>(code);
             norm += code * code;
         }
@@ -214,13 +227,15 @@ class RowwiseUInt4Quantization {
 
     QueryParams encode_query(const float *source, uint8_t *code, size_t dim) const {
         float max_abs = 0;
+#pragma omp simd reduction(max : max_abs)
         for (size_t j = 0; j < dim; ++j)
             max_abs = std::max(max_abs, std::abs(source[j] - center[j]));
         const float scale = max_abs / 127;
         const float inverse = max_abs > 0 ? 127 / max_abs : 0;
         int sum = 0, squared_sum = 0;
+#pragma omp simd reduction(+ : sum, squared_sum)
         for (size_t j = 0; j < dim; ++j) {
-            const int value = static_cast<int>(std::clamp(std::round((source[j] - center[j]) * inverse), -127.0f, 127.0f));
+            const int value = detail::round_signed_query_code((source[j] - center[j]) * inverse);
             code[j] = static_cast<uint8_t>(value);
             sum += value;
             squared_sum += value * value;

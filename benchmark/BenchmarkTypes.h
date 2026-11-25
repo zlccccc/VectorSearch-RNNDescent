@@ -49,6 +49,7 @@ struct BenchmarkConfig {
     int output_iter = 5;
     int topk = 10;
     int repeat = 10;
+    int query_batch_size = 0;
     int warmup_topk = 10;
     int override_s = -1;
     int override_r = -1;
@@ -60,9 +61,6 @@ struct BenchmarkConfig {
     int override_beam_size = -1;
     long long override_neighbor_pool_gb = -1;
     bool dim_explicit = false;
-    bool override_pca_enabled = false;
-    bool pca_enabled = false;
-    int pca_out_dim = 0;
     rnndescent::RNNDescent::BuildConfig build_config;
     rnndescent::RNNDescent::SearchConfig search_config;
     rnndescent::IndexRNNDescent::PCAConfig pca_config;
@@ -117,8 +115,6 @@ inline void apply_common_config(BenchmarkConfig &config) {
     config.build_config.R = 2048;
     config.build_config.T1 = 4;
     config.build_config.T2 = 15;
-    config.pca_config.enabled = false;
-    config.pca_config.out_dim = 0;
 }
 
 inline void apply_dataset_preset(BenchmarkConfig &config) {
@@ -165,10 +161,6 @@ inline void apply_config_overrides(BenchmarkConfig &config) {
         config.search_config.beam_size = config.override_beam_size;
     if (config.override_neighbor_pool_gb >= 0)
         config.build_config.neighbor_pool_size_limit_bytes = config.override_neighbor_pool_gb * 1024ll * 1024 * 1024;
-    if (config.override_pca_enabled) {
-        config.pca_config.enabled = config.pca_enabled;
-        config.pca_config.out_dim = config.pca_enabled ? config.pca_out_dim : 0;
-    }
 }
 
 inline void apply_solution_preset(BenchmarkConfig &config) {
@@ -199,6 +191,9 @@ inline void print_solution_config(const BenchmarkConfig &config) {
          << " rerank_quantization=" << quantization_name(config.search_config.rerank_quantization)
          << " reorder_query_batch=" << config.search_config.reorder_query_batch
          << " single_query_threads=" << config.search_config.single_query_threads
+         << " single_query_refine_max=" << config.search_config.single_query_limits.candidates_per_worker
+         << " single_query_max_expansions=" << config.search_config.single_query_limits.expansions_per_worker
+         << " query_batch_size=" << config.query_batch_size
          << " num_threads=" << config.search_config.num_threads << endl;
     cout << "pca config:"
          << " enabled=" << (config.pca_config.enabled ? 1 : 0) << " out_dim=" << config.pca_config.out_dim << endl;

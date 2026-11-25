@@ -88,7 +88,7 @@ class GraphSearcher {
 
     config::SearchConfig checked_search_config(const config::SearchConfig &search_config, const SearchResultView &result) const;
 
-    template <bool SharedVisit>
+    template <bool SharedVisit, bool LimitExpansions = false>
     std::vector<SingleNeighbor> &search_from_entries(int threadid, int queryid, const config::SearchConfig &config,
                                                     int entry_begin);
     void merge_worker_candidates(int workers, int refine_max);

@@ -71,7 +71,7 @@ TEST(PCAProjectionTest, SampledTrainingPreservesTheLeadingAxisAcrossBatches) {
 }
 
 TEST(PCAProjectionTest, HadamardMixesPcaAxesAndPreservesProjectedDistances) {
-    for (const int output_dim : {6, 64, 96}) {
+    for (const int output_dim : {6, 64, 96, 192}) {
         SCOPED_TRACE(output_dim);
         const int axes = output_dim + 1;
         const int rows = 2 * axes;
@@ -131,11 +131,13 @@ TEST(PCAProjectionTest, HadamardMixesPcaAxesAndPreservesProjectedDistances) {
             for (int i = 0; i < output_dim; ++i)
                 EXPECT_NEAR(blas.row_ptr(row)[i], projected.row_ptr(row)[i], 1e-5f);
 
-        const auto parallel = pca.project_queries(batch, 3);
-        ASSERT_EQ(parallel.row_count(), batch_rows);
-        for (int row = 0; row < parallel.row_count(); ++row)
-            for (int i = 0; i < output_dim; ++i)
-                EXPECT_NEAR(blas.row_ptr(row)[i], parallel.row_ptr(row)[i], 1e-5f);
+        for (const int query_count : {batch_rows - 1, batch_rows}) {
+            const auto parallel = pca.project_queries({queries.data(), query_count, input_dim}, 3);
+            ASSERT_EQ(parallel.row_count(), query_count);
+            for (int row = 0; row < parallel.row_count(); ++row)
+                for (int i = 0; i < output_dim; ++i)
+                    EXPECT_NEAR(blas.row_ptr(row)[i], parallel.row_ptr(row)[i], 1e-5f);
+        }
     }
 }
 

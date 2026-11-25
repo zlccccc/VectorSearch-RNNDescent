@@ -36,7 +36,7 @@ ctest --test-dir build --output-on-failure --no-tests=error
 OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
   ./build/algorithm --mode random --data-size 10000 --dim 128 \
   --test-iter 100 --topk 10 --repeat 3 --exact-check-queries 20 \
-  --S 32 --R 64 --K0 16 --num-initialize 64 --search-L 48 --refine-max 48 \
+  --S 32 --R 64 --K0 16 --num-initialize 64 --search-L 48 --rerank-candidates 48 \
   --warmup-topk 0 --output-iter 0
 ~~~
 
@@ -103,7 +103,7 @@ ctest --test-dir build -R RecallTest --output-on-failure
 
 - v1.0 归档 SIFT、GIST 的跨设备和多线程结果，以及邻居缓存、候选去重和线程绑核实验。[v1.0 Experiments](benchmark/v1.0experiments/README.md)
 - v1.1 记录批量调度重构前的性能基线，以及紧凑邻接存储、批量算距和大页的同图对照。[v1.1 Experiments](benchmark/v1.1experiments/README.md)
-- v2.0 对照单查询串行、单查询内并行和批量查询间并行，记录批大小、线程数和查询排序对吞吐的影响。[v2.0 Experiments](benchmark/v2.0experiments/README.md)
+- v2.0 记录相对 v1.1 的 1M、100K 封板结果，以及批大小、线程数和查询排序对吞吐的影响。 [v2.0 封板对照与实验](benchmark/v2.0experiments/README.md#封板性能对照)
 
 ### 随机向量
 
@@ -114,8 +114,8 @@ for dim in 256 512 1024; do
   OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
     ./build/algorithm --mode random --data-size 100000 --dim "$dim" \
     --test-iter 10000 --topk 10 --repeat 10 --exact-check-queries 100 --output-iter 0 \
-    --K0 32 --num-initialize 160 --search-L 160 --refine-max 128 --beam-size 8 \
-    --disable-pca --neighbor-pool-gb 4
+    --K0 32 --num-initialize 160 --search-L 160 --rerank-candidates 128 \
+    --neighbor-pool-gb 4
 done
 ```
 
@@ -126,12 +126,12 @@ done
 ```bash
 sh benches/download_dataset.sh sift
 OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 ./build/algorithm \
-  --mode dataset --dataset-dir benches/datasets/sift --topk 10 --repeat 5
+  --dataset-dir benches/datasets/sift --repeat 5
 ```
 
 下载脚本还支持 `siftsmall` 和 `gist`。数据目录可使用 [benches/README.md](benches/README.md) 中的文件别名，也可用 `--base`、`--query` 和可选的 `--gt` 指定文件。底库和查询支持 `fvecs`、`bvecs`，预计算近邻使用 `ivecs`。传入 `--pca-out <维度>` 可开启建图与查询的 PCA 投影，精排仍使用原始向量。
 
-自定义数据集和随机向量采用通用参数。搜索预算可通过 `--search-L`、`--num-initialize` 和 `--refine-max` 等参数显式指定。SIFT、SIFT100K、SIFT Small 和 GIST 在 benchmark 中有数据集预设，命令行参数优先。可用 `./run.sh` 增量构建并运行 benchmark，默认使用 `benches/datasets/sift`。也可以在脚本后传入完整的 benchmark 参数，并通过 `BUILD_DIR` 使用已有的 CMake 构建目录。
+SIFT、SIFT100K、SIFT Small 和 GIST 有数据集预设，自定义数据与随机数据使用通用配置。调搜索时用 `--search-L` 设查图宽度、`--rerank-candidates` 设查图后送重排的数量、`--fp32-candidates` 设最终 FP32 精排的数量。`./run.sh` 可增量构建并运行，默认使用 `benches/datasets/sift`。脚本接受相同的命令行参数，可通过 `BUILD_DIR` 指定 CMake 构建目录。 [参数配置](docs/configuration.md)
 
 将 SIFT100K 的底库、查询及对应的 ground truth 放入 `benches/datasets/sift100k`，用 `DATASET=sift100k ./run.sh` 运行以 99% Recall@10 为目标的预设。
 

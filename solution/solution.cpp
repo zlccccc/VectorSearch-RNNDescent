@@ -79,6 +79,18 @@ void Solution::search(const std::vector<float> &queries, std::vector<int> &res, 
     index_->search(query_view, result_view);
 }
 
+void Solution::search(const rnndescent::FloatMatrixView &queries, const rnndescent::SearchResultView &result) {
+    if (!index_)
+        throw std::runtime_error("search called before build");
+    index_->search(queries, result);
+}
+
+void Solution::set_single_query_limits(int candidates_per_worker, int expansions_per_worker) {
+    if (!index_)
+        throw std::runtime_error("set_single_query_limits called before build");
+    index_->set_single_query_limits(candidates_per_worker, expansions_per_worker);
+}
+
 void Solution::search_batch(const std::vector<float> &queries, std::vector<int> &res, int topk) {
     search(queries, res, topk);
 }

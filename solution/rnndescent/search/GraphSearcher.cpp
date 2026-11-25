@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <omp.h>
 #include <stdexcept>
 
@@ -81,6 +82,7 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
 
     int active_workers = 1;
     size_t fp32_count = 0;
+    const auto limits = safe_config.single_query_limits;
     const int *const row_order = storage_.original_ids ? storage_.original_ids->data() : nullptr;
 #ifdef INTERNAL_CLOCK_TEST
     std::chrono::steady_clock::time_point rerank_start;
@@ -97,9 +99,13 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
         local_config.num_initialize = 4 * (groups_per_worker + (worker < remainder));
         const int local_width = safe_config.search_L / team_size + (safe_config.search_L % team_size != 0);
         local_config.search_L = std::clamp(local_width, topk, local_config.num_initialize);
-        // A worker can supply most of the global refinement pool when its entries are close to the query.
         local_config.refine_max = std::min(safe_config.refine_max, local_config.num_initialize);
-        search_from_entries<true>(worker, queryid, local_config, first_entry);
+        if (team_size > 1 && limits.candidates_per_worker > 0)
+            local_config.refine_max = std::min(local_config.refine_max, std::max(topk, limits.candidates_per_worker));
+        if (team_size > 1 && limits.expansions_per_worker > 0)
+            search_from_entries<true, true>(worker, queryid, local_config, first_entry);
+        else
+            search_from_entries<true>(worker, queryid, local_config, first_entry);
         if (team_size > 1) {
             // The merge reads every worker's candidate pool.
 #pragma omp barrier
@@ -159,7 +165,7 @@ void GraphSearcher::merge_worker_candidates(int workers, int refine_max) {
     merged_candidates_.assign(begin, end);
 }
 
-template <bool SharedVisit>
+template <bool SharedVisit, bool LimitExpansions>
 std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, int queryid, const config::SearchConfig &search_config,
                                                                 int entry_begin) {
         const int search_L = search_config.search_L;
@@ -243,11 +249,13 @@ std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, in
         };
 
         int smallest_pos = 0;
+        int remaining_expansions = search_config.single_query_limits.expansions_per_worker;
         // Only the closest search_L candidates are eligible for expansion.
-        while (smallest_pos < search_L) {
+        while (smallest_pos < search_L && (!LimitExpansions || remaining_expansions > 0)) {
+            const int beam_limit = LimitExpansions ? std::min(beam_size, remaining_expansions) : beam_size;
             size_t score_count = 0;
             auto *next_span = neighbor_spans;
-            for (int beam = 0; smallest_pos < search_L && beam < beam_size; smallest_pos++) {
+            for (int beam = 0; smallest_pos < search_L && beam < beam_limit; smallest_pos++) {
                 if (retset[smallest_pos].id & 0x80000000)
                     continue;
                 int n = retset[smallest_pos].id;
@@ -258,6 +266,8 @@ std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, in
                         continue;
                 }
                 beam++;
+                if constexpr (LimitExpansions)
+                    --remaining_expansions;
 
 #ifdef INTERNAL_CLOCK_TEST
                 nowtime = std::chrono::high_resolution_clock::now();
@@ -265,7 +275,7 @@ std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, in
                 prevtime = nowtime;
 #endif
                 // Overlap the next record's header load with scoring this neighborhood.
-                if (beam < beam_size && smallest_pos + 1 < search_L) {
+                if (beam < beam_limit && smallest_pos + 1 < search_L) {
                     const int next = retset[smallest_pos + 1].id;
                     if (next >= 0)
                         storage_.final_graph_neighbors[next].prefetch_header();

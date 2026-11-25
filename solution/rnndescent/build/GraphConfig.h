@@ -26,17 +26,23 @@ struct BuildConfig {
 struct SearchConfig {
     static constexpr int max_single_query_threads = 8;
 
+    struct SingleQueryLimits {
+        int candidates_per_worker = 0; // 0 inherits the query's rerank candidate limit.
+        int expansions_per_worker = 0; // 0 leaves the number of expanded graph nodes uncapped.
+    };
+
     int beam_size = 8;
     int num_threads = 16;
-    int search_L = 96;
+    int search_L = 96; // Expand only candidates in the current closest L.
     int num_initialize = 64;
-    int refine_max = 64;
-    int fp32_refine_max = 32;
+    int refine_max = 64; // Graph candidates sent to reranking.
+    int fp32_refine_max = 32; // Candidates reranked in FP32, 0 refines every graph candidate.
     QuantizedFormat graph_quantization = QuantizedFormat::Byte;
     // A disengaged format sends the graph candidates straight to FP32.
     std::optional<QuantizedFormat> rerank_quantization = QuantizedFormat::Byte;
     bool reorder_query_batch = true;
     int single_query_threads = 1;
+    SingleQueryLimits single_query_limits;
 };
 
 inline BuildConfig sanitize_build_config(BuildConfig config) {

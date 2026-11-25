@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <type_traits>
@@ -315,6 +316,17 @@ TEST_P(NeighborCacheLayoutTest, PreservesLayoutAndDistances) {
 }
 
 #if defined(RNNDESCENT_HAS_UINT4_KERNEL)
+TEST(PackedUInt4CacheTest, QueryRoundingMatchesScalarAtHalfSteps) {
+    const float infinity = std::numeric_limits<float>::infinity();
+    for (int i = -129; i <= 128; ++i) {
+        const float half = static_cast<float>(i) + 0.5f;
+        for (const float value : {std::nextafter(half, -infinity), half, std::nextafter(half, infinity)}) {
+            const int expected = static_cast<int>(std::clamp(std::round(value), -127.0f, 127.0f));
+            EXPECT_EQ(rnndescent::detail::round_signed_query_code(value), expected) << value;
+        }
+    }
+}
+
 TEST(PackedUInt4CacheTest, MatchesScalarAndCacheFallback) {
     using Kernel = rnndescent::SelectedUInt4Kernel;
     using PackedGraph = rnndescent::QuantizedDistanceComputer<Kernel, Kernel::Encoding>;

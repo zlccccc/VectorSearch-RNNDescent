@@ -40,6 +40,12 @@ struct IndexRNNDescent {
 
   public:
 
+    void set_single_query_limits(int candidates_per_worker, int expansions_per_worker) {
+        if (candidates_per_worker < 0 || expansions_per_worker < 0)
+            throw std::runtime_error("single-query limits must be non-negative");
+        search_config.single_query_limits = {candidates_per_worker, expansions_per_worker};
+    }
+
     void build(const FloatMatrixView &base) {
         RNNDESCENT_ASSERT_MSG(reranker == nullptr, "incremental add is not supported");
         base.validate("add data");

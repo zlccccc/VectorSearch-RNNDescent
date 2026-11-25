@@ -19,7 +19,10 @@ class Solution {
                const rnndescent::RNNDescent::SearchConfig &search_config,
                const rnndescent::IndexRNNDescent::PCAConfig &pca_config = {});
     void search(const std::vector<float> &queries, std::vector<int> &res, int topk);
+    void search(const rnndescent::FloatMatrixView &queries, const rnndescent::SearchResultView &result);
     void search_batch(const std::vector<float> &queries, std::vector<int> &res, int topk);
+    // Apply to subsequent parallel single-query searches on the built index.
+    void set_single_query_limits(int candidates_per_worker, int expansions_per_worker = 0);
     void reset();
     const std::vector<float> &distance_buffer() const { return distances_; }
     ~Solution() = default;

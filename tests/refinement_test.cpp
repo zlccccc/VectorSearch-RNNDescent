@@ -261,7 +261,7 @@ TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges)
     };
 
     auto recorder = std::make_unique<EntryRecorder>();
-    const auto &scored_ids = recorder->scored_ids;
+    auto &scored_ids = recorder->scored_ids;
     std::unique_ptr<rnndescent::MyDistanceComputer> computer = std::move(recorder);
     std::vector<rnndescent::SelectedNeighborsContainerType> neighbors(entry_count);
     rnndescent::RNNDescent::SearchConfig search;
@@ -274,7 +274,7 @@ TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges)
     std::iota(original_ids.rbegin(), original_ids.rend(), 0);
     rnndescent::search::GraphSearcher searcher({neighbors, computer, &original_ids}, search, 4, perf);
     auto fp32 = std::make_unique<EntryRecorder>();
-    const auto &fp32_ids = fp32->scored_ids;
+    auto &fp32_ids = fp32->scored_ids;
     rnndescent::CandidateReranker exact(std::move(fp32), 1);
     int id;
     float distance;
@@ -300,6 +300,36 @@ TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges)
     EXPECT_EQ(scored, expected);
     EXPECT_EQ(id, entry_count - fp32_limit);
     EXPECT_FLOAT_EQ(distance, entry_count - fp32_limit);
+
+    if (active_workers > 1) {
+        using Neighbors = rnndescent::SelectedNeighborsContainerType;
+        Neighbors::Pool pool;
+        pool.initialize(Neighbors::cache_lane_width, {0, 4, 8});
+        int first_edges[]{entry_count - 1, entry_count - 1, entry_count - 1, entry_count - 1};
+        int second_edges[]{entry_count - 2, entry_count - 2, entry_count - 2, entry_count - 2};
+        expected.resize(entry_count);
+        std::iota(expected.begin(), expected.end(), 0);
+        neighbors[0] = Neighbors(pool, first_edges, 4, expected);
+        neighbors[1] = Neighbors(pool, second_edges, 4, expected);
+
+        search.single_query_limits.candidates_per_worker = 1;
+        search.fp32_refine_max = 0;
+        for (const int max_expansions : {1, 0}) {
+            for (auto &ids : scored_ids)
+                ids.clear();
+            for (auto &ids : fp32_ids)
+                ids.clear();
+            search.single_query_limits.expansions_per_worker = max_expansions;
+            searcher.search_parallel(0, search, exact, {&id, &distance, 1});
+
+            const auto &first_worker = scored_ids[0];
+            EXPECT_EQ(std::count(first_worker.begin(), first_worker.end(), entry_count - 1), 4);
+            EXPECT_EQ(std::count(first_worker.begin(), first_worker.end(), entry_count - 2), max_expansions ? 0 : 4);
+            const auto reranked = std::accumulate(fp32_ids.begin(), fp32_ids.end(), size_t{0},
+                                                  [](size_t total, const auto &ids) { return total + ids.size(); });
+            EXPECT_EQ(reranked, active_workers);
+        }
+    }
 }
 
 #if defined(RNNDESCENT_HAS_UINT4_KERNEL)

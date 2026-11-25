@@ -18,23 +18,30 @@ using std::string;
 
 inline void print_usage(const char *prog) {
     cout << "Usage:\n";
-    cout << "  " << prog << "                      # random benchmark\n";
-    cout << "  " << prog << " --mode dataset --dataset-dir <dir> [--topk 10] [--repeat 10]\n";
-    cout << "  " << prog << " --mode dataset --base <base.fvecs|bvecs> --query <query.fvecs|bvecs> [--gt <groundtruth.ivecs>]\n";
-    cout << "Optional args:\n";
-    cout << "  --data-size <n> --dim <d> --test-iter <n> --topk <k> --repeat <n>\n";
-    cout << "  --output-iter <n> --exact-check-queries <n> --warmup-topk <k>\n";
-    cout << "  --S <n> --R <n> --K0 <n>\n";
-    cout << "  --local-three-hop-prune  Use three-hop alternatives when selecting final graph edges\n";
-    cout << "  --num-initialize <n> --search-L <n> --refine-max <n> [--beam-size <n>]\n";
-    cout << "  --reorder-query-batch | --no-reorder-query-batch  Order PCA query batches (enabled by default)\n";
+    cout << "  " << prog << " --dataset-dir <dir> [--dataset-name <preset>]\n";
+    cout << "  " << prog << " --base <fvecs|bvecs> --query <fvecs|bvecs> [--gt <ivecs>]\n";
+    cout << "  " << prog << " --mode random [--data-size <n>] [--dim <d>] [--test-iter <n>]\n";
+    cout << "\nSearch quality:\n";
+    cout << "  --search-L <n>            Expand candidates ranked in the current closest L\n";
+    cout << "  --rerank-candidates <n>   Graph candidates sent to original-space reranking\n";
+    cout << "  --fp32-candidates <n>     Candidates scored in FP32 after quantized reranking (default 32)\n";
+    cout << "  --rerank-quantization <8bit|uint4|fp32>  Use fp32 to score all rerank candidates directly\n";
+    cout << "  --topk <k>                Results per query (default 10)\n";
+    cout << "\nIndex and advanced graph search:\n";
+    cout << "  --S <n> --R <n> --K0 <n> [--local-three-hop-prune]\n";
+    cout << "  --pca-out <d>             Graph projection dimension (default 0 keeps original dimensions)\n";
+    cout << "  --graph-quantization <8bit|uint4>  Graph search encoding\n";
+    cout << "  --neighbor-pool-gb <n>    Neighbor pool budget in GiB (default 0 disables vector caching)\n";
+    cout << "  --num-initialize <n>      Entry points used for BFS ordering and search\n";
+    cout << "  --beam-size <n>           Nodes expanded between candidate pool updates\n";
+    cout << "\nQuery execution and measurement:\n";
+    cout << "  --query-batch-size <n>    Queries per request (default 0 sends all queries at once)\n";
     cout << "  --single-query-threads <n>  Workers for a single-query search (default 1, capped at "
          << rnndescent::config::SearchConfig::max_single_query_threads << ")\n";
-    cout << "  --fp32-refine-max <n>  FP32 shortlist size (default 32; 0 refines all candidates)\n";
-    cout << "  --graph-quantization <8bit|uint4>  Graph navigation encoding\n";
-    cout << "  --rerank-quantization <8bit|uint4|fp32>  Original-dimensional shortlist encoding or direct FP32\n";
-    cout << "  --neighbor-pool-gb <n>  Neighbor pool budget in GiB (default 0 disables vector caching)\n";
-    cout << "  --enable-pca --disable-pca --pca-out <n>\n";
+    cout << "  --worker-candidates <n>   Merge candidates per worker for one parallel query (default 0 inherits rerank-candidates)\n";
+    cout << "  --worker-expansions <n>   Expanded nodes per worker for one parallel query (default 0 is unlimited)\n";
+    cout << "  --no-reorder-query-batch  Execute PCA query batches in input order\n";
+    cout << "  --repeat <n> --warmup-topk <k> --output-iter <n> --exact-check-queries <n>\n";
 }
 
 inline BenchmarkConfig parse_args(int argc, char **argv) {
@@ -46,12 +53,12 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
                 throw std::runtime_error("missing value for argument: " + name);
             return argv[++i];
         };
-        auto require_positive_int = [&](const string &name) -> int {
+        auto require_int = [&](const string &name, int minimum) -> int {
             const string input = require_value(name);
             size_t parsed = 0;
             const int value = stoi(input, &parsed);
-            if (parsed != input.size() || value <= 0)
-                throw std::runtime_error(name + " requires a positive integer");
+            if (parsed != input.size() || value < minimum)
+                throw std::runtime_error(name + (minimum == 0 ? " requires a non-negative integer" : " requires a positive integer"));
             return value;
         };
 
@@ -86,6 +93,8 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             config.topk = stoi(require_value(arg));
         } else if (arg == "--repeat") {
             config.repeat = stoi(require_value(arg));
+        } else if (arg == "--query-batch-size") {
+            config.query_batch_size = require_int(arg, 0);
         } else if (arg == "--output-iter") {
             config.output_iter = stoi(require_value(arg));
         } else if (arg == "--exact-check-queries") {
@@ -93,9 +102,9 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
         } else if (arg == "--warmup-topk") {
             config.warmup_topk = stoi(require_value(arg));
         } else if (arg == "--S") {
-            config.override_s = require_positive_int(arg);
+            config.override_s = require_int(arg, 1);
         } else if (arg == "--R") {
-            config.override_r = require_positive_int(arg);
+            config.override_r = require_int(arg, 1);
         } else if (arg == "--K0") {
             config.override_k0 = stoi(require_value(arg));
         } else if (arg == "--local-three-hop-prune") {
@@ -104,15 +113,10 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             config.override_num_initialize = stoi(require_value(arg));
         } else if (arg == "--search-L") {
             config.override_search_l = stoi(require_value(arg));
-        } else if (arg == "--refine-max") {
-            config.override_refine_max = stoi(require_value(arg));
-        } else if (arg == "--fp32-refine-max") {
-            const string input = require_value(arg);
-            size_t parsed = 0;
-            const int value = stoi(input, &parsed);
-            if (parsed != input.size() || value < 0)
-                throw std::runtime_error("--fp32-refine-max requires a non-negative integer");
-            config.override_fp32_refine_max = value;
+        } else if (arg == "--rerank-candidates" || arg == "--refine-max") {
+            config.override_refine_max = arg == "--refine-max" ? stoi(require_value(arg)) : require_int(arg, 1);
+        } else if (arg == "--fp32-candidates" || arg == "--fp32-refine-max") {
+            config.override_fp32_refine_max = require_int(arg, 0);
         } else if (arg == "--graph-quantization" || arg == "--rerank-quantization") {
             const auto value = require_value(arg);
             if (arg == "--rerank-quantization" && value == "fp32") {
@@ -135,7 +139,11 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             config.search_config.reorder_query_batch = false;
         } else if (arg == "--single-query-threads") {
             config.search_config.single_query_threads =
-                std::min(require_positive_int(arg), rnndescent::config::SearchConfig::max_single_query_threads);
+                std::min(require_int(arg, 1), rnndescent::config::SearchConfig::max_single_query_threads);
+        } else if (arg == "--worker-candidates" || arg == "--single-query-refine-max") {
+            config.search_config.single_query_limits.candidates_per_worker = require_int(arg, 0);
+        } else if (arg == "--worker-expansions" || arg == "--single-query-max-expansions") {
+            config.search_config.single_query_limits.expansions_per_worker = require_int(arg, 0);
         } else if (arg == "--neighbor-pool-gb") {
             const string input = require_value(arg);
             size_t parsed = 0;
@@ -145,16 +153,12 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
                 throw std::runtime_error("--neighbor-pool-gb requires a non-negative integer budget that fits in bytes");
             config.override_neighbor_pool_gb = budget_gib;
         } else if (arg == "--enable-pca") {
-            config.override_pca_enabled = true;
-            config.pca_enabled = true;
+            config.pca_config.enabled = true;
         } else if (arg == "--disable-pca") {
-            config.override_pca_enabled = true;
-            config.pca_enabled = false;
-            config.pca_out_dim = 0;
+            config.pca_config = {};
         } else if (arg == "--pca-out") {
-            config.override_pca_enabled = true;
-            config.pca_enabled = true;
-            config.pca_out_dim = stoi(require_value(arg));
+            const int out_dim = require_int(arg, 0);
+            config.pca_config = {out_dim > 0, out_dim};
         } else {
             throw std::runtime_error("unknown argument: " + arg);
         }

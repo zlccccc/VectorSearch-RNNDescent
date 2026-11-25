@@ -270,14 +270,21 @@ FloatMatrixView PCAProjection::project(const FloatMatrixView &input, std::vector
 
 FloatMatrixView PCAProjection::project_queries(const FloatMatrixView &queries, int num_threads) {
     const int rows = queries.row_count();
-    if (num_threads <= 1 || rows <= small_projection_rows)
+    constexpr int max_small_batch_threads = 8;
+    constexpr size_t min_parallel_products = 256 * 1024;
+    const bool small_batch = rows <= small_projection_rows;
+    const bool parallel_small_batch = small_batch && rows > 1 && num_threads <= max_small_batch_threads &&
+                                     components_.size() >= (min_parallel_products + rows - 1) / rows;
+    if (num_threads <= 1 || (small_batch && !parallel_small_batch))
         return project(queries, query_buffer_);
 
     queries.validate("PCA input");
     RNNDESCENT_ASSERT_MSG(queries.dimension() == input_dimension_, "PCA input dimension mismatch");
     query_buffer_.resize(static_cast<size_t>(rows) * output_dimension_);
     const auto output = MutableFloatMatrixView::from_vector(query_buffer_, output_dimension_);
-    apply_simd(queries, output, std::min(num_threads, rows));
+    // Use the search team for a small batch to avoid resizing it between stages.
+    const int workers = parallel_small_batch ? num_threads : std::min(num_threads, rows);
+    apply_simd(queries, output, workers);
     return FloatMatrixView::from_vector(query_buffer_, output_dimension_);
 }
 
