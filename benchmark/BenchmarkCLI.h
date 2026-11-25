@@ -38,7 +38,9 @@ inline void print_usage(const char *prog) {
     cout << "  --query-batch-size <n>    Queries per request (default 0 sends all queries at once)\n";
     cout << "  --single-query-threads <n>  Workers for a single-query search (default 1, capped at "
          << rnndescent::config::SearchConfig::max_single_query_threads << ")\n";
-    cout << "  --worker-candidates <n>   Merge candidates per worker for one parallel query (default 0 inherits rerank-candidates)\n";
+    cout << "  --worker-candidates <n>   FP32 candidates per worker (0 keeps "
+         << rnndescent::config::SearchConfig::SingleQueryLimits::default_quantized_candidates
+         << " after coarse ranking, or all for direct FP32)\n";
     cout << "  --worker-expansions <n>   Expanded nodes per worker for one parallel query (default 0 is unlimited)\n";
     cout << "  --no-reorder-query-batch  Execute PCA query batches in input order\n";
     cout << "  --repeat <n> --warmup-topk <k> --output-iter <n> --exact-check-queries <n>\n";

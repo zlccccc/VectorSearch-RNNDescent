@@ -36,13 +36,11 @@ void Solution::warmup(const std::vector<float> &base, int d, const WarmupConfig 
         return;
 
     // Warm up the search path with a reproducible sample of base vectors.
-    auto prevtime = std::chrono::system_clock::now();
+    const auto start = std::chrono::steady_clock::now();
     const int size = base.size() / d;
     const int warmup_count = std::min(size, warmup_config.sample_count);
     const int warmup_search_count = warmup_config.repeat_count;
-    if (warmup_count <= 0)
-        return;
-    if (warmup_search_count <= 0)
+    if (warmup_count <= 0 || warmup_search_count <= 0)
         return;
     std::vector<float> query(d * warmup_count);
     std::mt19937 rng(warmup_config.random_seed);
@@ -56,7 +54,7 @@ void Solution::warmup(const std::vector<float> &base, int d, const WarmupConfig 
         search_batch(query, warmup_result, warmup_config.topk);
     }
     index_->flush_perf_stats();
-    auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - prevtime).count();
+    const auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     rnndescent::Logger::info("Warmup done in %f ms\n", warmup_time);
 }
 

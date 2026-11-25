@@ -1,6 +1,6 @@
 # RNNDescent 索引模块
 
-索引实现按职责拆成多个模块。`IndexRNNDescent` 管理 PCA、底库生命周期和查询批次，`RNNDescent` 保留兼容外观并组装图构建、图重排和搜索模块。
+索引实现按职责拆成多个模块。`IndexRNNDescent` 管理 PCA、向量查询准备和批内排序，`RNNDescent` 组装图构建、图重排和搜索模块。
 
 | 模块 | 文件 | 职责 |
 |---|---|---|
@@ -8,7 +8,7 @@
 | 图类型与配置 | `build/GraphTypes.h`、`build/GraphConfig.h` | 邻居表示、图别名、建图和查询参数归一化 |
 | 图构建 | `build/GraphBuilder.h/.cpp` | 初始随机图、邻居更新、反向边、裁剪和补齐后的扁平邻接表 |
 | 图重排 | `build/GraphReorder.h/.cpp` | BFS 编号、原始 ID 映射、量化底库和邻居缓存物化 |
-| 图搜索初排 | `search/GraphSearcher.h/.cpp` | 遍历图、合并并去重候选，返回按查图分数排列的 BFS ID |
+| 图搜索 | `search/GraphSearcher.h/.cpp` | 按请求校验搜索预算，调度线程，遍历图并调用候选重排 |
 | 候选重排 | `search/CandidateReranker.h/.cpp` | 可选的原始维度量化粗排、原始 ID 映射与最终 FP32 精排 |
 
 ## 数据流

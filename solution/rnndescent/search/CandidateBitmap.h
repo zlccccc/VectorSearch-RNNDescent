@@ -45,16 +45,6 @@ class alignas(64) CandidateBitmap {
         return true;
     }
 
-    // Store the updated word unconditionally so a caller can compact without branching on duplicates.
-    bool test_and_set(int id) {
-        const auto index = static_cast<uint32_t>(id);
-        const uint64_t mask = uint64_t{1} << (index % 64);
-        auto &word = words_[index / 64];
-        const uint64_t previous = word;
-        word = previous | mask;
-        return (previous & mask) == 0;
-    }
-
   private:
     static constexpr uint32_t words_per_block = 8;
     static constexpr uint32_t ids_per_block = 64 * words_per_block;

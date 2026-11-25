@@ -20,15 +20,9 @@ class CandidateReranker {
     void set_queries(const FloatMatrixView &queries);
     bool uses_graph_ordered_codes() const { return graph_ordered_codes_; }
 
-    // original_ids maps graph IDs to original rows when the input candidates use graph IDs.
-    void rerank(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_limit,
-                const SearchResultView &result, const int *original_ids = nullptr) const;
-
-    // The caller prepares the shortlist once and passes the returned FP32 count to each worker.
-    size_t prepare_shortlist(std::vector<SingleNeighbor> &candidates, int fp32_limit, int topk) const;
-    // All workers in the current team call this before the caller writes Top K.
-    void score_for_rerank(int query_id, std::vector<SingleNeighbor> &candidates, size_t fp32_count,
-                          const int *original_ids, int worker, int workers) const;
+    // Retain Top K with original IDs and FP32 distances. Sort only when writing results.
+    void rerank(int query_id, std::vector<SingleNeighbor> &candidates, int fp32_limit, int topk,
+                const int *original_ids = nullptr) const;
     static void write_topk(std::vector<SingleNeighbor> &candidates, const SearchResultView &result);
 
   private:

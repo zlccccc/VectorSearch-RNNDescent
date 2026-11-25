@@ -27,7 +27,9 @@ struct SearchConfig {
     static constexpr int max_single_query_threads = 8;
 
     struct SingleQueryLimits {
-        int candidates_per_worker = 0; // 0 inherits the query's rerank candidate limit.
+        static constexpr int default_quantized_candidates = 16;
+
+        int candidates_per_worker = 0; // 0 uses Top16 after coarse ranking or all candidates for direct FP32.
         int expansions_per_worker = 0; // 0 leaves the number of expanded graph nodes uncapped.
     };
 
@@ -43,6 +45,10 @@ struct SearchConfig {
     bool reorder_query_batch = true;
     int single_query_threads = 1;
     SingleQueryLimits single_query_limits;
+
+    bool uses_coarse_shortlist(int candidate_count) const {
+        return rerank_quantization && fp32_refine_max > 0 && fp32_refine_max < candidate_count;
+    }
 };
 
 inline BuildConfig sanitize_build_config(BuildConfig config) {

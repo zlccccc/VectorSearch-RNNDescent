@@ -26,13 +26,44 @@ GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search
     }
 }
 
+void GraphSearcher::search_batch(int query_count, const int *query_order, const config::SearchConfig &search_config,
+                                 const CandidateReranker &reranker, const SearchResultView &result) {
+    RNNDESCENT_ASSERT_MSG(query_count > 0, "search query count must be positive");
+    const auto safe_config = checked_search_config(search_config, result);
+    const int workers = std::min(safe_config.num_threads, static_cast<int>(scratch_.size()));
+    const int topk = result.topk();
+    auto *const ids = result.indices_ptr();
+    auto *const distances = result.distances_ptr();
+    const auto search_row = [&](int position, int worker) {
+        const int id = query_order ? query_order[position] : position;
+        const size_t offset = static_cast<size_t>(id) * topk;
+        search_from_entries<false>(worker, id, safe_config, 0, reranker, {ids + offset, distances + offset, topk});
+    };
+
+    constexpr int queries_per_chunk = 4;
+    // With only a few queries per worker, a slow query can dominate a static chunk.
+    const bool balance_small_batch = query_count > workers && query_count <= 16;
+    if (query_count == 1 || workers == 1) {
+        for (int i = 0; i < query_count; ++i)
+            search_row(i, 0);
+    } else if (!balance_small_batch && (query_count - 1) / queries_per_chunk < workers) {
+#pragma omp parallel for num_threads(workers) schedule(static)
+        for (int i = 0; i < query_count; ++i)
+            search_row(i, omp_get_thread_num());
+    } else {
+        const int chunk = balance_small_batch ? 1 : queries_per_chunk;
+#pragma omp parallel for num_threads(workers) schedule(dynamic, chunk)
+        for (int i = 0; i < query_count; ++i)
+            search_row(i, omp_get_thread_num());
+    }
+}
+
 void GraphSearcher::search_single_thread(int threadid, int queryid, const config::SearchConfig &search_config,
                                          const CandidateReranker &reranker, const SearchResultView &result) {
     const auto safe_config = checked_search_config(search_config, result);
     if (!(0 <= threadid && threadid < safe_config.num_threads && static_cast<size_t>(threadid) < scratch_.size()))
         throw std::runtime_error("thread id out of range");
-    auto &candidates = search_from_entries<false>(threadid, queryid, safe_config, 0);
-    rerank_serial(threadid, queryid, candidates, safe_config.fp32_refine_max, reranker, result);
+    search_from_entries<false>(threadid, queryid, safe_config, 0, reranker, result);
 }
 
 config::SearchConfig GraphSearcher::checked_search_config(const config::SearchConfig &search_config,
@@ -61,8 +92,7 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
     const int groups_per_topk = (topk - 1) / 4 + 1;
     const int workers = std::min({safe_config.single_query_threads, static_cast<int>(scratch_.size()), groups / groups_per_topk});
     if (workers <= 1) {
-        auto &candidates = search_from_entries<false>(0, queryid, safe_config, 0);
-        rerank_serial(0, queryid, candidates, safe_config.fp32_refine_max, reranker, result);
+        search_from_entries<false>(0, queryid, safe_config, 0, reranker, result);
         return;
     }
 
@@ -75,56 +105,57 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
     const size_t beam_capacity = padded_max_degree_ * beam;
     for (int worker = 0; worker < workers; ++worker)
         scratch_[worker].reserve(safe_config.num_initialize, beam, beam_capacity);
-    merged_candidates_.reserve(safe_config.refine_max);
-    // The total length of the worker lists cannot exceed the number of entries.
-    if (merge_buffer_.size() < static_cast<size_t>(safe_config.num_initialize))
-        merge_buffer_.resize(safe_config.num_initialize);
+    merged_candidates_.reserve(static_cast<size_t>(workers) * topk);
 
     int active_workers = 1;
-    size_t fp32_count = 0;
     const auto limits = safe_config.single_query_limits;
-    const int *const row_order = storage_.original_ids ? storage_.original_ids->data() : nullptr;
-#ifdef INTERNAL_CLOCK_TEST
-    std::chrono::steady_clock::time_point rerank_start;
-#endif
+    const bool use_shortlist = safe_config.uses_coarse_shortlist(safe_config.refine_max);
+    const int local_fp32 = limits.candidates_per_worker > 0
+                               ? limits.candidates_per_worker
+                               : config::SearchConfig::SingleQueryLimits::default_quantized_candidates;
 #pragma omp parallel num_threads(workers)
     {
         const int worker = omp_get_thread_num();
         const int team_size = omp_get_num_threads();
-        // Give each worker a disjoint entry range made up of whole four-way scoring groups.
-        const int groups_per_worker = groups / team_size;
-        const int remainder = groups % team_size;
-        const int first_entry = 4 * (worker * groups_per_worker + std::min(worker, remainder));
-        auto local_config = safe_config;
-        local_config.num_initialize = 4 * (groups_per_worker + (worker < remainder));
-        const int local_width = safe_config.search_L / team_size + (safe_config.search_L % team_size != 0);
-        local_config.search_L = std::clamp(local_width, topk, local_config.num_initialize);
-        local_config.refine_max = std::min(safe_config.refine_max, local_config.num_initialize);
-        if (team_size > 1 && limits.candidates_per_worker > 0)
-            local_config.refine_max = std::min(local_config.refine_max, std::max(topk, limits.candidates_per_worker));
-        if (team_size > 1 && limits.expansions_per_worker > 0)
-            search_from_entries<true, true>(worker, queryid, local_config, first_entry);
-        else
-            search_from_entries<true>(worker, queryid, local_config, first_entry);
-        if (team_size > 1) {
-            // The merge reads every worker's candidate pool.
-#pragma omp barrier
-            if (worker == 0) {
-                active_workers = team_size;
-                merge_worker_candidates(team_size, safe_config.refine_max);
-#ifdef INTERNAL_CLOCK_TEST
-                rerank_start = std::chrono::steady_clock::now();
-#endif
-                fp32_count = reranker.prepare_shortlist(merged_candidates_, safe_config.fp32_refine_max, topk);
-            }
-            // Workers need the merged pool and FP32 limit before scoring it.
-#pragma omp barrier
-            reranker.score_for_rerank(queryid, merged_candidates_, fp32_count, row_order, worker, team_size);
+        if (worker == 0)
+            active_workers = team_size;
+        if (team_size == 1) {
+            search_from_entries<false>(0, queryid, safe_config, 0, reranker, result);
+        } else {
+            // Give each worker a disjoint entry range made up of whole four-way scoring groups.
+            const int groups_per_worker = groups / team_size;
+            const int remainder = groups % team_size;
+            const int first_entry = 4 * (worker * groups_per_worker + std::min(worker, remainder));
+            auto local_config = safe_config;
+            local_config.num_initialize = 4 * (groups_per_worker + (worker < remainder));
+            const int local_width = (safe_config.search_L - 1) / team_size + 1;
+            local_config.search_L = std::clamp(local_width, topk, local_config.num_initialize);
+            const int local_refine = (safe_config.refine_max - 1) / team_size + 1;
+            local_config.refine_max = std::min({safe_config.refine_max, local_config.num_initialize,
+                                                std::max(local_config.search_L, local_refine)});
+            local_config.fp32_refine_max = use_shortlist ? local_fp32 : 0;
+            if (!use_shortlist && limits.candidates_per_worker > 0)
+                local_config.refine_max = std::min(local_config.refine_max, std::max(topk, limits.candidates_per_worker));
+
+            if (limits.expansions_per_worker > 0)
+                search_from_entries<true, true>(worker, queryid, local_config, first_entry, reranker, result);
+            else
+                search_from_entries<true>(worker, queryid, local_config, first_entry, reranker, result);
         }
     }
-    if (active_workers == 1) {
-        rerank_serial(0, queryid, scratch_.front().retset, safe_config.fp32_refine_max, reranker, result);
+    if (active_workers == 1)
         return;
+#ifdef INTERNAL_CLOCK_TEST
+    const auto rerank_start = std::chrono::steady_clock::now();
+#endif
+    auto &candidate_ids = scratch_.front().candidate_ids;
+    candidate_ids.begin_lazy_query();
+    merged_candidates_.clear();
+    for (int worker = 0; worker < active_workers; ++worker) {
+        for (const auto &candidate : scratch_[worker].retset) {
+            if (candidate_ids.insert<true>(candidate.id))
+                merged_candidates_.push_back(candidate);
+        }
     }
     CandidateReranker::write_topk(merged_candidates_, result);
 #ifdef INTERNAL_CLOCK_TEST
@@ -133,41 +164,9 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
 #endif
 }
 
-void GraphSearcher::rerank_serial([[maybe_unused]] int threadid, int queryid, std::vector<SingleNeighbor> &candidates,
-                                  int fp32_limit, const CandidateReranker &reranker, const SearchResultView &result) {
-#ifdef INTERNAL_CLOCK_TEST
-    const auto start = std::chrono::steady_clock::now();
-#endif
-    const int *const row_order = storage_.original_ids ? storage_.original_ids->data() : nullptr;
-    reranker.rerank(queryid, candidates, fp32_limit, result, row_order);
-#ifdef INTERNAL_CLOCK_TEST
-    scratch_[threadid].perf_stats.recalculate_time +=
-        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
-#endif
-}
-
-void GraphSearcher::merge_worker_candidates(int workers, int refine_max) {
-    auto &candidate_ids = scratch_.front().candidate_ids;
-    candidate_ids.clear();
-    auto *const begin = merge_buffer_.data();
-    auto *end = begin;
-    // A duplicate leaves the write pointer in place, so the next candidate overwrites it.
-    for (int worker = 0; worker < workers; ++worker) {
-        for (const auto &candidate : scratch_[worker].retset) {
-            *end = candidate;
-            end += candidate_ids.test_and_set(candidate.id);
-        }
-    }
-    if (end - begin > refine_max) {
-        std::nth_element(begin, begin + refine_max, end);
-        end = begin + refine_max;
-    }
-    merged_candidates_.assign(begin, end);
-}
-
 template <bool SharedVisit, bool LimitExpansions>
-std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, int queryid, const config::SearchConfig &search_config,
-                                                                int entry_begin) {
+void GraphSearcher::search_from_entries(int threadid, int queryid, const config::SearchConfig &search_config,
+                                        int entry_begin, const CandidateReranker &reranker, const SearchResultView &result) {
         const int search_L = search_config.search_L;
         const int beam_size = std::min(search_config.beam_size, search_L);
         const int num_initialize = search_config.num_initialize;
@@ -350,8 +349,17 @@ std::vector<SingleNeighbor> &GraphSearcher::search_from_entries(int threadid, in
         stats.bfs_items += bfs_items;
         stats.calculate_distance_count += calculate_distance_count;
         stats.useful_count += useful_count;
+        const auto rerank_start = std::chrono::steady_clock::now();
 #endif
-        return retset;
+        const int *const row_order = storage_.original_ids ? storage_.original_ids->data() : nullptr;
+        reranker.rerank(queryid, retset, search_config.fp32_refine_max, result.topk(), row_order);
+        // A shared-visit worker leaves its Top K in retset for the final merge.
+        if constexpr (!SharedVisit)
+            CandidateReranker::write_topk(retset, result);
+#ifdef INTERNAL_CLOCK_TEST
+        stats.recalculate_time +=
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - rerank_start).count();
+#endif
     }
 
 void GraphSearcher::flush_perf_stats() {

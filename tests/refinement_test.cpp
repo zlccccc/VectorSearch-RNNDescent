@@ -67,7 +67,9 @@ TEST(RefinementTest, SelectsInOriginalSpaceAndLimitsFp32Work) {
                 candidates.emplace_back(id, static_cast<float>(rows - 1 - id));
             std::vector<int> ids(topk);
             std::vector<float> distances(topk);
-            reranker.rerank(0, candidates, limit, rnndescent::SearchResultView::from_vectors(ids, distances, topk));
+            reranker.rerank(0, candidates, limit, topk);
+            ASSERT_EQ(candidates.size(), static_cast<size_t>(topk));
+            rnndescent::CandidateReranker::write_topk(candidates, {ids.data(), distances.data(), topk});
             EXPECT_EQ(ids, expected);
             for (int k = 0; k < topk; ++k)
                 EXPECT_EQ(distances[k], exact_scores[ids[k]]);
@@ -173,24 +175,6 @@ TEST(RefinementTest, BfsOrderedCodesReturnTheSameOriginalIdsAndDistances) {
         const auto expected = collect(original);
         EXPECT_EQ(expected.first.front(), query_id);
         EXPECT_EQ(collect(bfs), expected);
-
-        for (const auto *reranker : {&original, &bfs}) {
-            std::vector<rnndescent::SingleNeighbor> candidates;
-            for (int i = 0; i < search.refine_max; ++i)
-                candidates.emplace_back((i * 7 + 1) % rows, 0);
-            auto parallel = candidates;
-            std::vector<int> serial_ids(topk), parallel_ids(topk);
-            std::vector<float> serial_distances(topk), parallel_distances(topk);
-            reranker->rerank(0, candidates, limit,
-                             {serial_ids.data(), serial_distances.data(), topk}, graph.search_from_ids.data());
-            const size_t fp32_count = reranker->prepare_shortlist(parallel, limit, topk);
-#pragma omp parallel num_threads(3)
-            reranker->score_for_rerank(0, parallel, fp32_count, graph.search_from_ids.data(), omp_get_thread_num(),
-                                       omp_get_num_threads());
-            rnndescent::CandidateReranker::write_topk(parallel, {parallel_ids.data(), parallel_distances.data(), topk});
-            EXPECT_EQ(parallel_ids, serial_ids);
-            EXPECT_EQ(parallel_distances, serial_distances);
-        }
     }
 }
 
@@ -206,8 +190,9 @@ TEST(RefinementTest, DirectFp32UsesEveryGraphCandidate) {
     std::vector<rnndescent::SingleNeighbor> candidates{{0, 0}, {1, 1}, {2, 2}, {3, 3}};
     int id = -1;
     float distance = -1;
-    reranker.rerank(0, candidates, search.fp32_refine_max, {&id, &distance, 1}, original_ids);
-    EXPECT_EQ(candidates.size(), 4);
+    reranker.rerank(0, candidates, search.fp32_refine_max, 1, original_ids);
+    ASSERT_EQ(candidates.size(), 1u);
+    rnndescent::CandidateReranker::write_topk(candidates, {&id, &distance, 1});
     EXPECT_EQ(id, 0);
     EXPECT_EQ(distance, 0);
 }
@@ -244,7 +229,7 @@ TEST(RefinementTest, RetainsDiscoveredCandidatesBeyondExpansionWidth) {
 }
 
 TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges) {
-    constexpr int entry_count = 40;
+    constexpr int entry_count = 160;
     constexpr int requested_workers = 16;
     constexpr int fp32_limit = 13;
     struct EntryRecorder final : rnndescent::MyDistanceComputer {
@@ -292,16 +277,42 @@ TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges)
     std::iota(expected.begin(), expected.end(), 0);
     EXPECT_EQ(scored, expected);
 
-    scored.clear();
-    for (const auto &ids : fp32_ids)
-        scored.insert(scored.end(), ids.begin(), ids.end());
-    std::sort(scored.begin(), scored.end());
-    expected.erase(expected.begin(), expected.end() - fp32_limit);
-    EXPECT_EQ(scored, expected);
-    EXPECT_EQ(id, entry_count - fp32_limit);
-    EXPECT_FLOAT_EQ(distance, entry_count - fp32_limit);
+    const int local_limit = active_workers == 1 ? fp32_limit : 16;
+    int best = entry_count;
+    for (int worker = 0; worker < active_workers; ++worker) {
+        const auto &entries = scored_ids[worker];
+        std::vector<int> expected_fp32;
+        for (int i = 0; i < std::min(local_limit, static_cast<int>(entries.size())); ++i)
+            expected_fp32.push_back(original_ids[entries[i]]);
+        std::sort(fp32_ids[worker].begin(), fp32_ids[worker].end());
+        std::sort(expected_fp32.begin(), expected_fp32.end());
+        EXPECT_EQ(fp32_ids[worker], expected_fp32);
+        best = std::min(best, expected_fp32.front());
+    }
+    EXPECT_EQ(id, best);
+    EXPECT_FLOAT_EQ(distance, best);
 
     if (active_workers > 1) {
+        auto local_fp32 = std::make_unique<EntryRecorder>();
+        const auto &local_fp32_ids = local_fp32->scored_ids;
+        auto coarse = std::make_unique<EntryRecorder>();
+        const auto &coarse_ids = coarse->scored_ids;
+        rnndescent::CandidateReranker two_stage(std::move(local_fp32), 1, std::move(coarse));
+        for (auto &ids : scored_ids)
+            ids.clear();
+        search.single_query_limits.candidates_per_worker = 1;
+        searcher.search_parallel(0, search, two_stage, {&id, &distance, 1});
+        for (int worker = 0; worker < active_workers; ++worker) {
+            const size_t local_width = (entry_count - 1) / active_workers + 1;
+            EXPECT_EQ(coarse_ids[worker].size(), std::min(local_width, scored_ids[worker].size()));
+            // Coarse ranking prefers the opposite end of the graph shortlist after mapping IDs.
+            ASSERT_FALSE(coarse_ids[worker].empty());
+            const int best_coarse = *std::min_element(coarse_ids[worker].begin(), coarse_ids[worker].end());
+            EXPECT_EQ(local_fp32_ids[worker], (std::vector<int>{best_coarse}));
+        }
+        EXPECT_EQ(id, 0);
+        EXPECT_FLOAT_EQ(distance, 0);
+
         using Neighbors = rnndescent::SelectedNeighborsContainerType;
         Neighbors::Pool pool;
         pool.initialize(Neighbors::cache_lane_width, {0, 4, 8});
@@ -389,9 +400,10 @@ TEST_P(PackedUInt4RefinementTest, ScoresBfsRowsAndCandidateTail) {
     reranker.set_queries(query_view);
     int id = -1;
     float distance = 0;
-    reranker.rerank(0, candidates, keep, {&id, &distance, 1}, row_order.data());
+    reranker.rerank(0, candidates, keep, 1, row_order.data());
+    ASSERT_EQ(candidates.size(), 1u);
+    rnndescent::CandidateReranker::write_topk(candidates, {&id, &distance, 1});
     EXPECT_TRUE(reranker.uses_graph_ordered_codes());
-    EXPECT_EQ(candidates.size(), keep);
     EXPECT_EQ(id, nearest);
     EXPECT_FLOAT_EQ(distance, nearest_distance);
 }

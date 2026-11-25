@@ -17,12 +17,6 @@ TEST(CandidateBitmapTest, MarksIdsAcrossWordBoundaries) {
         ASSERT_TRUE(ids.insert(id)) << id;
     for (int id : {0, 1, 63, 64, 65, 127, 128})
         EXPECT_FALSE(ids.insert(id)) << id;
-
-    ids.clear();
-    for (int id : {0, 1, 63, 64, 65, 127, 128})
-        ASSERT_TRUE(ids.test_and_set(id)) << id;
-    for (int id : {0, 1, 63, 64, 65, 127, 128})
-        EXPECT_FALSE(ids.test_and_set(id)) << id;
 }
 
 TEST(CandidateBitmapTest, ClearsMarksBetweenQueries) {
@@ -56,10 +50,10 @@ TEST(CandidateBitmapTest, LazyResetPreservesNewMarksAndClearsStaleBlocks) {
     }
     EXPECT_TRUE(ids.insert<true>(1024));
 
-    // This worker also uses an eagerly cleared bitmap for final cross-worker deduplication.
+    // The same scratch bitmap can serve serial and parallel queries.
     ids.clear();
-    EXPECT_TRUE(ids.test_and_set(512));
-    EXPECT_FALSE(ids.test_and_set(512));
+    EXPECT_TRUE(ids.insert(512));
+    EXPECT_FALSE(ids.insert(512));
     ids.begin_lazy_query();
     EXPECT_TRUE(ids.insert<true>(512));
     EXPECT_FALSE(ids.insert<true>(512));

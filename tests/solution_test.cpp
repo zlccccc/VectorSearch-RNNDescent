@@ -60,6 +60,8 @@ TEST(SolutionTest, BuildsSearchesAndResetsWithPcaAndCache) {
         solution.build(dim, base, warmup, build, search, {pca, pca ? 17 : 0});
         EXPECT_THAT([&] { solution.search({1, 2}, ids, topk); },
                     ThrowsMessage<std::runtime_error>(HasSubstr("query size must be divisible")));
+        EXPECT_THAT([&] { solution.search(queries, ids, rows + 1); },
+                    ThrowsMessage<std::runtime_error>(HasSubstr("search topk exceeds indexed point count")));
         solution.search(queries, ids, topk);
         const auto &distances = solution.distance_buffer();
         constexpr size_t queries_count = sizeof(selected) / sizeof(selected[0]);

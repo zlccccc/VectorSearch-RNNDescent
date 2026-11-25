@@ -65,7 +65,8 @@ def run_case(binary, dataset, run, dim, budget, threads, queries, repeat, pool_g
         "--neighbor-pool-gb", str(pool_gib), "--repeat", str(repeat), "--output-iter", "0",
     ]
     environment = dict(os.environ, OMP_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS="1",
-                       OMP_DYNAMIC="FALSE", RESULT_DIR=str(run))
+                       OMP_DYNAMIC="FALSE", OMP_WAIT_POLICY=os.environ.get("OMP_WAIT_POLICY") or "PASSIVE",
+                       GOMP_SPINCOUNT=os.environ.get("GOMP_SPINCOUNT") or "0", RESULT_DIR=str(run))
     log_path = run / "run.log"
     with log_path.open("w") as log:
         process = subprocess.run(command, env=environment, stdout=log, stderr=subprocess.STDOUT)

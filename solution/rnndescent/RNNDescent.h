@@ -38,10 +38,9 @@ struct RNNDescent {
         const SearchConfig safe_search_config = config::sanitize_search_config(search_config, 1, data_view.row_count());
         reset();
 
-        if (verbose)
-            Logger::info(verbose, "Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n",
-                         safe_build_config.S, safe_build_config.R, safe_build_config.T1, safe_build_config.T2,
-                         data_view.row_count(), safe_search_config.num_threads);
+        Logger::info(verbose, "Parameters: S=%d, R=%d, T1=%d, T2=%d; Point=%d; numThreadsMax=%d\n",
+                     safe_build_config.S, safe_build_config.R, safe_build_config.T1, safe_build_config.T2,
+                     data_view.row_count(), safe_search_config.num_threads);
 
         GraphBuilder builder(data_view, verbose, safe_build_config);
         auto graph_result = builder.build();
@@ -56,6 +55,12 @@ struct RNNDescent {
         search::Storage search_storage{final_graph_neighbors, graph_distance_computer, &search_from_ids};
         searcher_ = std::make_unique<search::GraphSearcher>(search_storage, safe_search_config, safe_build_config.K0,
                                                               perf_stats);
+    }
+
+    void search_batch(int query_count, const int *query_order, const CandidateReranker &reranker,
+                      const SearchConfig &search_config, const SearchResultView &result) {
+        RNNDESCENT_ASSERT_MSG(searcher_ != nullptr, "The index is not build yet.");
+        searcher_->search_batch(query_count, query_order, search_config, reranker, result);
     }
 
     void search_single_thread(int threadid, int queryid, const CandidateReranker &reranker,
@@ -78,7 +83,6 @@ struct RNNDescent {
     void reset() {
         flush_perf_stats();
         searcher_.reset();
-        Logger::line(true, "Resetting RNNDescent index.");
         std::vector<SelectedNeighborsContainerType>().swap(final_graph_neighbors);
         neighbor_pool_.reset();
         search_from_ids.clear();

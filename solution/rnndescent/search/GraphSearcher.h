@@ -59,6 +59,8 @@ class GraphSearcher {
   public:
     GraphSearcher(Storage storage, const config::SearchConfig &search_config, int max_degree, PerfStats &perf_stats);
 
+    void search_batch(int query_count, const int *query_order, const config::SearchConfig &search_config,
+                      const CandidateReranker &reranker, const SearchResultView &result);
     void search_single_thread(int threadid, int queryid, const config::SearchConfig &search_config,
                               const CandidateReranker &reranker, const SearchResultView &result);
     void search_parallel(int queryid, const config::SearchConfig &search_config,
@@ -89,11 +91,8 @@ class GraphSearcher {
     config::SearchConfig checked_search_config(const config::SearchConfig &search_config, const SearchResultView &result) const;
 
     template <bool SharedVisit, bool LimitExpansions = false>
-    std::vector<SingleNeighbor> &search_from_entries(int threadid, int queryid, const config::SearchConfig &config,
-                                                    int entry_begin);
-    void merge_worker_candidates(int workers, int refine_max);
-    void rerank_serial(int threadid, int queryid, std::vector<SingleNeighbor> &candidates, int fp32_limit,
-                       const CandidateReranker &reranker, const SearchResultView &result);
+    void search_from_entries(int threadid, int queryid, const config::SearchConfig &config, int entry_begin,
+                             const CandidateReranker &reranker, const SearchResultView &result);
 
     Storage storage_;
     const uint32_t code_stride_;
@@ -102,7 +101,6 @@ class GraphSearcher {
     std::vector<ThreadScratch> scratch_;
     std::unique_ptr<SharedVisitedSet> shared_visited_;
     std::vector<SingleNeighbor> merged_candidates_;
-    std::vector<SingleNeighbor> merge_buffer_;
 };
 
 } // namespace search

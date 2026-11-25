@@ -69,13 +69,13 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 |---|---:|---|
 | `--query-batch-size` | 0 | 每次请求最多提交多少条查询，0 提交整批 |
 | `--single-query-threads` | 1 | 同一条查询的线程数，最多 8 个 |
-| `--worker-candidates` | 0 | 单查询并行时每线程交给合并的候选上限，至少为 Top K，0 继承全局重排候选上限 |
+| `--worker-candidates` | 0 | 单查询并行时每线程送入 FP32 的候选上限，至少为 Top K。0 在量化粗排后默认保留 16 项，直接 FP32 时保留全部本地重排候选 |
 | `--worker-expansions` | 0 | 单查询并行时每线程实际展开的图节点数上限，0 不限 |
 | `--no-reorder-query-batch` | 关闭 | 开启该选项时，批量查询按输入顺序执行 |
 
 多条查询按 `SearchConfig::num_threads` 在查询之间分工。至多 16 条且查询数超过线程数时，逐条动态分工。其余批次在每 4 条形成的块数不超过线程数时采用静态分工，块数更多时按每块 4 条动态分工。默认在 PCA 至少输出 4 维且本次至少传入 2 条查询时，索引在分流前按前四个主成分生成排序键。可用 `--no-reorder-query-batch` 按输入顺序执行查询，结果均写回原输入行。
 
-单查询并行按四路算距的粒度给各线程分配互不重叠的入口区间，并分摊 `search_L`。线程共用节点访问标记，合并、去重后由同一线程组分担粗排和 FP32 算距。可用入口不足时会减少实际线程数。并行和单线程的候选池不同，比较延迟时请用 ground truth 重新校验达到目标 Recall 的 `search_L`。
+单查询并行按四路算距的粒度给各线程分配互不重叠的入口区间，并分摊 `search_L`。线程共用节点访问标记，各自完成粗排和 FP32 算距，交回本地 Top K，最后统一去重并选出全局 Top K。可用入口不足时会减少实际线程数。并行和单线程的候选池不同，比较延迟时请用 ground truth 重新校验达到目标 Recall 的搜索预算。
 
 例如，用 `--query-batch-size 1 --single-query-threads 8` 测单查询延迟。每线程预算只在有多个线程共同处理一条查询时生效。展开上限按实际读到的邻接表计数，访问标记拦下的节点不计入。候选上限作用于合并输入，本地候选池至少保有 `search_L` 分摊后的宽度。
 
@@ -119,12 +119,12 @@ dataset 模式读取文件中的全部底库和查询行，用对应 ground trut
 | `OPENBLAS_NUM_THREADS` | 控制 OpenBLAS 自身的线程数 |
 | `OMP_DYNAMIC=FALSE` | 固定 OpenMP 请求的线程配置 |
 | `OMP_PROC_BIND`、`OMP_PLACES` | 由 OpenMP 运行时管理线程亲和性 |
-| `OMP_WAIT_POLICY` | 控制空闲 OpenMP 线程的等待策略，`run.sh` 默认设为 `ACTIVE` |
-| `GOMP_SPINCOUNT` | GCC libgomp 线程休眠前的自旋次数，`run.sh` 在 `ACTIVE` 下默认设为 `16000` |
+| `OMP_WAIT_POLICY` | 控制空闲 OpenMP 线程的等待策略，`run.sh` 和 `benches/run_sift.py` 默认使用 `PASSIVE` |
+| `GOMP_SPINCOUNT` | GCC libgomp 线程休眠前的自旋次数，两个启动脚本默认设为 `0` |
 | `DATASET` | 默认数据集目录名 |
 | `BUILD_DIR` | `run.sh` 使用的 CMake 构建目录 |
 | `RESULT_DIR` | 本次报告的输出目录 |
 
 PCA 的并行查询投影使用 `SearchConfig::num_threads` 作为线程预算。OpenBLAS 线程数仍影响 PCA 训练、底库大批投影和单线程下的整批查询投影。C++ 调用时直接设置 `BuildConfig::num_threads` 与 `SearchConfig::num_threads`，Benchmark 的 16 线程限制只作用于其参数预设过程。[PCA 投影规则](architecture.md)
 
-`run.sh` 默认使用 `ACTIVE + 16000`，启动前设置的环境变量优先。可用 `OMP_WAIT_POLICY=PASSIVE ./run.sh` 选择被动等待。直接启动二进制或在宿主程序中使用索引时，由启动进程的环境决定运行时配置。 [原默认与各自旋设置的实测](../benchmark/v2.0experiments/single-query-wait.md)
+启动脚本默认使用被动等待并关闭 libgomp 自旋，启动前设置的环境变量优先。复测旧设置时使用 `OMP_WAIT_POLICY=ACTIVE GOMP_SPINCOUNT=16000 ./run.sh`。直接启动二进制或在宿主程序中使用索引时，由启动进程的环境决定运行时配置。[历史等待策略对照](../benchmark/v2.0experiments/single-query-wait.md)

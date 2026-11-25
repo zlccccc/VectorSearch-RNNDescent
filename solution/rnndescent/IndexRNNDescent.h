@@ -1,8 +1,5 @@
 #pragma once
 
-#include <omp.h>
-
-#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <vector>
@@ -54,8 +51,7 @@ struct IndexRNNDescent {
 
         const int candidate_count = config::sanitize_search_config(search_config, 1, n).refine_max;
         SelectedDistanceComputerFactory::validate_quantization(search_config.graph_quantization);
-        if (search_config.rerank_quantization && search_config.fp32_refine_max > 0 &&
-            search_config.fp32_refine_max < candidate_count)
+        if (search_config.uses_coarse_shortlist(candidate_count))
             SelectedDistanceComputerFactory::validate_quantization(*search_config.rerank_quantization);
 
         auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = std::chrono::high_resolution_clock::now();
@@ -78,7 +74,6 @@ struct IndexRNNDescent {
 
         nowtime = std::chrono::high_resolution_clock::now();
         process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-        prevtime = nowtime;
         Logger::info(verbose, "RNN Descent build done in %f ms\n", process_time);
 
         const int graph_dimension = pca ? pca->output_dimension() : base.dimension();
@@ -116,36 +111,15 @@ struct IndexRNNDescent {
                                          ? pca->query_order(graph_queries)
                                          : std::vector<int>{};
         const int *const query_order = ordered_queries.empty() ? nullptr : ordered_queries.data();
-        constexpr int queries_per_chunk = 4;
-        // With only a few queries per worker, a slow query can dominate a static chunk.
-        const bool balance_small_batch = n > workers && n <= 16;
         if (n == 1 && search_config.single_query_threads > 1) {
             rnndescent->search_single_parallel(0, *reranker, search_config, result);
-        } else if (n == 1 || workers == 1) {
-            for (int i = 0; i < n; ++i) {
-                const int id = query_order ? query_order[i] : i;
-                rnndescent->search_single_thread(0, id, *reranker, search_config, result.slice(id));
-            }
-        } else if (!balance_small_batch && (n - 1) / queries_per_chunk < workers) {
-            // Share short batches evenly when there is at most one chunk per worker.
-#pragma omp parallel for num_threads(workers) schedule(static)
-            for (int i = 0; i < n; ++i) {
-                const int id = query_order ? query_order[i] : i;
-                rnndescent->search_single_thread(omp_get_thread_num(), id, *reranker, search_config, result.slice(id));
-            }
         } else {
-            const int chunk = balance_small_batch ? 1 : queries_per_chunk;
-#pragma omp parallel for num_threads(workers) schedule(dynamic, chunk)
-            for (int i = 0; i < n; ++i) {
-                const int id = query_order ? query_order[i] : i;
-                rnndescent->search_single_thread(omp_get_thread_num(), id, *reranker, search_config, result.slice(id));
-            }
+            rnndescent->search_batch(n, query_order, *reranker, search_config, result);
         }
 
 #ifdef INTERNAL_CLOCK_TEST
         nowtime = std::chrono::high_resolution_clock::now();
         process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-        prevtime = nowtime;
         auto all_time = std::chrono::duration<float, std::milli>(nowtime - starttime).count();
         Logger::info(verbose, "search: RNNDescent Search Process done in %f ms/item; all = %f ms/item; internal point %f\n", process_time / n,
                      all_time / n, 1000. * n / all_time);
