@@ -54,7 +54,7 @@ def prepare_datasets(source, expanded):
     return datasets, base_rows, query_rows
 
 
-def run_case(binary, dataset, run, dim, budget, threads, queries, repeat, pool_gib):
+def run_case(binary, dataset, run, dim, budget, queries, repeat, pool_gib, environment):
     run.mkdir()
     base, query, ground_truth = (dataset / name for name in FILES)
     command = [
@@ -64,18 +64,17 @@ def run_case(binary, dataset, run, dim, budget, threads, queries, repeat, pool_g
         "--refine-max", str(budget), "--beam-size", "8", "--disable-pca", "--topk", "10",
         "--neighbor-pool-gb", str(pool_gib), "--repeat", str(repeat), "--output-iter", "0",
     ]
-    environment = dict(os.environ, OMP_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS="1",
-                       OMP_DYNAMIC="FALSE", OMP_WAIT_POLICY=os.environ.get("OMP_WAIT_POLICY") or "PASSIVE",
-                       GOMP_SPINCOUNT=os.environ.get("GOMP_SPINCOUNT") or "0", RESULT_DIR=str(run))
     log_path = run / "run.log"
     with log_path.open("w") as log:
-        process = subprocess.run(command, env=environment, stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.run(command, env=dict(environment, RESULT_DIR=str(run)),
+                                 stdout=log, stderr=subprocess.STDOUT)
     if process.returncode:
         raise RuntimeError(f"benchmark exited with code {process.returncode}; see {log_path}")
 
     report = dict(line.split("=", 1) for line in (run / "latest.txt").read_text().splitlines())
     if (int(report["dim"]), int(report["checked_queries"])) != (dim, queries):
         raise ValueError(f"{run}: unexpected vector dimension or checked query count")
+    threads = int(environment["OMP_NUM_THREADS"])
     if any(int(report[f"{phase}_config.num_threads"]) != threads for phase in ("search", "build")):
         raise ValueError(f"{run}: unexpected thread count")
     latencies = [float(report[f"latency_ms[{i}]"]) for i in range(repeat)]
@@ -108,6 +107,12 @@ def benchmark(args):
     else:
         cases = [(SIFT_DIM, budget) for budget in (16, 32, 64, 128)]
 
+    openmp_inputs = {
+        "OMP_NUM_THREADS": str(args.threads),
+        "OMP_WAIT_POLICY": os.environ.get("OMP_WAIT_POLICY") or "PASSIVE",
+        "GOMP_SPINCOUNT": os.environ.get("GOMP_SPINCOUNT") or "0",
+    }
+    environment = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_DYNAMIC="FALSE", **openmp_inputs)
     output.mkdir(parents=True)
     metadata = {
         "profile": args.profile, "binary": str(binary),
@@ -115,7 +120,7 @@ def benchmark(args):
         "source_sha256": {name: file_sha256(source / name) for name in FILES},
         "machine": platform.machine(), "source": str(source),
         "expanded": str(expanded) if expanded is not None else None,
-        "base_rows": base_rows, "query_rows": queries, "threads": args.threads,
+        "base_rows": base_rows, "query_rows": queries, "threads": args.threads, "openmp": openmp_inputs,
         "builds": args.builds, "repeat": args.repeat, "pool_gib": args.pool_gib,
     }
     (output / "settings.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -126,7 +131,7 @@ def benchmark(args):
         for dim, budget in order:
             print(f"Build {batch}/{args.builds}, {dim}D, search_L={budget}", flush=True)
             run = output / f"build-{batch}-{dim}d-l{budget}"
-            result = run_case(binary, datasets[dim], run, dim, budget, args.threads, queries, args.repeat, args.pool_gib)
+            result = run_case(binary, datasets[dim], run, dim, budget, queries, args.repeat, args.pool_gib, environment)
             results[dim, budget].append(result)
             print(f"  {result[0]:,.0f} QPS, Recall@10 {result[1]:.2f}%, cache {result[2]:.2f}%", flush=True)
 

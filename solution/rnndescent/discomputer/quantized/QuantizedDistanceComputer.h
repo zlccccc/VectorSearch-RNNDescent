@@ -145,9 +145,7 @@ class QuantizedDistanceComputer final : public MyDistanceComputer {
         if (count == 1) {
             query_params_[0] = encoding_.encode_query(data, queries_.data(), d_);
         } else if (count > 1) {
-            // Short query codes rarely amortize another OpenMP region in a small batch.
-            const bool parallel = count > 16 || static_cast<size_t>(count) * d_ > 2 * 1024;
-#pragma omp parallel for if (parallel)
+#pragma omp parallel for if (parallel_query_preparation(count))
             for (int i = 0; i < count; ++i) {
                 const auto *source = data + static_cast<size_t>(i) * d_;
                 query_params_[i] = encoding_.encode_query(source, queries_.data() + static_cast<size_t>(i) * query_stride_, d_);

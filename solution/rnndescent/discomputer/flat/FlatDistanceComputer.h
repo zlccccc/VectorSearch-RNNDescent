@@ -58,9 +58,7 @@ template <class Kernel> class FlatDistanceComputer final : public MyDistanceComp
             if (count == 1) {
                 query_norms[0] = Kernel::query_norm(input, d);
             } else if (count > 1) {
-                // Small batches can compute inexpensive norms before waking the search team.
-                const bool parallel = count > 16 || static_cast<size_t>(count) * d > 8 * 1024;
-#pragma omp parallel for if (parallel)
+#pragma omp parallel for if (parallel_query_preparation(count))
                 for (int i = 0; i < count; ++i)
                     query_norms[i] = Kernel::query_norm(input + i * d, d);
             }

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <omp.h>
 #include <stdexcept>
 
 #include "utils.h"
@@ -63,5 +64,15 @@ struct MyDistanceComputer {
     }
 
     virtual ~MyDistanceComputer() = default;
+
+  protected:
+    static bool parallel_query_preparation(int count) {
+        // Small batches rarely amortize waking and synchronizing the OpenMP team.
+        if (count <= 16)
+            return false;
+        constexpr int queries_per_worker = 4;
+        const int workers = omp_get_max_threads();
+        return workers > 1 && count / workers >= queries_per_worker;
+    }
 };
 } // namespace rnndescent

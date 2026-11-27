@@ -107,6 +107,10 @@ inline void write_benchmark_report(const BenchmarkConfig &config, const Benchmar
     oss << "search_config.single_query_max_expansions=" << config.search_config.single_query_limits.expansions_per_worker << char(10);
     oss << "query_batch_size=" << config.query_batch_size << char(10);
     oss << "search_config.num_threads=" << config.search_config.num_threads << char(10);
+    for (const char *name : {"OMP_NUM_THREADS", "OMP_WAIT_POLICY", "GOMP_SPINCOUNT"}) {
+        const char *value = std::getenv(name);
+        oss << "env." << name << '=' << (value ? value : "unset") << char(10);
+    }
     oss << "pca_config.enabled=" << (config.pca_config.enabled ? 1 : 0) << char(10);
     oss << "pca_config.out_dim=" << config.pca_config.out_dim << char(10);
     oss << "build_seconds=" << stats.build_seconds << char(10);

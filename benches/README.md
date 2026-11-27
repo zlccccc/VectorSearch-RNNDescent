@@ -72,6 +72,7 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
 | `recall@10` | 例如 0.99 表示命中 ground truth 前 10 个 ID 的比例为 99% |
 | `avg_distance_error`、`max_distance_error` | 返回 FP32 距离与逐维平方差参考结果之间的绝对误差 |
 | `neighbors can be cached` | 实际邻居缓存覆盖率，输出在控制台日志中 |
+| `env.OMP_NUM_THREADS`、`env.OMP_WAIT_POLICY`、`env.GOMP_SPINCOUNT` | OpenMP 启动输入，未显式设置时记录为 `unset` |
 | `latest.txt` 与时间戳报告 | 默认写入 `benches/results/<数据集名>/`，可用 `RESULT_DIR` 指定具体目录 |
 
 多线程情况下，`latency_ms[i]` 表示摊到每条查询的批次时间，单条请求的端到端延迟需另行测量。每次启动程序都会新建索引。一次运行内的 `--repeat` 复用同一张图。比较两个版本时可以交替运行，多次独立建图后汇总；要求严格同图时，需要在单进程对照程序中复用图对象。

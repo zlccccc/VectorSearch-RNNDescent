@@ -288,6 +288,8 @@ TEST(BenchmarkDataTest, UsesCommonSearchSettingsForCustomDatasets) {
     const auto query = (tmp.path / "query.fvecs").string();
     const auto results = (tmp.path / "results").string();
     const ScopedEnvVar result_env("RESULT_DIR", results.c_str());
+    const ScopedEnvVar wait_policy("OMP_WAIT_POLICY", "PASSIVE");
+    const ScopedEnvVar spin_count("GOMP_SPINCOUNT", "0");
 
     for (const int32_t dim : {1024, 65}) {
         SCOPED_TRACE(dim);
@@ -321,6 +323,8 @@ TEST(BenchmarkDataTest, UsesCommonSearchSettingsForCustomDatasets) {
         EXPECT_THAT(text, HasSubstr("search_config.num_initialize=" + std::to_string(search_defaults.num_initialize) + "\n"));
         EXPECT_THAT(text, HasSubstr("search_config.refine_max=20\n"));
         EXPECT_THAT(text, HasSubstr("search_config.fp32_refine_max=32\n"));
+        EXPECT_THAT(text, HasSubstr("env.OMP_WAIT_POLICY=PASSIVE\n"));
+        EXPECT_THAT(text, HasSubstr("env.GOMP_SPINCOUNT=0\n"));
     }
 }
 
