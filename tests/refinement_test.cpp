@@ -254,6 +254,8 @@ TEST(RefinementTest, ParallelSingleQueryCapsWorkersAndScoresDisjointEntryRanges)
     search.fp32_refine_max = fp32_limit;
     search.num_threads = 1;
     search.single_query_threads = requested_workers;
+    // EntryRecorder indexes its buffers by OpenMP thread ID.
+    search.persistent_query_workers = false;
     rnndescent::search::PerfStats perf;
     std::vector<int> original_ids(entry_count);
     std::iota(original_ids.rbegin(), original_ids.rend(), 0);

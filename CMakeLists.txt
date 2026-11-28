@@ -10,6 +10,7 @@ set_property(CACHE RNNDESCENT_SIMD PROPERTY STRINGS native avx2 avx2-uint8 avx-v
 option(RNNDESCENT_PROFILE_SEARCH "Enable detailed graph search timing and counters" OFF)
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
+find_package(Threads REQUIRED)
 find_package(OpenBLAS CONFIG QUIET)
 if(NOT OpenBLAS_FOUND)
     find_path(OpenBLAS_INCLUDE_DIRS NAMES cblas.h PATH_SUFFIXES openblas openblas-pthread REQUIRED)
@@ -60,8 +61,14 @@ set(RNNDESCENT_INDEX_SOURCES
     solution/rnndescent/build/GraphBuilder.cpp
     solution/rnndescent/build/GraphReorder.cpp
     solution/rnndescent/search/GraphSearcher.cpp
+    solution/rnndescent/search/QueryWorkers.cpp
     solution/rnndescent/search/CandidateReranker.cpp
     solution/rnndescent/PCAProjection.cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND RNNDESCENT_INDEX_SOURCES solution/rnndescent/search/QueryWorkersLinux.cpp)
+else()
+    list(APPEND RNNDESCENT_INDEX_SOURCES solution/rnndescent/search/QueryWorkersPortable.cpp)
+endif()
 if(RNNDESCENT_PROFILE_SEARCH)
     list(APPEND RNNDESCENT_INDEX_SOURCES solution/rnndescent/search/SearchProfile.cpp)
 endif()
@@ -79,6 +86,7 @@ set(RNNDESCENT_INDEX_HEADERS
     solution/rnndescent/build/GraphReorder.h
     solution/rnndescent/search/GraphSearcher.h
     solution/rnndescent/search/SearchProfile.h
+    solution/rnndescent/search/QueryWorkers.h
     solution/rnndescent/build/GraphTypes.h
     solution/rnndescent/discomputer/quantized/AvxVnniUInt4Kernel.h
     solution/rnndescent/discomputer/quantized/Avx512UInt4Kernel.h
@@ -95,7 +103,7 @@ target_sources(rnndescent_solution
     PUBLIC ${RNNDESCENT_INDEX_HEADERS})
 source_group("Index Sources" FILES ${RNNDESCENT_INDEX_SOURCES})
 source_group("Index Headers" FILES ${RNNDESCENT_INDEX_HEADERS})
-target_link_libraries(rnndescent_solution PUBLIC rnndescent_build_options)
+target_link_libraries(rnndescent_solution PUBLIC rnndescent_build_options PRIVATE Threads::Threads)
 
 add_executable(vector_search_app main.cpp)
 set_target_properties(vector_search_app PROPERTIES OUTPUT_NAME algorithm)

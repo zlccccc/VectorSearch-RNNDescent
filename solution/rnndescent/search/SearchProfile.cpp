@@ -119,11 +119,11 @@ void TeamProfile::flush(const char *kind) {
     *this = {};
 }
 
-WorkerProfile &GraphSearchProfile::start_worker(int worker) {
+WorkerProfile &GraphSearchProfile::start_worker(int worker, int team_size) {
     auto &sample = worker_profiles_[worker];
     sample.start();
     if (worker == 0)
-        active_workers_ = omp_get_num_threads();
+        active_workers_ = team_size > 0 ? team_size : omp_get_num_threads();
     return sample;
 }
 

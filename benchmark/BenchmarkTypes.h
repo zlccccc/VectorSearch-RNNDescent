@@ -191,6 +191,7 @@ inline void print_solution_config(const BenchmarkConfig &config) {
          << " rerank_quantization=" << quantization_name(config.search_config.rerank_quantization)
          << " reorder_query_batch=" << config.search_config.reorder_query_batch
          << " single_query_threads=" << config.search_config.single_query_threads
+         << " persistent_query_workers=" << config.search_config.persistent_query_workers
          << " single_query_refine_max=" << config.search_config.single_query_limits.candidates_per_worker
          << " single_query_max_expansions=" << config.search_config.single_query_limits.expansions_per_worker
          << " query_batch_size=" << config.query_batch_size

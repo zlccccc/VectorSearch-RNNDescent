@@ -38,6 +38,7 @@ inline void print_usage(const char *prog) {
     cout << "  --query-batch-size <n>    Queries per request (default 0 sends all queries at once)\n";
     cout << "  --single-query-threads <n>  Workers for a single-query search (default 1, capped at "
          << rnndescent::config::SearchConfig::max_single_query_threads << ")\n";
+    cout << "  --no-persistent-query-workers  Use OpenMP for query dispatch instead of the default worker pool\n";
     cout << "  --worker-candidates <n>   FP32 candidates per worker (0 keeps "
          << rnndescent::config::SearchConfig::SingleQueryLimits::default_quantized_candidates
          << " after coarse ranking, or all for direct FP32)\n";
@@ -142,6 +143,8 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
         } else if (arg == "--single-query-threads") {
             config.search_config.single_query_threads =
                 std::min(require_int(arg, 1), rnndescent::config::SearchConfig::max_single_query_threads);
+        } else if (arg == "--persistent-query-workers" || arg == "--no-persistent-query-workers") {
+            config.search_config.persistent_query_workers = arg == "--persistent-query-workers";
         } else if (arg == "--worker-candidates" || arg == "--single-query-refine-max") {
             config.search_config.single_query_limits.candidates_per_worker = require_int(arg, 0);
         } else if (arg == "--worker-expansions" || arg == "--single-query-max-expansions") {

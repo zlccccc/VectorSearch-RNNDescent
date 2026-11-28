@@ -74,7 +74,7 @@ using ::testing::ThrowsMessage;
 
 TEST(BenchmarkCliTest, AppliesExplicitSettingsAndCacheDefaults) {
     auto config = parse({"--dim", "256", "--neighbor-pool-gb", "2", "--pca-out", "65", "--no-reorder-query-batch",
-                         "--single-query-threads", "4", "--worker-candidates", "24",
+                         "--single-query-threads", "4", "--no-persistent-query-workers", "--worker-candidates", "24",
                          "--worker-expansions", "16", "--query-batch-size", "1"});
     benchmark::apply_solution_preset(config);
     EXPECT_TRUE(config.dim_explicit);
@@ -85,6 +85,8 @@ TEST(BenchmarkCliTest, AppliesExplicitSettingsAndCacheDefaults) {
     EXPECT_FALSE(config.search_config.reorder_query_batch);
     EXPECT_TRUE(parse({"--no-reorder-query-batch", "--reorder-query-batch"}).search_config.reorder_query_batch);
     EXPECT_EQ(config.search_config.single_query_threads, 4);
+    EXPECT_FALSE(config.search_config.persistent_query_workers);
+    EXPECT_TRUE(parse({"--no-persistent-query-workers", "--persistent-query-workers"}).search_config.persistent_query_workers);
     EXPECT_EQ(config.search_config.single_query_limits.candidates_per_worker, 24);
     EXPECT_EQ(config.search_config.single_query_limits.expansions_per_worker, 16);
     EXPECT_EQ(config.query_batch_size, 1);
@@ -94,6 +96,7 @@ TEST(BenchmarkCliTest, AppliesExplicitSettingsAndCacheDefaults) {
     EXPECT_EQ(defaults.build_config.neighbor_pool_size_limit_bytes, 0);
     EXPECT_TRUE(defaults.search_config.reorder_query_batch);
     EXPECT_EQ(defaults.search_config.single_query_threads, 1);
+    EXPECT_TRUE(defaults.search_config.persistent_query_workers);
     EXPECT_EQ(defaults.search_config.single_query_limits.candidates_per_worker, 0);
     EXPECT_EQ(defaults.search_config.single_query_limits.expansions_per_worker, 0);
     EXPECT_EQ(defaults.query_batch_size, 0);

@@ -1,4 +1,5 @@
 #include "ReferenceDistance.h"
+#include "solution/rnndescent/search/QueryWorkers.h"
 #include "solution/solution.h"
 
 #include <algorithm>
@@ -7,6 +8,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -154,9 +156,11 @@ TEST(SolutionTest, ReorderedQueryBatchReturnsResultsInInputOrder) {
 
     Solution baseline, ordered;
     search.single_query_threads = 4;
+    search.num_threads = 8;
     ordered.build(dimension, base, warmup, build, search, {true, 13});
     search.reorder_query_batch = false;
     search.single_query_threads = 1;
+    search.persistent_query_workers = false;
     baseline.build(dimension, base, warmup, build, search, {true, 13});
 
     std::vector<int> expected, actual;
@@ -168,23 +172,17 @@ TEST(SolutionTest, ReorderedQueryBatchReturnsResultsInInputOrder) {
     for (int q = 0; q < query_count; ++q)
         EXPECT_EQ(actual[q * topk], source_ids[q]);
 
-    for (int q : {0, query_count - 1}) {
-        const auto row = queries.begin() + q * dimension;
-        const std::vector<float> single_query(row, row + dimension);
-        ordered.search(single_query, actual, topk);
-        const auto ids = expected.begin() + q * topk;
-        const auto distances = baseline.distance_buffer().begin() + q * topk;
-        EXPECT_EQ(actual, (std::vector<int>(ids, ids + topk)));
-        EXPECT_EQ(ordered.distance_buffer(), (std::vector<float>(distances, distances + topk)));
-    }
-
-    for (int count : {2, 6, 15, 16, 17}) {
+    const std::pair<int, int> batches[] = {{0, 1}, {0, 2}, {0, 6}, {query_count - 1, 1},
+                                         {0, 8}, {0, 15}, {0, 16}, {0, 17}, {0, 1}};
+    for (const auto &[first, count] : batches) {
         SCOPED_TRACE(count);
-        const std::vector<float> subset(queries.begin(), queries.begin() + count * dimension);
+        const auto query_begin = queries.begin() + first * dimension;
+        const std::vector<float> subset(query_begin, query_begin + count * dimension);
         ordered.search(subset, actual, topk);
-        EXPECT_EQ(actual, (std::vector<int>(expected.begin(), expected.begin() + count * topk)));
-        const auto &distances = baseline.distance_buffer();
-        EXPECT_EQ(ordered.distance_buffer(), (std::vector<float>(distances.begin(), distances.begin() + count * topk)));
+        const auto ids = expected.begin() + first * topk;
+        const auto distances = baseline.distance_buffer().begin() + first * topk;
+        EXPECT_EQ(actual, (std::vector<int>(ids, ids + count * topk)));
+        EXPECT_EQ(ordered.distance_buffer(), (std::vector<float>(distances, distances + count * topk)));
     }
 }
 
@@ -236,6 +234,41 @@ TEST(SolutionTest, ParallelSingleQueryMergesUniqueCandidatesAndResetsBetweenQuer
                 ASSERT_LT(ids[i], rows);
                 EXPECT_EQ(distances[i], scalar_l2(query.data(), base.data() + ids[i] * dimension, dimension));
             }
+        }
+    }
+}
+
+TEST(QueryWorkersTest, ReusesWorkersWithDifferentActiveCountsAndRecoversAfterAnException) {
+    using rnndescent::search::QueryWorkers;
+    if (!QueryWorkers::can_run(4))
+        GTEST_SKIP() << "Current OpenMP thread limits do not allow the fixed query team";
+    auto team = QueryWorkers::create(2, 4);
+    if (!team)
+        GTEST_SKIP() << "Current OpenMP affinity does not allow the fixed query team";
+    if (!team->matches(4))
+        GTEST_SKIP() << "Current OpenMP places cannot host four query workers";
+
+    std::array<std::thread::id, 4> ids{};
+    auto identify = [&](int worker) { ids[worker] = std::this_thread::get_id(); };
+    team->run(4, identify);
+    const auto expected = ids;
+    EXPECT_EQ(expected.front(), std::this_thread::get_id());
+    auto unique = ids;
+    std::sort(unique.begin(), unique.end());
+    EXPECT_EQ(std::adjacent_find(unique.begin(), unique.end()), unique.end());
+
+    auto fail_in_worker = [](int worker) {
+        if (worker == 2)
+            throw std::runtime_error("query worker failed");
+    };
+    EXPECT_THROW(team->run(3, fail_in_worker), std::runtime_error);
+    for (int round = 0; round < 50; ++round) {
+        for (int active : {2, 4, 3, 2}) {
+            SCOPED_TRACE(active);
+            ids = {};
+            team->run(active, identify);
+            for (int worker = 0; worker < 4; ++worker)
+                EXPECT_EQ(ids[worker], worker < active ? expected[worker] : std::thread::id{});
         }
     }
 }

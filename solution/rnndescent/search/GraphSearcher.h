@@ -6,6 +6,7 @@
 #include "CandidateBitmap.h"
 #include "NeighborScoreFilter.h"
 #include "SearchProfile.h"
+#include "QueryWorkers.h"
 
 #include <memory>
 #include <vector>
@@ -53,6 +54,7 @@ class GraphSearcher {
     };
 
     config::SearchConfig checked_search_config(const config::SearchConfig &search_config, const SearchResultView &result) const;
+    QueryWorkers *persistent_workers(int active);
 
     template <bool SharedVisit, bool LimitExpansions = false>
     void search_from_entries(int threadid, int queryid, const config::SearchConfig &config, int entry_begin,
@@ -65,6 +67,7 @@ class GraphSearcher {
     GraphSearchProfile profile_;
     std::unique_ptr<SharedVisitedSet> shared_visited_;
     std::vector<SingleNeighbor> merged_candidates_;
+    std::unique_ptr<QueryWorkers> query_workers_;
 };
 
 } // namespace search

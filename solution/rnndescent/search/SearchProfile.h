@@ -153,7 +153,7 @@ class GraphSearchProfile {
         : stats_(stats), graph_stats_(workers), worker_profiles_(workers) {}
 
     GraphQuerySample query(int worker) { return GraphQuerySample(graph_stats_[worker]); }
-    WorkerProfile &start_worker(int worker);
+    WorkerProfile &start_worker(int worker, int team_size = 0);
     void finish_team(SearchTeam kind, const ProfileTimer &timer);
     void single_setup_finished(ProfileTimer &timer) { stats_.single_setup_ms += timer.lap(); }
     void single_merge_finished(ProfileTimer &timer) { stats_.single_merge_ms += timer.lap(); }
@@ -207,7 +207,7 @@ class GraphSearchProfile {
     GraphSearchProfile(std::size_t, PerfStats &) {}
 
     GraphQuerySample query(int) { return {}; }
-    WorkerProfile &start_worker(int) { return worker_; }
+    WorkerProfile &start_worker(int, int = 0) { return worker_; }
     void finish_team(SearchTeam, const ProfileTimer &) {}
     void single_setup_finished(ProfileTimer &) {}
     void single_merge_finished(ProfileTimer &) {}

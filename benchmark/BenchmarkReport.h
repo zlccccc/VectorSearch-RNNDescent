@@ -103,6 +103,7 @@ inline void write_benchmark_report(const BenchmarkConfig &config, const Benchmar
     oss << "search_config.rerank_quantization=" << quantization_name(config.search_config.rerank_quantization) << char(10);
     oss << "search_config.reorder_query_batch=" << config.search_config.reorder_query_batch << char(10);
     oss << "search_config.single_query_threads=" << config.search_config.single_query_threads << char(10);
+    oss << "search_config.persistent_query_workers=" << config.search_config.persistent_query_workers << char(10);
     oss << "search_config.single_query_refine_max=" << config.search_config.single_query_limits.candidates_per_worker << char(10);
     oss << "search_config.single_query_max_expansions=" << config.search_config.single_query_limits.expansions_per_worker << char(10);
     oss << "query_batch_size=" << config.query_batch_size << char(10);

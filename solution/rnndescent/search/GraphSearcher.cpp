@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <omp.h>
 #include <stdexcept>
+#include <utility>
 
 namespace rnndescent::search {
 
@@ -25,6 +26,18 @@ GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search
     }
 }
 
+QueryWorkers *GraphSearcher::persistent_workers(int active) {
+    if (!QueryWorkers::can_run(active))
+        return nullptr;
+    if (!query_workers_ || !query_workers_->matches(active)) {
+        auto team = QueryWorkers::create(active, static_cast<int>(scratch_.size()));
+        if (!team)
+            return nullptr;
+        query_workers_ = std::move(team);
+    }
+    return query_workers_.get();
+}
+
 void GraphSearcher::search_batch(int query_count, const int *query_order, const config::SearchConfig &search_config,
                                  const CandidateReranker &reranker, const SearchResultView &result) {
     RNNDESCENT_ASSERT_MSG(query_count > 0, "search query count must be positive");
@@ -39,14 +52,28 @@ void GraphSearcher::search_batch(int query_count, const int *query_order, const 
         search_from_entries<false>(worker, id, safe_config, 0, reranker, {ids + offset, distances + offset, topk});
     };
 
-    constexpr int queries_per_chunk = 4;
-    // With only a few queries per worker, a slow query can dominate a static chunk.
-    const bool balance_small_batch = query_count > workers && query_count <= 16;
     if (query_count == 1 || workers == 1) {
         for (int i = 0; i < query_count; ++i)
             search_row(i, 0);
         return;
     }
+    if (safe_config.persistent_query_workers && query_count <= workers) {
+        if (auto *team = persistent_workers(query_count)) {
+            const ProfileTimer launch{};
+            auto work = [&](int worker) {
+                auto &sample = profile_.start_worker(worker, query_count);
+                search_row(worker, worker);
+                sample.job_finished();
+                sample.stop();
+            };
+            team->run(query_count, work);
+            profile_.finish_team(SearchTeam::Batch, launch);
+            return;
+        }
+    }
+    constexpr int queries_per_chunk = 4;
+    // With only a few queries per worker, a slow query can dominate a static chunk.
+    const bool balance_small_batch = query_count > workers && query_count <= 16;
     const bool static_schedule = !balance_small_batch && (query_count - 1) / queries_per_chunk < workers;
     const int chunk = balance_small_batch ? 1 : queries_per_chunk;
     // Record completion before the parallel region's implicit join.
@@ -129,12 +156,8 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
     const int local_fp32 = limits.candidates_per_worker > 0
                                ? limits.candidates_per_worker
                                : config::SearchConfig::SingleQueryLimits::default_quantized_candidates;
-    profile_.single_setup_finished(setup);
-#pragma omp parallel num_threads(workers)
-    {
-        const int worker = omp_get_thread_num();
-        auto &sample = profile_.start_worker(worker);
-        const int team_size = omp_get_num_threads();
+    const auto work = [&](int worker, int team_size) {
+        auto &sample = profile_.start_worker(worker, team_size);
         if (worker == 0)
             active_workers = team_size;
         if (team_size == 1) {
@@ -162,6 +185,16 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
         }
         sample.job_finished();
         sample.stop();
+    };
+
+    auto *const team = safe_config.persistent_query_workers ? persistent_workers(workers) : nullptr;
+    profile_.single_setup_finished(setup);
+    if (team) {
+        auto work_shard = [&](int worker) { work(worker, workers); };
+        team->run(workers, work_shard);
+    } else {
+#pragma omp parallel num_threads(workers)
+        work(omp_get_thread_num(), omp_get_num_threads());
     }
     profile_.finish_team(SearchTeam::Single, setup);
     if (active_workers == 1)

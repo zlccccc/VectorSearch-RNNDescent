@@ -45,6 +45,7 @@ struct SearchConfig {
     bool reorder_query_batch = true;
     int single_query_threads = 1;
     SingleQueryLimits single_query_limits;
+    bool persistent_query_workers = true;
 
     bool uses_coarse_shortlist(int candidate_count) const {
         return rerank_quantization && fp32_refine_max > 0 && fp32_refine_max < candidate_count;

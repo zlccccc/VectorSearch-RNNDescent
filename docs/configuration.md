@@ -69,6 +69,7 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 |---|---:|---|
 | `--query-batch-size` | 0 | 每次请求最多提交多少条查询，0 提交整批 |
 | `--single-query-threads` | 1 | 同一条查询的线程数，最多 8 个 |
+| `--no-persistent-query-workers` | 关闭 | 使用 OpenMP 派发查询 |
 | `--worker-candidates` | 0 | 单查询并行时每线程送入 FP32 的候选上限，至少为 Top K。0 在量化粗排后默认保留 16 项，直接 FP32 时保留全部本地重排候选 |
 | `--worker-expansions` | 0 | 单查询并行时每线程实际展开的图节点数上限，0 不限 |
 | `--no-reorder-query-batch` | 关闭 | 开启该选项时，批量查询按输入顺序执行 |
@@ -78,6 +79,8 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 单查询并行按四路算距的粒度给各线程分配互不重叠的入口区间，并分摊 `search_L`。线程共用节点访问标记，各自完成粗排和 FP32 算距，交回本地 Top K，最后统一去重并选出全局 Top K。可用入口不足时会减少实际线程数。并行和单线程的候选池不同，比较延迟时请用 ground truth 重新校验达到目标 Recall 的搜索预算。
 
 例如，用 `--query-batch-size 1 --single-query-threads 8` 测单查询延迟。每线程预算只在有多个线程共同处理一条查询时生效。展开上限按实际读到的邻接表计数，访问标记拦下的节点不计入。候选上限作用于合并输入，本地候选池至少保有 `search_L` 分摊后的宽度。
+
+单条并行和查询数不超过线程预算的小批默认共用一个常驻线程池。线程池容量取索引预留的搜索线程数，最多 32 个。Linux 使用 futex，支持无 OpenMP 绑核和 `OMP_PROC_BIND=close`，并遵循 OpenMP 线程上限。嵌套 OpenMP、动态线程数或其他绑核策略在 Linux 上由 OpenMP 派发。其他平台使用 C++ 条件变量按需唤醒工作线程，由操作系统调度线程。查询数超过线程预算的批次由 OpenMP 派发。报告中的 `search_config.persistent_query_workers` 记录请求的配置。复测 OpenMP 时使用 `--no-persistent-query-workers`。
 
 ## 数据集预设
 
