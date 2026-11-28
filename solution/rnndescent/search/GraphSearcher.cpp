@@ -151,11 +151,11 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
     merged_candidates_.reserve(static_cast<size_t>(workers) * topk);
 
     int active_workers = 1;
-    const auto limits = safe_config.single_query_limits;
+    const auto overrides = safe_config.single_query_limits;
     const bool use_shortlist = safe_config.uses_coarse_shortlist(safe_config.refine_max);
-    const int local_fp32 = limits.candidates_per_worker > 0
-                               ? limits.candidates_per_worker
-                               : config::SearchConfig::SingleQueryLimits::default_quantized_candidates;
+    const int local_fp32_limit = overrides.candidates_per_worker > 0
+                                     ? overrides.candidates_per_worker
+                                     : config::SearchConfig::SingleQueryLimits::default_quantized_candidates;
     const auto work = [&](int worker, int team_size) {
         auto &sample = profile_.start_worker(worker, team_size);
         if (worker == 0)
@@ -169,16 +169,17 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
             const int first_entry = 4 * (worker * groups_per_worker + std::min(worker, remainder));
             auto local_config = safe_config;
             local_config.num_initialize = 4 * (groups_per_worker + (worker < remainder));
+            // Split the query's search and rerank widths. Each worker uses the configured beam for its own rounds.
             const int local_width = (safe_config.search_L - 1) / team_size + 1;
             local_config.search_L = std::clamp(local_width, topk, local_config.num_initialize);
             const int local_refine = (safe_config.refine_max - 1) / team_size + 1;
             local_config.refine_max = std::min({safe_config.refine_max, local_config.num_initialize,
                                                 std::max(local_config.search_L, local_refine)});
-            local_config.fp32_refine_max = use_shortlist ? local_fp32 : 0;
-            if (!use_shortlist && limits.candidates_per_worker > 0)
-                local_config.refine_max = std::min(local_config.refine_max, std::max(topk, limits.candidates_per_worker));
+            local_config.fp32_refine_max = use_shortlist ? local_fp32_limit : 0;
+            if (!use_shortlist && overrides.candidates_per_worker > 0)
+                local_config.refine_max = std::min(local_config.refine_max, std::max(topk, overrides.candidates_per_worker));
 
-            if (limits.expansions_per_worker > 0)
+            if (overrides.expansions_per_worker > 0)
                 search_from_entries<true, true>(worker, queryid, local_config, first_entry, reranker, result);
             else
                 search_from_entries<true>(worker, queryid, local_config, first_entry, reranker, result);

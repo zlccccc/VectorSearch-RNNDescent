@@ -32,6 +32,7 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 | CLI 参数 | C++ 字段 | 控制哪一步 |
 |---|---|---|
 | `--search-L` | `SearchConfig::search_L` | 查图时，只展开当前排名前 L 的候选。候选池更新后，总展开数可以超过 L |
+| `--beam-size` | `SearchConfig::beam_size` | 每个线程更新候选池前最多展开的节点数 |
 | `--rerank-candidates` | `SearchConfig::refine_max` | 查图结束后，送入原始维度重排的候选上限 |
 | `--fp32-candidates` | `SearchConfig::fp32_refine_max` | 量化粗排后，送入 FP32 精排的候选上限，默认 32 |
 | `--topk` | 搜索调用的 `topk` | 最终返回的邻居数，Benchmark 默认 10 |
@@ -47,7 +48,6 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 | `--K0` | `BuildConfig::K0` | 最终邻接表的裁剪上限，存储时会补齐到四条一组 |
 | `--local-three-hop-prune` | `BuildConfig::local_three_hop_pruning` | 启用局部三跳筛边，默认关闭 |
 | `--num-initialize` | `SearchConfig::num_initialize` | 查询入口数，也决定 BFS 重排从哪些点开始 |
-| `--beam-size` | `SearchConfig::beam_size` | 每次更新候选池前最多展开的节点数 |
 | `--graph-quantization` | `SearchConfig::graph_quantization` | 查图底库及邻居缓存的编码，支持 `8bit`（默认）和 `uint4` |
 | `--rerank-quantization` | `SearchConfig::rerank_quantization` | 原始维度粗排的编码，支持 `8bit`（默认）、`uint4` 和 `fp32`（跳过量化粗排） |
 | `--neighbor-pool-gb` | `BuildConfig::neighbor_pool_size_limit_bytes` | 邻接 ID 与可选邻居向量缓存的池预算，CLI 单位为整数 GiB |
@@ -70,17 +70,22 @@ BUILD_DIR=build/avx2 ./run.sh --mode random --data-size 10000 --dim 128 \
 | `--query-batch-size` | 0 | 每次请求最多提交多少条查询，0 提交整批 |
 | `--single-query-threads` | 1 | 同一条查询的线程数，最多 8 个 |
 | `--no-persistent-query-workers` | 关闭 | 使用 OpenMP 派发查询 |
-| `--worker-candidates` | 0 | 单查询并行时每线程送入 FP32 的候选上限，至少为 Top K。0 在量化粗排后默认保留 16 项，直接 FP32 时保留全部本地重排候选 |
-| `--worker-expansions` | 0 | 单查询并行时每线程实际展开的图节点数上限，0 不限 |
 | `--no-reorder-query-batch` | 关闭 | 开启该选项时，批量查询按输入顺序执行 |
 
 多条查询按 `SearchConfig::num_threads` 在查询之间分工。至多 16 条且查询数超过线程数时，逐条动态分工。其余批次在每 4 条形成的块数不超过线程数时采用静态分工，块数更多时按每块 4 条动态分工。默认在 PCA 至少输出 4 维且本次至少传入 2 条查询时，索引在分流前按前四个主成分生成排序键。可用 `--no-reorder-query-batch` 按输入顺序执行查询，结果均写回原输入行。
 
-单查询并行按四路算距的粒度给各线程分配互不重叠的入口区间，并分摊 `search_L`。线程共用节点访问标记，各自完成粗排和 FP32 算距，交回本地 Top K，最后统一去重并选出全局 Top K。可用入口不足时会减少实际线程数。并行和单线程的候选池不同，比较延迟时请用 ground truth 重新校验达到目标 Recall 的搜索预算。
-
-例如，用 `--query-batch-size 1 --single-query-threads 8` 测单查询延迟。每线程预算只在有多个线程共同处理一条查询时生效。展开上限按实际读到的邻接表计数，访问标记拦下的节点不计入。候选上限作用于合并输入，本地候选池至少保有 `search_L` 分摊后的宽度。
+单条并行与批量共用 `--search-L`、`--beam-size` 和 `--rerank-candidates`。单条并行按实际线程数分配入口区间，向上取整分摊搜索和重排宽度，并按 Top K 和区间大小限制本地宽度。每轮沿用同一个 Beam，再按本地搜索宽度限制。比如 `L=400`、`beam_size=6`、6 线程且入口充足时，每个线程从当前排名前 67 项挑选未展开节点，每轮最多处理 6 个。线程各自交回本地 Top K，最后统一去重和排序。用 `--query-batch-size 1 --single-query-threads 6` 测单条延迟时，通过 ground truth 校验所用搜索预算。
 
 单条并行和查询数不超过线程预算的小批默认共用一个常驻线程池。线程池容量取索引预留的搜索线程数，最多 32 个。Linux 使用 futex，支持无 OpenMP 绑核和 `OMP_PROC_BIND=close`，并遵循 OpenMP 线程上限。嵌套 OpenMP、动态线程数或其他绑核策略在 Linux 上由 OpenMP 派发。其他平台使用 C++ 条件变量按需唤醒工作线程，由操作系统调度线程。查询数超过线程预算的批次由 OpenMP 派发。报告中的 `search_config.persistent_query_workers` 记录请求的配置。复测 OpenMP 时使用 `--no-persistent-query-workers`。
+
+### 单条并行的高级覆盖
+
+常规调参可以沿用共用参数。下列两项仅在多线程共同处理一条查询时生效。
+
+| CLI 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `--worker-candidates` | 0 | 覆盖每个线程送入 FP32 的候选上限，至少按 Top K 配置。0 在量化粗排后默认保留 16 项，直接 FP32 时使用全部本地重排候选 |
+| `--worker-expansions` | 0 | 限制一个线程在整条查询中实际展开的节点总数，0 不限。只有读取邻接表的展开才计入 |
 
 ## 数据集预设
 

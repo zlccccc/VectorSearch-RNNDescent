@@ -26,16 +26,17 @@ struct BuildConfig {
 struct SearchConfig {
     static constexpr int max_single_query_threads = 8;
 
+    // Optional per-worker overrides for a query split across several threads.
     struct SingleQueryLimits {
         static constexpr int default_quantized_candidates = 16;
 
-        int candidates_per_worker = 0; // 0 uses Top16 after coarse ranking or all candidates for direct FP32.
-        int expansions_per_worker = 0; // 0 leaves the number of expanded graph nodes uncapped.
+        int candidates_per_worker = 0; // FP32 candidates. 0 uses Top16 after coarse ranking or all for direct FP32.
+        int expansions_per_worker = 0; // Total graph nodes expanded by one worker. 0 leaves it uncapped.
     };
 
-    int beam_size = 8;
+    int beam_size = 8; // Nodes expanded by one worker before each candidate-pool update.
     int num_threads = 16;
-    int search_L = 96; // Expand only candidates in the current closest L.
+    int search_L = 96; // Eligible rank range for expansion. Split across workers for one parallel query.
     int num_initialize = 64;
     int refine_max = 64; // Graph candidates sent to reranking.
     int fp32_refine_max = 32; // Candidates reranked in FP32, 0 refines every graph candidate.

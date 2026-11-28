@@ -22,9 +22,10 @@ inline void print_usage(const char *prog) {
     cout << "  " << prog << " --base <fvecs|bvecs> --query <fvecs|bvecs> [--gt <ivecs>]\n";
     cout << "  " << prog << " --mode random [--data-size <n>] [--dim <d>] [--test-iter <n>]\n";
     cout << "\nSearch quality:\n";
-    cout << "  --search-L <n>            Expand candidates ranked in the current closest L\n";
-    cout << "  --rerank-candidates <n>   Graph candidates sent to original-space reranking\n";
-    cout << "  --fp32-candidates <n>     Candidates scored in FP32 after quantized reranking (default 32)\n";
+    cout << "  --search-L <n>            Rank cutoff for graph expansion (split across workers for one parallel query)\n";
+    cout << "  --beam-size <n>           Nodes expanded per worker before each candidate-pool update\n";
+    cout << "  --rerank-candidates <n>   Graph candidates per query sent to original-space reranking\n";
+    cout << "  --fp32-candidates <n>     FP32 shortlist size after coarse ranking (default 32 for serial and batch search)\n";
     cout << "  --rerank-quantization <8bit|uint4|fp32>  Use fp32 to score all rerank candidates directly\n";
     cout << "  --topk <k>                Results per query (default 10)\n";
     cout << "\nIndex and advanced graph search:\n";
@@ -33,18 +34,18 @@ inline void print_usage(const char *prog) {
     cout << "  --graph-quantization <8bit|uint4>  Graph search encoding\n";
     cout << "  --neighbor-pool-gb <n>    Neighbor pool budget in GiB (default 0 disables vector caching)\n";
     cout << "  --num-initialize <n>      Entry points used for BFS ordering and search\n";
-    cout << "  --beam-size <n>           Nodes expanded between candidate pool updates\n";
     cout << "\nQuery execution and measurement:\n";
     cout << "  --query-batch-size <n>    Queries per request (default 0 sends all queries at once)\n";
     cout << "  --single-query-threads <n>  Workers for a single-query search (default 1, capped at "
          << rnndescent::config::SearchConfig::max_single_query_threads << ")\n";
     cout << "  --no-persistent-query-workers  Use OpenMP for query dispatch instead of the default worker pool\n";
-    cout << "  --worker-candidates <n>   FP32 candidates per worker (0 keeps "
-         << rnndescent::config::SearchConfig::SingleQueryLimits::default_quantized_candidates
-         << " after coarse ranking, or all for direct FP32)\n";
-    cout << "  --worker-expansions <n>   Expanded nodes per worker for one parallel query (default 0 is unlimited)\n";
     cout << "  --no-reorder-query-batch  Execute PCA query batches in input order\n";
     cout << "  --repeat <n> --warmup-topk <k> --output-iter <n> --exact-check-queries <n>\n";
+    cout << "\nAdvanced single-query overrides:\n";
+    cout << "  --worker-candidates <n>   Per-worker FP32 shortlist size (0 uses Top"
+         << rnndescent::config::SearchConfig::SingleQueryLimits::default_quantized_candidates
+         << " after coarse ranking, or all local candidates for direct FP32)\n";
+    cout << "  --worker-expansions <n>   Per-worker total graph expansion cap (0 is unlimited)\n";
 }
 
 inline BenchmarkConfig parse_args(int argc, char **argv) {
