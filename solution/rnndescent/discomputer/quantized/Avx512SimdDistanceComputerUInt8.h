@@ -13,10 +13,8 @@ struct Avx512UInt8Kernel : QuantizedKernelBase<UInt8Quantization, sizeof(__m512i
 
     static void pack_neighbor_cache(MyDistanceComputer &distance, const int *ids, int count, uint32_t stride,
                                     Code *codes, int *norms, uint8_t *scratch) {
-        const int split = stride == block_bytes ? count & ~15 : 0;
-        Tile16::pack_tiles(distance, ids, split, stride, codes, norms, scratch);
-        if (split < count)
-            pack_tiles(distance, ids + split, count - split, stride, codes + size_t(split) * stride, norms + split, scratch);
+        using Tile4 = QuantizedKernelBase<UInt8Quantization, block_bytes, 4>;
+        Tile16::pack_tiles_with_tail<Tile4>(distance, ids, count, stride, codes, norms, scratch, stride == block_bytes);
     }
 
     static std::array<int32_t, 4> dot4(const uint8_t *q, const uint8_t *x0, const uint8_t *x1,

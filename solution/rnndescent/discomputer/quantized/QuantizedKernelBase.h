@@ -34,6 +34,18 @@ struct QuantizedKernelBase {
             pack_tile(distance, ids + i, stride, codes + static_cast<size_t>(i) * stride, norms + i, scratch);
     }
 
+    // Mixed layouts place every large tile before the smaller tail tiles.
+    template <class TailTile>
+    static void pack_tiles_with_tail(MyDistanceComputer &distance, const int *ids, int count, uint32_t stride,
+                                    Code *codes, int *norms, uint8_t *scratch, bool use_large_tiles = true) {
+        static_assert(rows % TailTile::rows == 0);
+        const int split = use_large_tiles ? count - count % rows : 0;
+        pack_tiles(distance, ids, split, stride, codes, norms, scratch);
+        if (split < count)
+            TailTile::pack_tiles(distance, ids + split, count - split, stride,
+                                 codes + static_cast<size_t>(split) * stride, norms + split, scratch);
+    }
+
     template <class Compute>
     static void compute_tiles(int count, size_t stride, const Code *codes, const int *norms, float *result,
                               Compute compute) {

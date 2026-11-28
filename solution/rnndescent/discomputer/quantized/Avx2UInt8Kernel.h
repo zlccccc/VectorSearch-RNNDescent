@@ -14,6 +14,14 @@ using AvxUInt8KernelBase = QuantizedKernelBase<UInt8Quantization, sizeof(__m256i
 
 template <AvxUInt8Accumulate Accumulate>
 struct AvxUInt8DotProduct : AvxUInt8KernelBase {
+    using Tile4 = AvxUInt8KernelBase;
+    using Tile16 = QuantizedKernelBase<UInt8Quantization, block_bytes, 16, 4>;
+
+    static void pack_neighbor_cache(MyDistanceComputer &distance, const int *ids, int count, uint32_t stride,
+                                    uint8_t *codes, int *norms, uint8_t *scratch) {
+        Tile16::pack_tiles_with_tail<Tile4>(distance, ids, count, stride, codes, norms, scratch);
+    }
+
     static __m256i load(const uint8_t *data) {
         return _mm256_loadu_si256(reinterpret_cast<const __m256i *>(data));
     }
@@ -124,18 +132,6 @@ inline void compute16(const uint8_t *q, const uint8_t *codes, __m256i qnorm, con
     store_scores8(out + 8, norms + 8, qnorm, hi0);
 }
 
-// Packing and scoring use the same split. Each backend supplies the two tile shapes.
-template <class Tile4, class Tile16>
-void pack_neighbors(MyDistanceComputer &distance, const int *ids, int count, uint32_t stride,
-                    uint8_t *codes, int *norms, uint8_t *scratch) {
-    const int split = count - count % Tile16::rows;
-    Tile16::pack_tiles(distance, ids, split, stride, codes, norms, scratch);
-    if (split < count) {
-        Tile4::pack_tiles(distance, ids + split, count - split, stride, codes + static_cast<size_t>(split) * stride,
-                          norms + split, scratch);
-    }
-}
-
 template <AvxUInt8Accumulate Accumulate, size_t Fixed>
 void score_tiles(const uint8_t *q, int query_norm, int count, size_t stride, const uint8_t *codes,
                  const int *norms, float *out) {
@@ -169,14 +165,6 @@ inline __m256i avx2_accumulate_byte_products(__m256i sum, __m256i q, __m256i x) 
 }
 
 struct Avx2UInt8Kernel : AvxUInt8DotProduct<avx2_accumulate_byte_products> {
-    using Tile4 = QuantizedKernelBase<UInt8Quantization, sizeof(__m256i), 4>;
-    using Tile16 = QuantizedKernelBase<UInt8Quantization, sizeof(__m256i), 16, 4>;
-
-    static void pack_neighbor_cache(MyDistanceComputer &distance, const int *ids, int count, uint32_t stride,
-                                    uint8_t *codes, int *norms, uint8_t *scratch) {
-        avx_uint8::pack_neighbors<Tile4, Tile16>(distance, ids, count, stride, codes, norms, scratch);
-    }
-
     static void cached_distances(const uint8_t *q, int query_norm, int count, uint32_t stride, const uint8_t *codes,
                                  const int *norms, float *result) {
         if (stride == 64)

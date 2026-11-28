@@ -9,14 +9,6 @@ inline __m256i avx_vnni_accumulate_byte_products(__m256i sum, __m256i q, __m256i
 }
 
 struct AvxVnniUInt8Kernel : AvxUInt8DotProduct<avx_vnni_accumulate_byte_products> {
-    using Tile4 = QuantizedKernelBase<UInt8Quantization, sizeof(__m256i), 4>;
-    using Tile16 = QuantizedKernelBase<UInt8Quantization, sizeof(__m256i), 16, 4>;
-
-    static void pack_neighbor_cache(MyDistanceComputer &distance, const int *ids, int count, uint32_t stride,
-                                    uint8_t *codes, int *norms, uint8_t *scratch) {
-        avx_uint8::pack_neighbors<Tile4, Tile16>(distance, ids, count, stride, codes, norms, scratch);
-    }
-
     static void cached_distances(const uint8_t *q, int query_norm, int count, uint32_t stride, const uint8_t *codes,
                                  const int *norms, float *result) {
         if (stride == 64)

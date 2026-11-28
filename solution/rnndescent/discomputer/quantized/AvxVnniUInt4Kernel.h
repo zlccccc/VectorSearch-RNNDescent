@@ -1,7 +1,11 @@
 #pragma once
 
-#include "Avx2UInt8Kernel.h"
+#include "QuantizedKernelBase.h"
 #include "UInt4Quantization.h"
+
+#include <array>
+#include <cstring>
+#include <immintrin.h>
 
 namespace rnndescent {
 
@@ -16,7 +20,7 @@ struct AvxVnniUInt4Kernel {
     // accumulates one neighbor. Four-row tails use contiguous 32-byte blocks.
     static void pack_neighbor_cache(MyDistanceComputer &distance, const int *ids, int count, uint32_t stride,
                                     uint8_t *codes, int *norms, uint8_t *scratch) {
-        avx_uint8::pack_neighbors<Tile4, Tile16>(distance, ids, count, stride, codes, norms, scratch);
+        Tile16::pack_tiles_with_tail<Tile4>(distance, ids, count, stride, codes, norms, scratch);
     }
 
     static __m256i accumulate(__m256i sum, const uint8_t *code, __m256i qlow, __m256i qhigh) {

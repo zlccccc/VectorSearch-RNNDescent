@@ -18,11 +18,7 @@ struct Avx512UInt4Kernel {
 
     static void pack_neighbor_cache(MyDistanceComputer &distance, const int *ids, int count, uint32_t stride,
                                     uint8_t *codes, int *norms, uint8_t *scratch) {
-        const int split = count & ~15;
-        Tile16::pack_tiles(distance, ids, split, stride, codes, norms, scratch);
-        if (split < count)
-            Tile4::pack_tiles(distance, ids + split, count - split, stride, codes + size_t(split) * stride,
-                              norms + split, scratch);
+        Tile16::pack_tiles_with_tail<Tile4>(distance, ids, count, stride, codes, norms, scratch);
     }
 
     static int dot(const uint8_t *q, const uint8_t *row, size_t stride) {
