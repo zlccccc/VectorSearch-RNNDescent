@@ -56,12 +56,10 @@ def prepare_datasets(source, expanded):
 
 def run_case(binary, dataset, run, dim, budget, queries, repeat, pool_gib, environment):
     run.mkdir()
-    base, query, ground_truth = (dataset / name for name in FILES)
     command = [
-        str(binary), "--mode", "dataset", "--dataset-name", "sift",
-        "--base", str(base), "--query", str(query), "--gt", str(ground_truth),
+        str(binary), "--dataset-dir", str(dataset), "--dataset-name", "sift",
         "--K0", "32", "--num-initialize", str(max(32, budget)), "--search-L", str(budget),
-        "--refine-max", str(budget), "--beam-size", "8", "--disable-pca", "--topk", "10",
+        "--rerank-candidates", str(budget), "--beam-size", "8", "--pca-out", "0", "--topk", "10",
         "--neighbor-pool-gb", str(pool_gib), "--repeat", str(repeat), "--output-iter", "0",
     ]
     log_path = run / "run.log"

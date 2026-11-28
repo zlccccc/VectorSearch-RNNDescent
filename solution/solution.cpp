@@ -2,7 +2,8 @@
 #include "rnndescent/common/Logger.h"
 #include "rnndescent/common/Views.h"
 
-#include <cstring>
+#include <algorithm>
+#include <chrono>
 #include <random>
 
 void Solution::build(int d, const std::vector<float> &base, const WarmupConfig &warmup_config, const rnndescent::RNNDescent::BuildConfig &build_config,
@@ -16,43 +17,34 @@ void Solution::build(int d, const std::vector<float> &base, const WarmupConfig &
     index_ = std::make_unique<rnndescent::IndexRNNDescent>(d, true, build_config, search_config, pca_config);
     const auto base_view = rnndescent::FloatMatrixView::from_vector(base, d);
     index_->build(base_view);
-
-    if (warmup_config.topk > 0)
-        warmup(base, d, warmup_config);
+    warmup(base_view, warmup_config);
 }
 
-void Solution::warmup(const std::vector<float> &base, int d, const WarmupConfig &warmup_config) {
-    if (!index_)
-        throw std::runtime_error("warmup called before build");
+void Solution::warmup(const rnndescent::FloatMatrixView &base, const WarmupConfig &warmup_config) {
     if (warmup_config.topk <= 0)
         return;
-    if (d <= 0)
-        throw std::runtime_error("warmup dimension must be positive");
     if (warmup_config.sample_count < 0)
         throw std::runtime_error("warmup sample_count must be non-negative");
     if (warmup_config.repeat_count < 0)
         throw std::runtime_error("warmup repeat_count must be non-negative");
-    if (base.empty())
+
+    const int warmup_count = std::min(base.row_count(), warmup_config.sample_count);
+    if (warmup_count == 0 || warmup_config.repeat_count == 0)
         return;
 
     // Warm up the search path with a reproducible sample of base vectors.
     const auto start = std::chrono::steady_clock::now();
-    const int size = base.size() / d;
-    const int warmup_count = std::min(size, warmup_config.sample_count);
-    const int warmup_search_count = warmup_config.repeat_count;
-    if (warmup_count <= 0 || warmup_search_count <= 0)
-        return;
-    std::vector<float> query(d * warmup_count);
+    const int dimension = base.dimension();
+    std::vector<float> query(static_cast<size_t>(warmup_count) * dimension);
     std::mt19937 rng(warmup_config.random_seed);
-    std::uniform_int_distribution<int> dist(0, size - 1);
+    std::uniform_int_distribution<int> dist(0, base.row_count() - 1);
     for (int i = 0; i < warmup_count; i++) {
-        int sampled_index = dist(rng);
-        memcpy(query.data() + d * i, base.data() + d * sampled_index, d * sizeof(float));
+        const auto *sample = base.row_ptr(dist(rng));
+        std::copy_n(sample, dimension, query.data() + static_cast<size_t>(i) * dimension);
     }
-    std::vector<int> warmup_result(warmup_config.topk * warmup_count);
-    for (int i = 0; i < warmup_search_count; i++) {
-        search_batch(query, warmup_result, warmup_config.topk);
-    }
+    std::vector<int> warmup_result;
+    for (int i = 0; i < warmup_config.repeat_count; i++)
+        search(query, warmup_result, warmup_config.topk);
     index_->flush_perf_stats();
     const auto warmup_time = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     rnndescent::Logger::info("Warmup done in %f ms\n", warmup_time);
@@ -65,14 +57,14 @@ void Solution::search(const std::vector<float> &queries, std::vector<int> &res, 
         throw std::runtime_error("search topk must be positive");
     if (queries.empty())
         return;
-    if (queries.size() % index_->dimension() != 0)
+    const int dimension = index_->dimension();
+    if (queries.size() % dimension != 0)
         throw std::runtime_error("query size must be divisible by index dimension");
-    int n = queries.size() / index_->dimension();
-    if ((int)res.size() != n * topk)
-        res.resize(n * topk);
-    if ((int)distances_.size() != n * topk)
-        distances_.resize(n * topk);
-    const auto query_view = rnndescent::FloatMatrixView::from_vector(queries, index_->dimension());
+    const size_t rows = queries.size() / dimension;
+    const size_t result_count = rows * topk;
+    res.resize(result_count);
+    distances_.resize(result_count);
+    const rnndescent::FloatMatrixView query_view{queries.data(), static_cast<int>(rows), dimension};
     const auto result_view = rnndescent::SearchResultView::from_vectors(res, distances_, topk);
     index_->search(query_view, result_view);
 }

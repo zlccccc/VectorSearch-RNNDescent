@@ -110,6 +110,10 @@ TEST(BenchmarkCliTest, RejectsInvalidBudgetsAndMissingValues) {
     EXPECT_THAT([] { parse({"--neighbor-pool-gb", "2.5"}); },
                 ThrowsMessage<std::runtime_error>(HasSubstr("non-negative integer")));
     EXPECT_THAT([] { parse({"--dim"}); }, ThrowsMessage<std::runtime_error>(HasSubstr("missing value")));
+    EXPECT_THAT([] { parse({"--search-L", "128oops"}); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("--search-L requires an integer")));
+    EXPECT_THAT([] { parse({"--beam-size", "99999999999999999999"}); },
+                ThrowsMessage<std::runtime_error>(HasSubstr("--beam-size requires an integer")));
     EXPECT_THAT([] { parse({"--single-query-threads", "0"}); },
                 ThrowsMessage<std::runtime_error>(HasSubstr("positive integer")));
     EXPECT_THAT([] { parse({"--worker-candidates", "-1"}); },
@@ -225,6 +229,8 @@ TEST(BenchmarkCliTest, ExplicitRandomModeOverridesDatasetDetection) {
     auto explicit_random = parse({"--mode", "random", "--dim", "256"});
     benchmark::apply_default_dataset_mode(explicit_random);
     EXPECT_EQ(explicit_random.mode, "random");
+    EXPECT_EQ(parse({"--mode", "random", "--dataset-dir", "benches/datasets/sift"}).mode, "random");
+    EXPECT_EQ(parse({"--dataset-dir", "benches/datasets/sift", "--mode", "random"}).mode, "random");
 }
 
 TEST(BenchmarkDataTest, ResolvesAliasesAndReadsVectorRecords) {
@@ -246,8 +252,9 @@ TEST(BenchmarkDataTest, ResolvesAliasesAndReadsVectorRecords) {
         write_record(out, 2, std::array<int32_t, 2>{1, 0});
     }
 
-    auto dataset = parse({"--dataset-dir", tmp.path.string()});
+    auto dataset = parse({"--dataset-dir", tmp.path.string() + "/"});
     benchmark::resolve_dataset_paths(dataset);
+    EXPECT_EQ(dataset.dataset_name, tmp.path.filename().string());
     EXPECT_EQ(dataset.base_path, base);
     EXPECT_EQ(dataset.query_path, query);
     EXPECT_EQ(dataset.gt_path, gt);

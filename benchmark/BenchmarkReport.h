@@ -47,23 +47,16 @@ inline string timestamp_string() {
     return oss.str();
 }
 
-inline fs::path benchmark_results_root() {
-    if (const char *result_dir = std::getenv("RESULT_DIR"); result_dir != nullptr && *result_dir != '\0') {
-        return fs::path(result_dir);
-    }
-
-    const fs::path cwd = fs::current_path();
-    if (fs::exists(cwd / "CMakeCache.txt") && fs::exists(cwd.parent_path() / "CMakeLists.txt")) {
-        return cwd.parent_path() / "benches" / "results";
-    }
-    return cwd / "benches" / "results";
-}
-
 inline void write_benchmark_report(const BenchmarkConfig &config, const BenchmarkStats &stats) {
-    const string dataset_key = sanitize_name(config.mode == "dataset" ? config.dataset_name : (string("random-") + to_string(config.dim) + "d"));
-    const char *result_dir = std::getenv("RESULT_DIR");
-    const bool has_result_dir = result_dir != nullptr && *result_dir != char(0);
-    const fs::path out_dir = has_result_dir ? fs::path(result_dir) : (benchmark_results_root() / dataset_key);
+    fs::path out_dir;
+    if (const char *result_dir = std::getenv("RESULT_DIR"); result_dir && *result_dir) {
+        out_dir = result_dir;
+    } else {
+        const string dataset_key = sanitize_name(config.mode == "dataset" ? config.dataset_name : "random-" + to_string(config.dim) + "d");
+        const fs::path cwd = fs::current_path();
+        const bool in_build_dir = fs::exists(cwd / "CMakeCache.txt") && fs::exists(cwd.parent_path() / "CMakeLists.txt");
+        out_dir = (in_build_dir ? cwd.parent_path() : cwd) / "benches" / "results" / dataset_key;
+    }
     fs::create_directories(out_dir);
 
     const string stamp = timestamp_string();

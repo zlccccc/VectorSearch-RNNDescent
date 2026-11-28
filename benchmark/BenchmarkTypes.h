@@ -51,15 +51,14 @@ struct BenchmarkConfig {
     int repeat = 10;
     int query_batch_size = 0;
     int warmup_topk = 10;
+    // Apply these after selecting the benchmark's defaults or dataset preset.
     int override_s = -1;
     int override_r = -1;
     int override_k0 = -1;
     int override_num_initialize = -1;
     int override_search_l = -1;
     int override_refine_max = -1;
-    int override_fp32_refine_max = -1;
     int override_beam_size = -1;
-    long long override_neighbor_pool_gb = -1;
     bool dim_explicit = false;
     rnndescent::RNNDescent::BuildConfig build_config;
     rnndescent::RNNDescent::SearchConfig search_config;
@@ -106,17 +105,6 @@ inline void apply_default_dataset_mode(BenchmarkConfig &config) {
     config.dataset_dir = dataset_dir.string();
 }
 
-inline void apply_common_config(BenchmarkConfig &config) {
-    const int thread_limit = std::min(16, omp_get_max_threads());
-    config.build_config.num_threads = thread_limit;
-    config.search_config.num_threads = thread_limit;
-    config.search_config.beam_size = 8;
-    config.build_config.S = 196;
-    config.build_config.R = 2048;
-    config.build_config.T1 = 4;
-    config.build_config.T2 = 15;
-}
-
 inline void apply_dataset_preset(BenchmarkConfig &config) {
     const string key = normalize_dataset_name(config.dataset_name);
     if (key == "sift100k") {
@@ -142,7 +130,18 @@ inline void apply_dataset_preset(BenchmarkConfig &config) {
     }
 }
 
-inline void apply_config_overrides(BenchmarkConfig &config) {
+inline void apply_solution_preset(BenchmarkConfig &config) {
+    const int thread_limit = std::min(16, omp_get_max_threads());
+    config.build_config.num_threads = thread_limit;
+    config.search_config.num_threads = thread_limit;
+    config.search_config.beam_size = 8;
+    config.build_config.S = 196;
+    config.build_config.R = 2048;
+    config.build_config.T1 = 4;
+    config.build_config.T2 = 15;
+    if (config.mode == "dataset")
+        apply_dataset_preset(config);
+
     if (config.override_s > 0)
         config.build_config.S = config.override_s;
     if (config.override_r > 0)
@@ -155,19 +154,8 @@ inline void apply_config_overrides(BenchmarkConfig &config) {
         config.search_config.search_L = config.override_search_l;
     if (config.override_refine_max > 0)
         config.search_config.refine_max = config.override_refine_max;
-    if (config.override_fp32_refine_max >= 0)
-        config.search_config.fp32_refine_max = config.override_fp32_refine_max;
     if (config.override_beam_size > 0)
         config.search_config.beam_size = config.override_beam_size;
-    if (config.override_neighbor_pool_gb >= 0)
-        config.build_config.neighbor_pool_size_limit_bytes = config.override_neighbor_pool_gb * 1024ll * 1024 * 1024;
-}
-
-inline void apply_solution_preset(BenchmarkConfig &config) {
-    apply_common_config(config);
-    if (config.mode == "dataset")
-        apply_dataset_preset(config);
-    apply_config_overrides(config);
 }
 
 inline const char *quantization_name(std::optional<rnndescent::QuantizedFormat> format) {

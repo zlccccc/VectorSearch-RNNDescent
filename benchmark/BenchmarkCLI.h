@@ -3,6 +3,7 @@
 #include "BenchmarkTypes.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -12,8 +13,6 @@
 namespace benchmark {
 
 using std::cout;
-using std::stoi;
-using std::stoll;
 using std::string;
 
 inline void print_usage(const char *prog) {
@@ -38,6 +37,7 @@ inline void print_usage(const char *prog) {
     cout << "  --query-batch-size <n>    Queries per request (default 0 sends all queries at once)\n";
     cout << "  --single-query-threads <n>  Workers for a single-query search (default 1, capped at "
          << rnndescent::config::SearchConfig::max_single_query_threads << ")\n";
+    cout << "                           Use with --query-batch-size 1 to measure single-query latency\n";
     cout << "  --no-persistent-query-workers  Use OpenMP for query dispatch instead of the default worker pool\n";
     cout << "  --no-reorder-query-batch  Execute PCA query batches in input order\n";
     cout << "  --repeat <n> --warmup-topk <k> --output-iter <n> --exact-check-queries <n>\n";
@@ -57,13 +57,23 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
                 throw std::runtime_error("missing value for argument: " + name);
             return argv[++i];
         };
-        auto require_int = [&](const string &name, int minimum) -> int {
+        auto require_integer = [&](const string &name, long long minimum, long long maximum, const char *requirement) {
             const string input = require_value(name);
-            size_t parsed = 0;
-            const int value = stoi(input, &parsed);
-            if (parsed != input.size() || value < minimum)
-                throw std::runtime_error(name + (minimum == 0 ? " requires a non-negative integer" : " requires a positive integer"));
+            char *end = nullptr;
+            errno = 0;
+            const long long value = std::strtoll(input.c_str(), &end, 10);
+            if (errno == ERANGE || end == input.c_str() || end != input.c_str() + input.size() ||
+                value < minimum || value > maximum)
+                throw std::runtime_error(name + " requires " + requirement + ": " + input);
             return value;
+        };
+        auto require_int = [&](const string &name, int minimum = std::numeric_limits<int>::min()) {
+            const char *requirement = "an integer";
+            if (minimum == 0)
+                requirement = "a non-negative integer";
+            else if (minimum > 0)
+                requirement = "a positive integer";
+            return static_cast<int>(require_integer(name, minimum, std::numeric_limits<int>::max(), requirement));
         };
 
         if (arg == "--help" || arg == "-h") {
@@ -74,53 +84,53 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
             config.mode_explicit = true;
         } else if (arg == "--dataset-name") {
             config.dataset_name = require_value(arg);
-        } else if (arg == "--dataset-dir") {
-            config.dataset_dir = require_value(arg);
-            config.mode = "dataset";
-        } else if (arg == "--base") {
-            config.base_path = require_value(arg);
-            config.mode = "dataset";
-        } else if (arg == "--query") {
-            config.query_path = require_value(arg);
-            config.mode = "dataset";
-        } else if (arg == "--gt") {
-            config.gt_path = require_value(arg);
-            config.mode = "dataset";
+        } else if (arg == "--dataset-dir" || arg == "--base" || arg == "--query" || arg == "--gt") {
+            const string path = require_value(arg);
+            if (arg == "--dataset-dir")
+                config.dataset_dir = path;
+            else if (arg == "--base")
+                config.base_path = path;
+            else if (arg == "--query")
+                config.query_path = path;
+            else
+                config.gt_path = path;
+            if (!config.mode_explicit)
+                config.mode = "dataset";
         } else if (arg == "--data-size") {
-            config.data_size = stoi(require_value(arg));
+            config.data_size = require_int(arg);
         } else if (arg == "--dim") {
-            config.dim = stoi(require_value(arg));
+            config.dim = require_int(arg);
             config.dim_explicit = true;
         } else if (arg == "--test-iter") {
-            config.test_iter = stoi(require_value(arg));
+            config.test_iter = require_int(arg);
         } else if (arg == "--topk") {
-            config.topk = stoi(require_value(arg));
+            config.topk = require_int(arg, 1);
         } else if (arg == "--repeat") {
-            config.repeat = stoi(require_value(arg));
+            config.repeat = require_int(arg, 1);
         } else if (arg == "--query-batch-size") {
             config.query_batch_size = require_int(arg, 0);
         } else if (arg == "--output-iter") {
-            config.output_iter = stoi(require_value(arg));
+            config.output_iter = require_int(arg);
         } else if (arg == "--exact-check-queries") {
-            config.exact_check_queries = stoi(require_value(arg));
+            config.exact_check_queries = require_int(arg);
         } else if (arg == "--warmup-topk") {
-            config.warmup_topk = stoi(require_value(arg));
+            config.warmup_topk = require_int(arg, 0);
         } else if (arg == "--S") {
             config.override_s = require_int(arg, 1);
         } else if (arg == "--R") {
             config.override_r = require_int(arg, 1);
         } else if (arg == "--K0") {
-            config.override_k0 = stoi(require_value(arg));
+            config.override_k0 = require_int(arg);
         } else if (arg == "--local-three-hop-prune") {
             config.build_config.local_three_hop_pruning = true;
         } else if (arg == "--num-initialize") {
-            config.override_num_initialize = stoi(require_value(arg));
+            config.override_num_initialize = require_int(arg);
         } else if (arg == "--search-L") {
-            config.override_search_l = stoi(require_value(arg));
+            config.override_search_l = require_int(arg);
         } else if (arg == "--rerank-candidates" || arg == "--refine-max") {
-            config.override_refine_max = arg == "--refine-max" ? stoi(require_value(arg)) : require_int(arg, 1);
+            config.override_refine_max = arg == "--refine-max" ? require_int(arg) : require_int(arg, 1);
         } else if (arg == "--fp32-candidates" || arg == "--fp32-refine-max") {
-            config.override_fp32_refine_max = require_int(arg, 0);
+            config.search_config.fp32_refine_max = require_int(arg, 0);
         } else if (arg == "--graph-quantization" || arg == "--rerank-quantization") {
             const auto value = require_value(arg);
             if (arg == "--rerank-quantization" && value == "fp32") {
@@ -136,7 +146,7 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
                     config.search_config.rerank_quantization = format;
             }
         } else if (arg == "--beam-size") {
-            config.override_beam_size = stoi(require_value(arg));
+            config.override_beam_size = require_int(arg);
         } else if (arg == "--reorder-query-batch") {
             config.search_config.reorder_query_batch = true;
         } else if (arg == "--no-reorder-query-batch") {
@@ -151,13 +161,10 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
         } else if (arg == "--worker-expansions" || arg == "--single-query-max-expansions") {
             config.search_config.single_query_limits.expansions_per_worker = require_int(arg, 0);
         } else if (arg == "--neighbor-pool-gb") {
-            const string input = require_value(arg);
-            size_t parsed = 0;
-            const long long budget_gib = stoll(input, &parsed);
             constexpr long long bytes_per_gib = 1024ll * 1024 * 1024;
-            if (parsed != input.size() || budget_gib < 0 || budget_gib > std::numeric_limits<long long>::max() / bytes_per_gib)
-                throw std::runtime_error("--neighbor-pool-gb requires a non-negative integer budget that fits in bytes");
-            config.override_neighbor_pool_gb = budget_gib;
+            const auto budget_gib = require_integer(arg, 0, std::numeric_limits<long long>::max() / bytes_per_gib,
+                                                    "a non-negative integer budget that fits in bytes");
+            config.build_config.neighbor_pool_size_limit_bytes = budget_gib * bytes_per_gib;
         } else if (arg == "--enable-pca") {
             config.pca_config.enabled = true;
         } else if (arg == "--disable-pca") {
@@ -170,9 +177,6 @@ inline BenchmarkConfig parse_args(int argc, char **argv) {
         }
     }
 
-    if (config.topk <= 0 || config.repeat <= 0 || config.warmup_topk < 0) {
-        throw std::runtime_error("topk/repeat must be positive and warmup-topk must be non-negative");
-    }
     return config;
 }
 

@@ -138,7 +138,7 @@ inline void resolve_dataset_paths(BenchmarkConfig &config) {
             try_pick_existing(root, {"groundtruth.ivecs", "gt.ivecs", "gnd.ivecs"}, config.gt_path);
         }
         if (config.dataset_name.empty()) {
-            config.dataset_name = root.filename().string();
+            config.dataset_name = (root.has_filename() ? root : root.parent_path()).filename().string();
         }
     }
 

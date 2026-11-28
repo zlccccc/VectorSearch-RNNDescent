@@ -11,6 +11,6 @@ cmake -S . -B "$build_dir"
 cmake --build "$build_dir" --target vector_search_app --parallel
 
 if [ "$#" -eq 0 ]; then
-    set -- --mode dataset --dataset-dir "benches/datasets/${DATASET:-sift}"
+    set -- --dataset-dir "benches/datasets/${DATASET:-sift}"
 fi
 exec "$build_dir/algorithm" "$@"

@@ -32,7 +32,7 @@ class Solution {
     ~Solution() = default;
 
   private:
-    void warmup(const std::vector<float> &base, int d, const WarmupConfig &warmup_config);
+    void warmup(const rnndescent::FloatMatrixView &base, const WarmupConfig &warmup_config);
     std::unique_ptr<rnndescent::IndexRNNDescent> index_;
     std::vector<float> distances_;
 };
