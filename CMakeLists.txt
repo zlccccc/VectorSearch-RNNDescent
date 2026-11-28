@@ -62,6 +62,9 @@ set(RNNDESCENT_INDEX_SOURCES
     solution/rnndescent/search/GraphSearcher.cpp
     solution/rnndescent/search/CandidateReranker.cpp
     solution/rnndescent/PCAProjection.cpp)
+if(RNNDESCENT_PROFILE_SEARCH)
+    list(APPEND RNNDESCENT_INDEX_SOURCES solution/rnndescent/search/SearchProfile.cpp)
+endif()
 
 set(RNNDESCENT_INDEX_HEADERS
     solution/solution.h
@@ -75,6 +78,7 @@ set(RNNDESCENT_INDEX_HEADERS
     solution/rnndescent/build/GraphPruning.h
     solution/rnndescent/build/GraphReorder.h
     solution/rnndescent/search/GraphSearcher.h
+    solution/rnndescent/search/SearchProfile.h
     solution/rnndescent/build/GraphTypes.h
     solution/rnndescent/discomputer/quantized/AvxVnniUInt4Kernel.h
     solution/rnndescent/discomputer/quantized/Avx512UInt4Kernel.h

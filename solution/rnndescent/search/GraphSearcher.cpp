@@ -2,7 +2,6 @@
 #include "CandidateReranker.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <omp.h>
 #include <stdexcept>
@@ -13,10 +12,10 @@ GraphSearcher::GraphSearcher(Storage storage, const config::SearchConfig &search
     : storage_(storage),
       code_stride_(storage.graph_distance_computer ? storage.graph_distance_computer->code_stride() : 0),
       padded_max_degree_((static_cast<size_t>(max_degree) + 3) / 4 * 4),
-      perf_stats_(perf_stats),
       scratch_(std::max(search_config.num_threads, std::min({search_config.single_query_threads,
                                                            config::SearchConfig::max_single_query_threads,
-                                                           search_config.num_initialize / 4}))) {
+                                                           search_config.num_initialize / 4}))),
+      profile_(scratch_.size(), perf_stats) {
     RNNDESCENT_ASSERT_MSG(max_degree > 0, "search max_degree must be positive");
     const int beam_size = std::min(search_config.beam_size, search_config.search_L);
     const size_t beam_capacity = padded_max_degree_ * beam_size;
@@ -46,16 +45,32 @@ void GraphSearcher::search_batch(int query_count, const int *query_order, const 
     if (query_count == 1 || workers == 1) {
         for (int i = 0; i < query_count; ++i)
             search_row(i, 0);
-    } else if (!balance_small_batch && (query_count - 1) / queries_per_chunk < workers) {
-#pragma omp parallel for num_threads(workers) schedule(static)
-        for (int i = 0; i < query_count; ++i)
-            search_row(i, omp_get_thread_num());
-    } else {
-        const int chunk = balance_small_batch ? 1 : queries_per_chunk;
-#pragma omp parallel for num_threads(workers) schedule(dynamic, chunk)
-        for (int i = 0; i < query_count; ++i)
-            search_row(i, omp_get_thread_num());
+        return;
     }
+    const bool static_schedule = !balance_small_batch && (query_count - 1) / queries_per_chunk < workers;
+    const int chunk = balance_small_batch ? 1 : queries_per_chunk;
+    // Record completion before the parallel region's implicit join.
+    const ProfileTimer launch{};
+#pragma omp parallel num_threads(workers)
+    {
+        const int worker = omp_get_thread_num();
+        auto &sample = profile_.start_worker(worker);
+        if (static_schedule) {
+#pragma omp for schedule(static) nowait
+            for (int i = 0; i < query_count; ++i) {
+                search_row(i, worker);
+                sample.job_finished();
+            }
+        } else {
+#pragma omp for schedule(dynamic, chunk) nowait
+            for (int i = 0; i < query_count; ++i) {
+                search_row(i, worker);
+                sample.job_finished();
+            }
+        }
+        sample.stop();
+    }
+    profile_.finish_team(SearchTeam::Batch, launch);
 }
 
 void GraphSearcher::search_single_thread(int threadid, int queryid, const config::SearchConfig &search_config,
@@ -86,6 +101,7 @@ config::SearchConfig GraphSearcher::checked_search_config(const config::SearchCo
 
 void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &search_config,
                                     const CandidateReranker &reranker, const SearchResultView &result) {
+    ProfileTimer setup{};
     const int topk = result.topk();
     const auto safe_config = checked_search_config(search_config, result);
     const int groups = safe_config.num_initialize / 4;
@@ -113,9 +129,11 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
     const int local_fp32 = limits.candidates_per_worker > 0
                                ? limits.candidates_per_worker
                                : config::SearchConfig::SingleQueryLimits::default_quantized_candidates;
+    profile_.single_setup_finished(setup);
 #pragma omp parallel num_threads(workers)
     {
         const int worker = omp_get_thread_num();
+        auto &sample = profile_.start_worker(worker);
         const int team_size = omp_get_num_threads();
         if (worker == 0)
             active_workers = team_size;
@@ -142,12 +160,13 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
             else
                 search_from_entries<true>(worker, queryid, local_config, first_entry, reranker, result);
         }
+        sample.job_finished();
+        sample.stop();
     }
+    profile_.finish_team(SearchTeam::Single, setup);
     if (active_workers == 1)
         return;
-#ifdef INTERNAL_CLOCK_TEST
-    const auto rerank_start = std::chrono::steady_clock::now();
-#endif
+    ProfileTimer merge{};
     auto &candidate_ids = scratch_.front().candidate_ids;
     candidate_ids.begin_lazy_query();
     merged_candidates_.clear();
@@ -158,10 +177,7 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
         }
     }
     CandidateReranker::write_topk(merged_candidates_, result);
-#ifdef INTERNAL_CLOCK_TEST
-    scratch_.front().perf_stats.recalculate_time +=
-        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - rerank_start).count();
-#endif
+    profile_.single_merge_finished(merge);
 }
 
 template <bool SharedVisit, bool LimitExpansions>
@@ -172,10 +188,7 @@ void GraphSearcher::search_from_entries(int threadid, int queryid, const config:
         const int num_initialize = search_config.num_initialize;
         const int refine_max = search_config.refine_max;
         const int pool_size = std::max(search_L, refine_max);
-#ifdef INTERNAL_CLOCK_TEST
-        auto prevtime = std::chrono::high_resolution_clock::now(), nowtime = prevtime;
-        float init_time = 0, getneighbor_time = 0, calculate_time = 0, update_time = 0;
-#endif
+        auto sample = profile_.query(threadid);
         auto &distance = *storage_.graph_distance_computer;
         const auto code_stride = code_stride_;
         auto &scratch = scratch_[threadid];
@@ -206,13 +219,7 @@ void GraphSearcher::search_from_entries(int threadid, int queryid, const config:
         for (int i = 0; i < pool_size; ++i)
             candidate_ids.insert<SharedVisit>(retset[i].id);
 
-#ifdef INTERNAL_CLOCK_TEST
-        int bfs_length = 0, bfs_items = 0;
-        nowtime = std::chrono::high_resolution_clock::now();
-        init_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-        prevtime = nowtime;
-        long long calculate_distance_count = 0, useful_count = 0;
-#endif
+        sample.initialized();
 
         const auto merge_candidates_from_end = [](SingleNeighbor *pool, int length, const SingleNeighbor *incoming,
                                                    const SingleNeighbor *incoming_end) {
@@ -268,11 +275,7 @@ void GraphSearcher::search_from_entries(int threadid, int queryid, const config:
                 if constexpr (LimitExpansions)
                     --remaining_expansions;
 
-#ifdef INTERNAL_CLOCK_TEST
-                nowtime = std::chrono::high_resolution_clock::now();
-                getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-                prevtime = nowtime;
-#endif
+                sample.adjacency_ready();
                 // Overlap the next record's header load with scoring this neighborhood.
                 if (beam < beam_limit && smallest_pos + 1 < search_L) {
                     const int next = retset[smallest_pos + 1].id;
@@ -288,20 +291,12 @@ void GraphSearcher::search_from_entries(int threadid, int queryid, const config:
                 const auto [ids, count] = storage_.final_graph_neighbors[n].compute_distance(
                     queryid, distance, code_stride, neighbor_scores + score_count);
 
-#ifdef INTERNAL_CLOCK_TEST
-                nowtime = std::chrono::high_resolution_clock::now();
-                calculate_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-                prevtime = nowtime;
-                bfs_items++;
-                calculate_distance_count += count;
-#endif
+                sample.neighbors_scored(count);
 
                 score_count += count;
                 *next_span++ = {ids, score_count};
             }
-#ifdef INTERNAL_CLOCK_TEST
-            bfs_length++;
-#endif
+            sample.beam_finished();
             if (score_count == 0)
                 continue;
             // Scan the scores in one pass, then read only the IDs selected by the masks.
@@ -321,72 +316,20 @@ void GraphSearcher::search_from_entries(int threadid, int queryid, const config:
                 const int first_changed = merge_candidates_from_end(retset.data(), pool_size, usefulset.data(), usefulsetEnd);
                 smallest_pos = std::min(smallest_pos, first_changed);
             }
-#ifdef INTERNAL_CLOCK_TEST
-            nowtime = std::chrono::high_resolution_clock::now();
-            update_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-            prevtime = nowtime;
-            useful_count += usefulsetEnd - usefulset.data();
-#endif
+            sample.candidates_updated(usefulsetEnd - usefulset.data());
         }
-#ifdef INTERNAL_CLOCK_TEST
-        nowtime = std::chrono::high_resolution_clock::now();
-        getneighbor_time += std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-#endif
+        sample.adjacency_ready();
 
         retset.resize(refine_max);
         for (auto &candidate : retset)
             candidate.id &= 0x7fffffff;
 
-#ifdef INTERNAL_CLOCK_TEST
-        auto &stats = scratch.perf_stats;
-        if (!SharedVisit || threadid == 0)
-            stats.query_count++;
-        stats.init_time += init_time;
-        stats.getneighbor_time += getneighbor_time;
-        stats.update_time += update_time;
-        stats.calculate_time += calculate_time;
-        stats.bfs_length += bfs_length;
-        stats.bfs_items += bfs_items;
-        stats.calculate_distance_count += calculate_distance_count;
-        stats.useful_count += useful_count;
-        const auto rerank_start = std::chrono::steady_clock::now();
-#endif
+        sample.rerank_started();
         const int *const row_order = storage_.original_ids ? storage_.original_ids->data() : nullptr;
         reranker.rerank(queryid, retset, search_config.fp32_refine_max, result.topk(), row_order);
         // A shared-visit worker leaves its Top K in retset for the final merge.
         if constexpr (!SharedVisit)
             CandidateReranker::write_topk(retset, result);
-#ifdef INTERNAL_CLOCK_TEST
-        stats.recalculate_time +=
-            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - rerank_start).count();
-#endif
+        sample.finish(!SharedVisit || threadid == 0);
     }
-
-void GraphSearcher::flush_perf_stats() {
-#ifdef INTERNAL_CLOCK_TEST
-        for (auto &scratch : scratch_) {
-            perf_stats_.accumulate(scratch.perf_stats);
-            scratch.perf_stats.reset();
-        }
-        if (perf_stats_.query_count == 0) {
-            return;
-        }
-        Logger::info("RNN Descent Running Time: mean bfs %f times; %f nodes; init_time = "
-                     "%f, getneighbor_time = %f, calculate_time = %f, update_time = %f; "
-                     "recalculate_time = %f; alltime = %f; calculate_dist_count = %f; "
-                     "useful_count = %f\n",
-                     (float)perf_stats_.bfs_length / perf_stats_.query_count, (float)perf_stats_.bfs_items / perf_stats_.query_count,
-                     perf_stats_.init_time / perf_stats_.query_count, perf_stats_.getneighbor_time / perf_stats_.query_count,
-                     perf_stats_.calculate_time / perf_stats_.query_count, perf_stats_.update_time / perf_stats_.query_count,
-                     perf_stats_.recalculate_time / perf_stats_.query_count,
-                     (perf_stats_.init_time + perf_stats_.getneighbor_time + perf_stats_.calculate_time + perf_stats_.update_time +
-                      perf_stats_.recalculate_time) /
-                         perf_stats_.query_count,
-                     (float)perf_stats_.calculate_distance_count / perf_stats_.query_count,
-                     (float)perf_stats_.useful_count / perf_stats_.query_count);
-        perf_stats_.reset();
-#endif
-    }
-
-
 } // namespace rnndescent::search

@@ -24,6 +24,10 @@ class Solution {
     // Apply to subsequent parallel single-query searches on the built index.
     void set_single_query_limits(int candidates_per_worker, int expansions_per_worker = 0);
     void reset();
+    void flush_perf_stats() {
+        if (index_)
+            index_->flush_perf_stats();
+    }
     const std::vector<float> &distance_buffer() const { return distances_; }
     ~Solution() = default;
 

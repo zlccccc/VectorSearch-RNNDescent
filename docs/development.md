@@ -55,17 +55,39 @@ ctest --test-dir build/avx2 -R 'PCAProjectionTest|RecallTest' --output-on-failur
 
 远端成功结果代表该次 AVX2 单测执行通过。其余 SIMD 配置和 `integration` 用例可用上面的本地命令在对应机器验证，报告时记录平台与测试范围。
 
-**细粒度性能计时按需开启。**
+## 查询性能剖析
 
 ~~~bash
-cmake -S . -B build/profile -DCMAKE_BUILD_TYPE=Release \
+cmake -S . -B build/profile -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DRNNDESCENT_SIMD=avx2 -DRNNDESCENT_PROFILE_SEARCH=ON -DBUILD_TESTING=OFF
 cmake --build build/profile --target vector_search_app --parallel 4
 ~~~
 
 索引实现按图构建、BFS 重排和图搜索拆分。新增模块的实现文件由 `rnndescent_solution` 目标统一编译，CMake 中按 `Index Sources` 和 `Index Headers` 分组。模块职责见 [RNNDescent 模块说明](../solution/rnndescent/README.md)。
 
-该选项启用 `INTERNAL_CLOCK_TEST`，记录各搜索阶段的平均线程耗时和操作计数。`getneighbor_time` 包括图遍历、记录邻接段和复制 ID，`calculate_time` 是邻居算距，`update_time` 包括阈值筛选、去重、排序和合并。端到端 QPS 对照使用关闭该选项的构建，避免计时和聚合开销。
+计时和统计由 `SearchProfile` 模块负责，查询流程在各阶段边界记录采样。普通构建使用内联空操作，普通和计时构建共用批量搜索的 OpenMP 循环。`RNNDESCENT_PROFILE_SEARCH` 按测量区间累计输出以下三类指标。预热单独输出，正式结果在最后一轮查询后输出。[计时实现](../solution/rnndescent/search/SearchProfile.cpp)
+
+| 日志 | 计量方式 | 指标 |
+|---|---|---|
+| `query_profile` | 调用方的墙钟毫秒 | 粗排量化及 FP32 范数准备、PCA 投影、查图量化、排序、查图及重排。各项除以 `total_ms` 得到端到端占比 |
+| `graph_profile` | 各工作线程的墙钟毫秒之和 | 入口算距和筛选、邻接读取、邻居算距、候选池更新、线程内重排。`single_setup_ms` 和 `single_merge_ms` 单独记录单条并行的串行准备及最终合并 |
+| `team_profile` | 并行区域与工作线程分别累计 | `wall_ms` 是进入并行区到返回，拆为首次进入 `entry_ms`、首次进入到最晚完成 `work_window_ms`、最晚完成到调用方返回 `join_ms`。`unused_slots` 记录未分到任务的线程席位 |
+
+`tail_worker_ms` 累计各线程完成自己任务后到最后一个线程完成之间的时间，反映潜在的尾部等待。`worker_cpu_ms` 是线程从进入到完成任务时的 CPU 时间，`worker_off_cpu_ms` 是同一区间墙钟时间减 CPU 时间的估计，包含抢占和阻塞。`cpu_slots` 是可用的 CPU 时钟样本数，CPU 时间超过同线程墙钟区间的样本计入 `cpu_overrun_slots`，从这两项 CPU 时间统计中排除。线程累计时间可以超过端到端墙钟时间。正式 QPS 对照使用关闭 `RNNDESCENT_PROFILE_SEARCH` 的构建。
+
+### CPU 火焰图
+
+使用 `perf` 和 [FlameGraph 脚本](https://github.com/brendangregg/FlameGraph)。下面用和普通基准相同的参数跑查询，`--repeat` 用于累积样本。
+
+~~~bash
+OMP_NUM_THREADS=16 OMP_WAIT_POLICY=PASSIVE GOMP_SPINCOUNT=0 \
+  python3 benches/profile_search.py --output benches/results/profile-sift \
+  --flamegraph-dir /path/to/FlameGraph -- build/profile/algorithm \
+  --mode dataset --dataset-dir benches/datasets/sift --query-batch-size 6 \
+  --repeat 30 --output-iter 0
+~~~
+
+脚本默认采样 `cpu-clock:u`，用单调时钟标记筛出正式查询区间。`perf.data` 保存原始采样，`perf.script`、`perf-report.txt` 和 `cpu.svg` 只含正式查询。可用 `--perf` 指定工具路径，用 `--event cycles:u` 在支持硬件 PMU 的机器上按 CPU 周期采样。火焰图横向宽度按 CPU 样本数计算。等待可从 `team_profile` 查看，能访问 `sched:sched_switch` 的 Linux 环境还可用 `perf sched` 核对内核调度事件。[Linux perf record](https://github.com/torvalds/linux/blob/master/tools/perf/Documentation/perf-record.txt) · [Linux perf script](https://github.com/torvalds/linux/blob/master/tools/perf/Documentation/perf-script.txt)
 
 **构建错误可从依赖和实际目标配置定位。**
 

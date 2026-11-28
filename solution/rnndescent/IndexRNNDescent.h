@@ -34,6 +34,7 @@ struct IndexRNNDescent {
     RNNDescent::SearchConfig search_config;
     PCAConfig pca_config;
     std::unique_ptr<PCAProjection> pca;
+    search::QueryPhaseProfile query_profile_;
 
   public:
 
@@ -90,49 +91,38 @@ struct IndexRNNDescent {
         RNNDESCENT_ASSERT_MSG(queries.dimension() == dimension(), "query dimension does not match index dimension");
         const int n = queries.row_count();
         const int workers = search_config.num_threads;
-#ifdef INTERNAL_CLOCK_TEST
-        auto prevtime = std::chrono::high_resolution_clock::now();
-        auto nowtime = prevtime, starttime = prevtime;
-        float process_time;
-#endif
+        auto sample = query_profile_.measure();
 
         reranker->set_queries(queries);
+        sample.stage(search::QueryStage::RerankPrepare);
         const auto graph_queries = pca ? pca->project_queries(queries, workers) : queries;
+        sample.stage(search::QueryStage::Projection);
         rnndescent->graph_distance_computer->set_query(graph_queries.data_ptr(), n);
-
-#ifdef INTERNAL_CLOCK_TEST
-        nowtime = std::chrono::high_resolution_clock::now();
-        process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-        prevtime = nowtime;
-        Logger::info(verbose, "search: PCA Process done in %f ms/item\n", process_time / n);
-#endif
+        sample.stage(search::QueryStage::GraphEncode);
 
         const auto ordered_queries = n > 1 && search_config.reorder_query_batch && pca
                                          ? pca->query_order(graph_queries)
                                          : std::vector<int>{};
         const int *const query_order = ordered_queries.empty() ? nullptr : ordered_queries.data();
+        sample.stage(search::QueryStage::Ordering);
         if (n == 1 && search_config.single_query_threads > 1) {
             rnndescent->search_single_parallel(0, *reranker, search_config, result);
         } else {
             rnndescent->search_batch(n, query_order, *reranker, search_config, result);
         }
 
-#ifdef INTERNAL_CLOCK_TEST
-        nowtime = std::chrono::high_resolution_clock::now();
-        process_time = std::chrono::duration<float, std::milli>(nowtime - prevtime).count();
-        auto all_time = std::chrono::duration<float, std::milli>(nowtime - starttime).count();
-        Logger::info(verbose, "search: RNNDescent Search Process done in %f ms/item; all = %f ms/item; internal point %f\n", process_time / n,
-                     all_time / n, 1000. * n / all_time);
-#endif
+        sample.finish(n);
     }
 
     void reset() {
+        query_profile_.flush();
         rnndescent.reset();
         reranker.reset();
         pca.reset();
     }
 
     void flush_perf_stats() {
+        query_profile_.flush();
         if (rnndescent)
             rnndescent->flush_perf_stats();
     }

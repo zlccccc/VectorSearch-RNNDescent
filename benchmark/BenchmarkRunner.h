@@ -3,6 +3,7 @@
 #include "BenchmarkCLI.h"
 #include "BenchmarkDataIO.h"
 #include "BenchmarkEvaluation.h"
+#include "BenchmarkProfile.h"
 #include "BenchmarkReport.h"
 
 #include <chrono>
@@ -27,6 +28,7 @@ inline vector<float> measure_queries(Solution &solution, const vector<float> &qu
     vector<float> distances(result.size());
     const auto output = rnndescent::SearchResultView::from_vectors(result, distances, config.topk);
 
+    mark_query_window("begin");
     for (int i = 0; i < config.repeat; i++) {
         const auto before_test = chrono::steady_clock::now();
         for (int offset = 0; offset < rows;) {
@@ -39,6 +41,8 @@ inline vector<float> measure_queries(Solution &solution, const vector<float> &qu
         stats.latency_ms.push_back(t);
         cout << "[" << i << "] average test time: " << t << " ms/query; " << 1000. / t << " QPS" << endl;
     }
+    mark_query_window("end");
+    solution.flush_perf_stats();
     return distances;
 }
 

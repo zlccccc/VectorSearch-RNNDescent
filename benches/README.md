@@ -77,6 +77,8 @@ OMP_NUM_THREADS=16 OPENBLAS_NUM_THREADS=1 OMP_DYNAMIC=FALSE \
 
 多线程情况下，`latency_ms[i]` 表示摊到每条查询的批次时间，单条请求的端到端延迟需另行测量。每次启动程序都会新建索引。一次运行内的 `--repeat` 复用同一张图。比较两个版本时可以交替运行，多次独立建图后汇总；要求严格同图时，需要在单进程对照程序中复用图对象。
 
+阶段占比、OpenMP 等待指标及 `perf` 火焰图的用法见 [查询性能剖析](../docs/development.md#查询性能剖析)。
+
 比较时记录提交、二进制、CPU、指令集、OpenMP 与 OpenBLAS 线程数、数据哈希、查询条数、PCA 维度、缓存预算和 Recall。先对齐 Recall，再汇总相邻 A/B 的 QPS 比值，能减少机器负载随时间变化的影响。
 
 ### 可复现的 SIFT 测试
