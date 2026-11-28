@@ -143,11 +143,15 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
         shared_visited_ = std::make_unique<SharedVisitedSet>(storage_.final_graph_neighbors.size());
     shared_visited_->begin_query();
 
-    // Reserve for the largest shard in case OpenMP runs with fewer workers than requested.
-    const int beam = std::min(safe_config.beam_size, safe_config.search_L);
-    const size_t beam_capacity = padded_max_degree_ * beam;
-    for (int worker = 0; worker < workers; ++worker)
-        scratch_[worker].reserve(safe_config.num_initialize, beam, beam_capacity);
+    auto *const team = safe_config.persistent_query_workers ? persistent_workers(workers) : nullptr;
+    if (!team) {
+        // Reserve outside OpenMP so allocation failures can propagate. The worker pool
+        // lets each shard grow its own scratch and propagates exceptions to the caller.
+        const int beam = std::min(safe_config.beam_size, safe_config.search_L);
+        const size_t beam_capacity = padded_max_degree_ * beam;
+        for (int worker = 0; worker < workers; ++worker)
+            scratch_[worker].reserve(safe_config.num_initialize, beam, beam_capacity);
+    }
     merged_candidates_.reserve(static_cast<size_t>(workers) * topk);
 
     int active_workers = 1;
@@ -188,7 +192,6 @@ void GraphSearcher::search_parallel(int queryid, const config::SearchConfig &sea
         sample.stop();
     };
 
-    auto *const team = safe_config.persistent_query_workers ? persistent_workers(workers) : nullptr;
     profile_.single_setup_finished(setup);
     if (team) {
         auto work_shard = [&](int worker) { work(worker, workers); };
